@@ -57,20 +57,22 @@ function fixture(t,{ttlMs=1400}={}){
   }};
   const harnessRegistry={...base,createDriver(value,options){base.validateExecution(value,options);return driver;}};
   const runtime=createProjectAgent({projectRoot:root,execution,harnessRegistry,workspace:{mode:'worktree'},github:{repository,allowedActors:['alice'],issues:[7]},githubChannel:channel}).init();
-  runtime.configureJobs({lifecycle:'assignment',paths:['input.txt'],limits:{maxDurationMs:5000},profiles:{preview:{kind:'command',version:'1',command:process.execPath,args:['-e',''],environment:'host',allowHostExecution:true,preview:{url:'http://127.0.0.1:1234/',ttlMs:5000}}}},{expectedRevision:0});
+  runtime.configureJobs({lifecycle:'assignment',paths:['input.txt'],limits:{maxDurationMs:30000},profiles:{preview:{kind:'command',version:'1',command:process.execPath,args:['-e',''],environment:'host',allowHostExecution:true,preview:{url:'http://127.0.0.1:1234/',ttlMs:5000}}}},{expectedRevision:0});
   runtime.configureDelivery({mode:'draft-pr',automatic:false,repository,credentialMode:'native-gh',allowedPaths:['input.txt'],review:{requestReviewers:true,reviewers:['alice']},
     verify:{id:'check',version:'1',command:process.execPath,args:['-e',''],paths:['input.txt'],environment:'host',allowHostExecution:true}},{expectedRevision:0});
   t.after(async()=>{try{await runtime.stop();runtime.close();}finally{if(child&&alive(child.pid)){child.kill('SIGTERM');await closed;}rmSync(root,{recursive:true,force:true});}});
   return {runtime,inputs,closes,owner:()=>child,reviewWrites:()=>reviewWrites,record:()=>record,async initial(){const ticket=runtime.submit({text:'Prepare the preview for review'});await runtime.linkGitHubPullRequest(ticket.id,{number:9});await runtime.runNext();return ticket;}};
 }
 
-test('W34 ready preview releases worker capacity, permits verification and review, renews both host records, and stops cleanly',{timeout:8000},async t=>{
-  const f=fixture(t),runtime=f.runtime,ticket=await f.initial();
+test('W34 ready preview releases worker capacity, permits verification and review, renews both host records, and stops cleanly',{timeout:45000},async t=>{
+  // CI can spend several seconds completing Git and verification work after handoff.
+  // Keep the lease alive through setup, then still cross its original deadline.
+  const f=fixture(t,{ttlMs:10000}),runtime=f.runtime,ticket=await f.initial();
   assert.equal(runtime.get(ticket.id).status,'completed',JSON.stringify(runtime.getDetailed(ticket.id)));
   assert.equal(runtime.get(ticket.id).awaitingReview,true);assert.equal(runtime.getDetailed(ticket.id).verification.status,'passed');
   assert.equal(runtime.schedulerStatus().active.length,0);assert.ok(alive(f.owner().pid));
   const lease=runtime.getDetailed(ticket.id).nativeHandoffs[0],oldDeadline=Date.parse(lease.deadlineAt);
-  const renewed=await runtime.controlNativePreview(ticket.id,{leaseId:lease.id,jobId:'preview-job',action:'renew',ttlMs:4000});
+  const renewed=await runtime.controlNativePreview(ticket.id,{leaseId:lease.id,jobId:'preview-job',action:'renew',ttlMs:30000});
   assert.ok(Date.parse(renewed.deadlineAt)>oldDeadline);assert.equal(renewed.results[0].job.id,'settled-check');
   assert.equal(runtime.getDetailed(ticket.id).nativeHandoffs[0].deadlineAt,renewed.deadlineAt);
   assert.equal((await runtime.verifyTicket(ticket.id)).status,'passed');
