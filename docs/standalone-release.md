@@ -7,3 +7,5 @@
 保留 UNLICENSED 元数据及上游 MIT 来源声明；未发布 npm。
 
 独立目录验证：npm ci 后 npm run check 通过，包括上游来源哈希、类型检查、运行时回归、核心／SQLite 测试及干净消费者 CLI/SDK 安装包验证。修正 check 在类型检查前先构建，以支持首次克隆。
+
+后续 npm 发布准备阶段，经所有者明确授权，原创代码已改为 MIT；以仓库根 LICENSE 和当前 package.json 为准。版本锁定、打包及发布步骤见 [发布指南](releasing.md)。

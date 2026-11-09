@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {checkRelease} from '../scripts/check-release.mjs';
+const pkg=JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url)));
+const lock=JSON.parse(fs.readFileSync(new URL('../package-lock.json',import.meta.url)));
+test('release metadata agrees with lock and exact tag',()=>assert.equal(checkRelease(pkg,lock,`v${pkg.version}`).ok,true));
+test('prerelease cannot accidentally target latest',()=>assert.equal(checkRelease({...pkg,publishConfig:{...pkg.publishConfig,tag:'latest'}},lock).ok,false));
+test('version mismatch and wrong git tag rejected',()=>{assert.equal(checkRelease(pkg,{...lock,version:'0.0.0'}).ok,false);assert.equal(checkRelease(pkg,lock,'v1.0.0').ok,false);});
+test('consumer install hooks and private publication rejected',()=>{assert.equal(checkRelease({...pkg,scripts:{...pkg.scripts,install:'do-work'}},lock).ok,false);assert.equal(checkRelease({...pkg,private:true},lock).ok,false);});

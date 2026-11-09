@@ -14,7 +14,7 @@ npm run build
 node bin/js-superagent.mjs --help
 ```
 
-源码公开不改变现有许可：项目原创部分仍为 `UNLICENSED`，保留全部权利；引入的上游核心按随附 MIT 许可使用，见 [第三方声明](THIRD_PARTY_NOTICES.md)。本次仅发布 GitHub 源码，不发布 npm 包。
+项目采用 [MIT 许可](LICENSE)，上游核心的版权及 MIT 许可原样保留，见 [第三方声明](THIRD_PARTY_NOTICES.md)。npm 首发准备版本为 `0.14.0-alpha.0`，使用 `alpha` 渠道；准备完成不表示已经发布。版本与发布流程见[发布指南](docs/releasing.md)。
 
 ## 环境与本地使用
 

@@ -17,3 +17,5 @@ dist/
 *.sqlite3-shm
 .DS_Store
 coverage/
+
+release/

@@ -3,7 +3,7 @@
   "version": "0.14.0-alpha.0",
   "description": "Project-local, driver-independent agent task runtime.",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "engines": {
     "node": ">=22.13.0"
   },
@@ -28,7 +28,8 @@
     "examples",
     "dist/core",
     "THIRD_PARTY_NOTICES.md",
-    "THIRD_PARTY_LICENSES"
+    "THIRD_PARTY_LICENSES",
+    "LICENSE"
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -38,15 +39,18 @@
     "test:core": "vitest run",
     "test:package": "node scripts/pack-smoke.mjs",
     "test": "npm run build && npm run test:legacy && npm run test:core && npm run test:sqlite",
-    "check": "npm run check:core && npm run build && npm run typecheck && node --check src/index.mjs && node --check src/store.mjs && node --check bin/js-superagent.mjs && npm test && npm run test:package",
-    "prepack": "npm run check:core && npm run typecheck && npm run build",
+    "check": "npm run check:release && npm run check:core && npm run build && npm run typecheck && node --check src/index.mjs && node --check src/store.mjs && node --check bin/js-superagent.mjs && npm test && npm run test:package",
+    "prepack": "npm run check:release && npm run check:core && npm run build && npm run typecheck",
     "test:sqlite": "vitest run --config vitest.sqlite.config.mjs",
     "test:real": "npm run build && node examples/real-codex-smoke.mjs",
     "test:workspaces:real": "npm run build && node examples/real-workspace-smoke.mjs",
     "test:github:real": "npm run build && node examples/real-github-smoke.mjs",
     "test:github:pr:real": "npm run build && node examples/real-github-pr-smoke.mjs",
     "test:github:webhook:real": "npm run build && node examples/real-github-webhook-smoke.mjs",
-    "test:service:real": "npm run build && node examples/real-background-service-smoke.mjs"
+    "test:service:real": "npm run build && node examples/real-background-service-smoke.mjs",
+    "check:release": "node scripts/check-release.mjs",
+    "release:pack": "node scripts/prepare-release.mjs",
+    "release:prepare": "npm run check && npm run release:pack"
   },
   "devDependencies": {
     "@types/node": "22.20.0",
@@ -60,5 +64,10 @@
   "homepage": "https://github.com/imjszhang/js-superagent#readme",
   "bugs": {
     "url": "https://github.com/imjszhang/js-superagent/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha",
+    "registry": "https://registry.npmjs.org/"
   }
 }

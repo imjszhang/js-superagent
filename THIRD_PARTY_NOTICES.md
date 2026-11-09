@@ -13,4 +13,4 @@ The repository includes upstream files `src/core/*.ts`, `tests/core-engine.spec.
 
 The full upstream license is retained in [THIRD_PARTY_LICENSES/dsh-superagent-prototype-LICENSE](THIRD_PARTY_LICENSES/dsh-superagent-prototype-LICENSE) and accompanies the distributed package. Upstream source and test files are preserved without behavioral edits in this extraction.
 
-The package-level `UNLICENSED` metadata does not replace or revoke the MIT license applying to the included upstream material. This notice does not claim affiliation with or endorsement by DeepSeek.
+The package is distributed under the MIT license. The original upstream copyright notice and MIT license remain in effect for the included upstream material. This notice does not claim affiliation with or endorsement by DeepSeek.
