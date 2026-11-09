@@ -40,3 +40,5 @@ npm's [publish documentation](https://docs.npmjs.com/cli/v11/commands/npm-publis
 ## First-release registry processing
 
 The first publish returned success before the version became publicly available. During processing, npm exposed a temporary `0.0.0-stage` placeholder and no manually approvable staged item. Wait for the exact version and integrity to appear; do not republish. npm also assigned `latest` to the first published prerelease, despite the explicit `alpha` tag. Inspect dist-tags after publication and remove `latest` for an alpha-only release (this can require another browser authentication).
+
+For this release, removal of the automatically assigned `latest` tag was attempted after browser authentication, but npm returned HTTP 400. Registry verification still showed both `alpha` and `latest` pointing to `0.14.0-alpha.0`. The version remains an alpha prerelease; use the exact version or explicit `alpha` tag. Do not describe this publication as alpha-only.
