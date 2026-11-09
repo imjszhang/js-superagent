@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { Store } from '../src/store.mjs';
+import { BotReviewBudget, legacyReviewBudgetKey } from '../src/runtime/bot-review-budget.mjs';
+const binding = {repository:'fixture/project',id:'900',number:9};
+const event=(reviewId,id=reviewId)=>({repository:binding.repository,pullNumber:9,actor:{id:'20'},kind:'review_comment',reviewId,id:`github:fixture/project:review_comment:${id}`});
+test('native run identity groups findings and budget survives worker/ticket changes',t=>{
+ const store=new Store(':memory:');t.after(()=>store.close());const budget=new BotReviewBudget(store);
+ assert.equal(budget.reserve(binding,event(1,10),'ticket-a').number,1);
+ assert.equal(budget.reserve(binding,event(1,11),'ticket-b').number,1);
+ assert.equal(budget.reserve(binding,event(2,12),'ticket-b').number,2);
+ assert.equal(new BotReviewBudget(store).reserve(binding,event(3,13),'ticket-c').number,3);
+ assert.equal(budget.reserve(binding,event(4,14),'ticket-d').reason,'bot-review-round-limit');
+ budget.report('ticket-a',{runId:'run-a',state:'ready',summary:'Fixed',eventIds:[]});
+ assert.equal(budget.get(binding,'20').rounds[0].status,'reserved','unread finding not marked assessed');
+ budget.report('ticket-a',{runId:'run-a',state:'ready',summary:'Fixed',eventIds:[event(1,10).id]});
+ assert.equal(budget.get(binding,'20').rounds[0].status,'assessed');
+ const record=budget.get(binding,'20');
+ budget.initialize(binding,'20',{expectedRevision:record.revision,remaining:1,reason:'Explicit human extension'});
+ assert.equal(budget.reserve(binding,event(4,14),'ticket-d').number,4);
+ assert.equal(budget.reserve(binding,event(5,15),'ticket-d').allowed,false);
+});
+test('legacy history and unidentified runs never silently receive free rounds',t=>{
+ const store=new Store(':memory:');t.after(()=>store.close());store.setMeta(legacyReviewBudgetKey(binding),{unknown:true});const budget=new BotReviewBudget(store);
+ assert.equal(budget.reserve(binding,event(1,10),'ticket-a').reason,'bot-review-history-unknown');
+ budget.initialize(binding,'20',{expectedRevision:budget.get(binding,'20').revision,remaining:2,reason:'Reviewed prior work; two rounds remain'});
+ const unknown={...event(undefined,99),kind:'pr_comment'};
+ assert.equal(budget.reserve(binding,unknown,'ticket-a').reason,'bot-review-run-unknown');
+ budget.associate(binding,'20',{runId:'operator-verified-run',events:[unknown],reason:'Verified these findings belong together'});
+ assert.equal(budget.reserve(binding,unknown,'ticket-a').number,1);
+ assert.throws(()=>budget.associate(binding,'20',{runId:'different',events:[unknown],reason:'Trying to reset'}),/another run/);
+});

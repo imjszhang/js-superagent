@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "phase": "13-current-frozen-baseline",
+  "status": "partial",
+  "at": "2026-11-01T14:21:20.166Z",
+  "package": {
+    "version": "0.2.0-alpha.0",
+    "sourceCommit": "30ec6db2e97cdb20572d0bb9ae830c7d9e2d1849",
+    "sha256": "c5714956a7ceeca1ad1d221324388fa3f7f7054516c7e321af5643c5601c1bcd"
+  },
+  "local": {
+    "status": "passed",
+    "scenarios": [
+      {
+        "name": "modify-verify-question-reply",
+        "status": "passed"
+      },
+      {
+        "name": "cancel-restart-resume",
+        "status": "passed"
+      },
+      {
+        "name": "stop-restart-resume",
+        "status": "passed"
+      }
+    ],
+    "evidence": "working/agent-runs/js-superagent-phase13-local-20261101/acceptance.json",
+    "artifactEvidence": "working/agent-runs/js-superagent-phase13-local-20261101/artifact-evidence.json"
+  },
+  "repositoryIntake": {
+    "status": "blocked-at-app-receipt",
+    "pull": {
+      "number": 16,
+      "url": "https://github.com/imjszhang/x-pkm-research/pull/16",
+      "headSha": "dc3e50390e72a43d88fd68c0e9a2ec8306c90e77"
+    },
+    "closed": true,
+    "realWorkerAndHostVerification": "passed-before-receipt-assertion",
+    "failures": [
+      {
+        "kind": "reply",
+        "attempts": 1,
+        "error": "GitHub App API request failed (HTTP 403)"
+      }
+    ],
+    "evidence": "working/agent-runs/js-superagent-phase13-pr-20261101/acceptance.json",
+    "artifactEvidence": "working/agent-runs/js-superagent-phase13-pr-20261101/artifact-evidence.json"
+  },
+  "resources": {
+    "repository": "imjszhang/js-superagent-acceptance",
+    "visibility": "private",
+    "fixtureCommit": "88e4b69ce7d177a2fe9e42eac635bd43a95978ba",
+    "baselineActions": {
+      "id": 41315616135,
+      "url": "https://github.com/imjszhang/js-superagent-acceptance/actions/runs/41315616135",
+      "conclusion": "success"
+    },
+    "app": {
+      "id": 5565229,
+      "installationId": 177461856,
+      "slug": "js-superagent-imjszhang-23aefa",
+      "observedPullRequestPermission": "read",
+      "updateAndNewRepositoryInstallation": "pending"
+    }
+  },
+  "limits": [
+    "This baseline did not complete App PR reply; its durable receipt remains pending after HTTP403. No identity fallback was used.",
+    "The dedicated repository baseline Actions success is fixture preparation, not yet a runtime CI repair acceptance.",
+    "Final candidate must rerun remote flows against its own frozen artifact."
+  ]
+}

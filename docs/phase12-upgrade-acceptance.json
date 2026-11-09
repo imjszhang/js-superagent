@@ -1,0 +1,178 @@
+{
+  "version": 1,
+  "status": "passed",
+  "startedAt": "2026-11-01T12:32:00.067Z",
+  "platform": "darwin",
+  "node": "v24.22.1",
+  "project": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project",
+  "oldPackage": {
+    "sha256": "efa222d611876a31dabea5c704bf783980122d903e1eeadeaff7d2b3a457e3ca",
+    "version": "0.1.0-alpha.0"
+  },
+  "newPackage": {
+    "sha256": "34e5fc47cf026d21b2011e8b37f5763038f699d80125eb7be084e9b216e75228",
+    "version": "0.2.0-alpha.0"
+  },
+  "checks": [
+    "Old installed package creates DB2 and temporary service is actually stopped before consistent backup",
+    "DB2 upgrades to DB3; old binary refuses DB3; reconciled DB2 restore candidate opens with old package in a separate fixture",
+    "Pause and queued local CLI feedback survive installed-service restart without dispatch",
+    "One real Codex turn consumes preserved DB2 task and post-upgrade local feedback, changes isolated Python code and passes independent tests",
+    "Completed task/session/workspace survive another restart without replay; ordinary source directory unchanged"
+  ],
+  "limitations": [
+    "No whole-machine reboot, logout/login, Windows, Linux service, or external channel tested."
+  ],
+  "backup": {
+    "path": "<project>/working/agent-runs/phase12-upgrade-20261101/before-upgrade.sqlite",
+    "manifestPath": "<project>/working/agent-runs/phase12-upgrade-20261101/before-upgrade.sqlite.json",
+    "formatVersion": 1,
+    "id": "2db5c39a-b38a-485a-ade8-e0cc25e99dda",
+    "createdAt": "2026-11-01T12:32:00.347Z",
+    "source": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project/.js-superagent/state.sqlite",
+    "schemaVersion": 2,
+    "sha256": "02348efa4b53f6589a886a846329f3f3641a9e19b1910e8bb37fc315b92d18c6"
+  },
+  "oldService": {
+    "installed": true,
+    "label": "com.js-superagent.project.e0a963ea50fc9ed6d26d",
+    "projectRoot": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project",
+    "mode": "poll",
+    "plistPath": "<home>/Library/LaunchAgents/com.js-superagent.project.e0a963ea50fc9ed6d26d.plist",
+    "manifestPath": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project/.js-superagent/service/manifest.json",
+    "logs": {
+      "stdout": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project/.js-superagent/service/stdout.log",
+      "stderr": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project/.js-superagent/service/stderr.log"
+    },
+    "logMaxBytes": 5242880,
+    "loaded": true,
+    "running": true,
+    "pid": 94306,
+    "lastExitCode": null,
+    "childPid": null
+  },
+  "ticketId": "40feea4fd34d9a6d5ee654309edd463e",
+  "projectId": "3b4489d4-4009-4f1d-8796-bf62c1c0b7c8",
+  "oldPackageRefusal": {
+    "exitCode": 1,
+    "message": "js-superagent: Unsupported state schema: 3"
+  },
+  "restoreCandidate": {
+    "path": "<project>/working/agent-runs/phase12-upgrade-20261101/rollback-candidate.sqlite",
+    "manifestPath": "<project>/working/agent-runs/phase12-upgrade-20261101/rollback-candidate.sqlite.json",
+    "formatVersion": 1,
+    "id": "0865139e-8675-44a5-b559-8106e734b25e",
+    "createdAt": "2026-11-01T12:32:00.487Z",
+    "source": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project/.js-superagent/state.sqlite",
+    "schemaVersion": 2,
+    "sha256": "a157446ab2e5bc6906f58f4ac2e7dde95430fea68b17404cb21aebc645d6ec0e",
+    "restoredFrom": "2db5c39a-b38a-485a-ade8-e0cc25e99dda",
+    "reconciliation": {
+      "backupId": "2db5c39a-b38a-485a-ade8-e0cc25e99dda",
+      "note": "Only schema migration occurred after this backup; the isolated service stayed stopped and no Worker or external delivery ran."
+    },
+    "installRequired": true,
+    "oldPackageRequired": true
+  },
+  "pausedService": {
+    "installed": true,
+    "label": "com.js-superagent.project.e0a963ea50fc9ed6d26d",
+    "projectRoot": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project",
+    "mode": "poll",
+    "plistPath": "<home>/Library/LaunchAgents/com.js-superagent.project.e0a963ea50fc9ed6d26d.plist",
+    "manifestPath": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project/.js-superagent/service/manifest.json",
+    "logs": {
+      "stdout": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project/.js-superagent/service/stdout.log",
+      "stderr": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project/.js-superagent/service/stderr.log"
+    },
+    "logMaxBytes": 5242880,
+    "loaded": true,
+    "running": true,
+    "pid": 94346,
+    "lastExitCode": null,
+    "childPid": 94349
+  },
+  "restartedService": {
+    "installed": true,
+    "label": "com.js-superagent.project.e0a963ea50fc9ed6d26d",
+    "projectRoot": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project",
+    "mode": "poll",
+    "plistPath": "<home>/Library/LaunchAgents/com.js-superagent.project.e0a963ea50fc9ed6d26d.plist",
+    "manifestPath": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project/.js-superagent/service/manifest.json",
+    "logs": {
+      "stdout": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project/.js-superagent/service/stdout.log",
+      "stderr": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project/.js-superagent/service/stderr.log"
+    },
+    "logMaxBytes": 5242880,
+    "loaded": true,
+    "running": true,
+    "pid": 94600,
+    "lastExitCode": null,
+    "childPid": null
+  },
+  "completedTicket": {
+    "id": "40feea4fd34d9a6d5ee654309edd463e",
+    "projectId": "3b4489d4-4009-4f1d-8796-bf62c1c0b7c8",
+    "text": "Fix calc.add to return a + b and run python3 -m unittest -v. Keep source changes in this task workspace. This is a queued task carried through a package upgrade; subsequent local feedback belongs to the same work.",
+    "scope": "Fix calc.add to return a + b and run python3 -m unittest -v. Keep source changes in this task workspace. This is a queued task carried through a package upgrade; subsequent local feedback belongs to the same work.",
+    "status": "completed",
+    "pullRequests": [],
+    "createdAt": "2026-11-01T12:32:00.307Z",
+    "updatedAt": "2026-11-01T12:32:42.984Z",
+    "runId": "15c8f8ec-448f-45b7-b488-14d35d2218da",
+    "cancelRequested": false,
+    "messages": [
+      {
+        "text": "Fix calc.add to return a + b and run python3 -m unittest -v. Keep source changes in this task workspace. This is a queued task carried through a package upgrade; subsequent local feedback belongs to the same work.",
+        "at": "2026-11-01T12:32:00.303Z"
+      },
+      {
+        "text": "Also write result.txt containing verified-upgrade after the requested Python tests pass.",
+        "at": "2026-11-01T12:32:00.532Z",
+        "triggerId": "7310093c-9504-4c74-9130-cb20521bba4f"
+      }
+    ],
+    "reports": [
+      {
+        "status": "completed",
+        "summary": "Fixed calc.add to return a + b. python3 -m unittest -v passed both tests. Then wrote and verified result.txt containing exactly verified-upgrade.",
+        "artifacts": [
+          "calc.py",
+          "result.txt"
+        ],
+        "runId": "15c8f8ec-448f-45b7-b488-14d35d2218da",
+        "at": "2026-11-01T12:32:42.983Z"
+      }
+    ]
+  },
+  "session": {
+    "driver": "codex",
+    "id": "01a19718-7288-7bc2-b353-6ff7285fd985"
+  },
+  "workspace": {
+    "mode": "copy",
+    "path": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project/.js-superagent/workspaces/40feea4fd34d9a6d5ee654309edd463e",
+    "projectRoot": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project",
+    "ticketId": "40feea4fd34d9a6d5ee654309edd463e",
+    "createdAt": "2026-11-01T12:32:04.014Z",
+    "state": "ready",
+    "provisionId": "ccb29a27-a826-4814-9387-7f5dbf5cbfcf",
+    "config": {
+      "mode": "copy",
+      "exclude": []
+    },
+    "manifestPath": "<project>/working/agent-runs/phase12-upgrade-20261101/plain-python-project/.js-superagent/workspaces/.records/40feea4fd34d9a6d5ee654309edd463e.baseline.json",
+    "manifestSha256": "e97c94726817cc4b15a16c0e4699cb0f1951a1cff42b43f1703bb450cfac2dc4",
+    "excludedPaths": [
+      {
+        "path": ".js-superagent",
+        "reason": "excluded"
+      }
+    ],
+    "snapshotFiles": 3,
+    "snapshotBytes": 522
+  },
+  "temporaryServiceRemoved": true,
+  "finishedAt": "2026-11-01T12:32:45.582Z",
+  "evidenceSource": "working/agent-runs/phase12-upgrade-20261101/acceptance.json"
+}

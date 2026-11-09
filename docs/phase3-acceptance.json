@@ -1,0 +1,124 @@
+{
+  "startedAt": "2026-11-01T07:06:01.424Z",
+  "node": "v24.22.1",
+  "platform": "darwin",
+  "codex": "codex-cli 0.166.0-alpha.5.1",
+  "package": "js-superagent-0.1.0-alpha.0.tgz",
+  "scenarios": [
+    {
+      "name": "modify-verify-question-reply",
+      "status": "passed",
+      "project": "python-repair",
+      "ticketId": "dc0887b7077dfc2b68aaba0007d8ea21",
+      "session": {
+        "driver": "codex",
+        "id": "01a195ed-f20b-7781-8c1b-c6b59119cf45"
+      },
+      "reports": [
+        {
+          "status": "waiting",
+          "summary": "Inspected existing tests: basic total, 25% discount, and zero quantity. No files changed; verification not yet run. For discounts below 0 or above 100, should total raise ValueError, clamp to 0..100, or use another policy?",
+          "artifacts": [],
+          "runId": "5f688b36-d945-4fcc-80a4-ba1bb6faf50c",
+          "at": "2026-11-01T07:06:28.832Z"
+        },
+        {
+          "status": "completed",
+          "summary": "Fixed total to calculate price × quantity with percentage discount, raising ValueError outside 0..100 and accepting both endpoints. Added validation, endpoint, and fractional-discount tests. python3 -m unittest -v passed all 6 tests.",
+          "artifacts": [
+            "pricing.py",
+            "test_pricing.py"
+          ],
+          "runId": "ba3f14fc-47f9-45c9-96cc-b7282a033aa3",
+          "at": "2026-11-01T07:06:58.793Z"
+        }
+      ],
+      "independentTests": "test_basic (test_pricing.PricingTest.test_basic) ... ok\ntest_discount (test_pricing.PricingTest.test_discount) ... ok\ntest_discount_endpoints (test_pricing.PricingTest.test_discount_endpoints) ... ok\ntest_fractional_discount (test_pricing.PricingTest.test_fractional_discount) ... ok\ntest_invalid_discount (test_pricing.PricingTest.test_invalid_discount) ... ok\ntest_zero (test_pricing.PricingTest.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 0.000s\n\nOK\n"
+    },
+    {
+      "name": "cancel-restart-resume",
+      "status": "passed",
+      "project": "python-cancel",
+      "ticketId": "6d56eea396ebc176b28a3db13f91f2f0",
+      "session": {
+        "driver": "codex",
+        "id": "01a195ee-d1ca-7983-82d8-9e6ad9c763cb"
+      },
+      "toolPid": 32178,
+      "toolExited": true,
+      "heartbeatStopped": true,
+      "stoppedStatus": "cancelled",
+      "oldDomainId": "6d56eea396ebc176b28a3db13f91f2f0",
+      "newDomainId": "0706f41b968f968ce47b9279c5934c2e",
+      "reports": [
+        {
+          "status": "failed",
+          "summary": "Codex execution cancelled",
+          "runId": "a3ed40a1-4445-42b5-9c8e-3ccfe6fd5e34",
+          "at": "2026-11-01T07:07:18.738Z"
+        },
+        {
+          "status": "completed",
+          "summary": "Reinspected files after cancellation. python3 slow_check.py succeeded. Wrote recovery.txt containing recovered. python3 -m unittest -v passed (1 test).",
+          "artifacts": [
+            "recovery.txt"
+          ],
+          "runId": "538f470f-ce6b-43a1-8844-7de4b8d32b88",
+          "at": "2026-11-01T07:07:55.518Z"
+        }
+      ]
+    },
+    {
+      "name": "stop-restart-resume",
+      "status": "passed",
+      "project": "python-stop",
+      "ticketId": "81be7bbbaa124b75a3bae208822ce72e",
+      "session": {
+        "driver": "codex",
+        "id": "01a195ef-af5d-7b30-9a8e-bb0cb175f22d"
+      },
+      "toolPid": 43344,
+      "toolExited": true,
+      "heartbeatStopped": true,
+      "stoppedStatus": "interrupted",
+      "oldDomainId": "81be7bbbaa124b75a3bae208822ce72e",
+      "newDomainId": "81be7bbbaa124b75a3bae208822ce72e",
+      "reports": [
+        {
+          "runId": "f42fab88-e23b-419b-a024-fa3a6bfb4120",
+          "status": "interrupted",
+          "summary": "Runtime stopped during execution. Inspect external effects before retrying.",
+          "at": "2026-11-01T07:08:10.410Z"
+        },
+        {
+          "status": "completed",
+          "summary": "Reinspected files after interruption. python3 slow_check.py succeeded; wrote recovery.txt containing recovered. python3 -m unittest -v passed (1 test).",
+          "artifacts": [
+            "recovery.txt"
+          ],
+          "runId": "e6aebca0-0045-41d6-931b-e24eaab43651",
+          "at": "2026-11-01T07:08:44.188Z"
+        }
+      ]
+    }
+  ],
+  "status": "passed",
+  "implementationSha256": {
+    "src/index.mjs": "1737f50e3796d7832c6d823001d8ece7c3fcc9b14a66c123847f0bd7b865e182",
+    "src/drivers/codex.mjs": "542d54cd2d1ba010792bc281147bf2b11d8e477545695202d56fa25d2f6e6474",
+    "src/drivers/codex-supervisor.mjs": "e6ec300592a8b506fd8d0e510b5e5f291772c47d2e7b8f51d0922aa2daee5c1b",
+    "src/drivers/posix-process-tree.mjs": "df876064b4cc63add943a881cedab8747fe81840f18eb44ff9629ff46b38e3ec"
+  },
+  "finishedAt": "2026-11-01T07:08:44.213Z",
+  "localEvidenceDirectory": "working/agent-runs/js-superagent-phase3-20261101-b",
+  "automatedVerification": {
+    "nodeTests": 81,
+    "upstreamMemoryTests": 144,
+    "upstreamSqliteTests": 144,
+    "packageCheck": "passed",
+    "installedPackageCliAndSdk": "passed",
+    "rootCheck": "passed",
+    "storeBootstrap": "passed"
+  },
+  "scope": "Real Codex native-login calls through an offline-installed tarball; three ordinary Python projects, no Git, no project package.json, no DSH. Crash injection coverage uses fake executables with real subprocesses."
+}

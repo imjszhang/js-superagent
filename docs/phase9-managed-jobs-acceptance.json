@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "startedAt": "2026-11-01T12:08:27.943Z",
+  "runId": "711c11fe-7104-454a-8d3e-8af87759ea36",
+  "scenarios": [
+    {
+      "name": "background-command",
+      "id": "06bd7883-ce0b-43fd-8254-45df5ff11321",
+      "status": "completed",
+      "exitCode": 0,
+      "completionId": "job-completed:06bd7883-ce0b-43fd-8254-45df5ff11321"
+    },
+    {
+      "name": "native-codex-child",
+      "id": "c58224c1-e846-4a56-b39d-34eaeb1631f7",
+      "status": "completed",
+      "session": {
+        "driver": "codex",
+        "id": "01a19702-d66f-78c2-8286-823760e0f25b"
+      },
+      "report": {
+        "version": 2,
+        "sourceVersion": 1,
+        "state": "ready",
+        "summary": "Replaced example.txt with exactly \"child-verified\\n\". Node strict assertion passed (exit code 0).",
+        "artifacts": [
+          "example.txt"
+        ],
+        "attention": null
+      },
+      "childChanged": true,
+      "parentUnchanged": true,
+      "completionId": "job-completed:c58224c1-e846-4a56-b39d-34eaeb1631f7"
+    },
+    {
+      "name": "parent-end-cancels-owned-job",
+      "id": "ad76adc6-4298-4000-ba12-0dc8b7ab8596",
+      "status": "cancelled",
+      "allOwnersExited": true
+    }
+  ],
+  "slots": [
+    {
+      "held": false,
+      "reason": "waiting-for-managed-job"
+    },
+    {
+      "held": true,
+      "reason": "managed-job-settled"
+    }
+  ],
+  "status": "passed",
+  "completedAt": "2026-11-01T12:08:53.472Z",
+  "evidenceSource": "working/agent-runs/js-superagent-managed-jobs-acceptance-20261101/acceptance.json",
+  "scopeNote": "Recorded at execution time; package hash or implementation hashes identify the tested snapshot. Later aggregate checks are recorded separately."
+}

@@ -1,0 +1,44 @@
+{
+  "status": "running-at-verification",
+  "verifiedAt": "2026-11-01T10:57:49.466Z",
+  "repository": "imjszhang/x-pkm-research",
+  "project": "repository root",
+  "mode": "poll",
+  "pollIntervalMs": 30000,
+  "allowedActors": [
+    "imjszhang"
+  ],
+  "command": "/js-superagent",
+  "appId": "5565229",
+  "installationId": 177461856,
+  "serviceLabel": "com.js-superagent.project.ca4776dc88748411f031",
+  "installedPackage": ".js-superagent/installation/20261101-background/node_modules/js-superagent",
+  "workspaceMode": "worktree",
+  "sourceHead": "334cd8e5be16e3048bd37ba056917b11b43155f5",
+  "sourceUncommittedChangesIncluded": false,
+  "lastSync": {
+    "at": "2026-11-01T10:57:48.927Z",
+    "repository": "imjszhang/x-pkm-research",
+    "received": 0
+  },
+  "lastError": null,
+  "ticketsAtVerification": 0,
+  "restart": {
+    "requestedAt": "2026-11-01T10:57:24.058Z",
+    "beforePid": 90713,
+    "afterPid": 90997
+  },
+  "publicHttpsConfigured": false,
+  "httpListenerEnabled": false,
+  "environment": {
+    "localProxyRequired": true,
+    "secretsInPlist": false
+  },
+  "localStateIgnoredByGit": true,
+  "boundaries": [
+    "macOS user login service; sleep, logout, shutdown and network outage interrupt availability",
+    "Whole-machine reboot and login were not performed during acceptance",
+    "Interrupted active work still requires an explicit retry",
+    "Fixed public HTTPS endpoint is not configured; the active service uses outbound polling"
+  ]
+}

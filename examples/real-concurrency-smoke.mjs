@@ -1,0 +1,53 @@
+// Explicit isolated acceptance: three real Workers, native live input and persisted model acknowledgement.
+import assert from 'node:assert/strict';
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
+import { spawnSync } from 'node:child_process';
+import { parseAcceptanceArgs as parseArgs } from './acceptance/frozen-package.mjs';
+import { createHash } from 'node:crypto';
+const { values, artifact } = parseArgs({options:{tarball:{type:'string'},output:{type:'string'},write:{type:'boolean'}}});
+if(!values.write||!values.tarball||!values.output)throw new Error('Requires --write --tarball <immutable package> --output <new directory>');
+const output=resolve(values.output);if(existsSync(output))throw new Error('Use a new output');mkdirSync(output,{recursive:true,mode:0o700});
+const consumer=join(output,'consumer');mkdirSync(consumer);writeFileSync(join(consumer,'package.json'),'{"private":true,"type":"module"}');
+const installed=spawnSync('npm',['install','--offline','--ignore-scripts','--no-audit','--no-fund',resolve(values.tarball)],{cwd:consumer,encoding:'utf8'});assert.equal(installed.status,0,installed.stderr);
+const {createProjectAgent}=await import(pathToFileURL(join(consumer,'node_modules/js-superagent/src/index.mjs')));
+const project=join(output,'project');mkdirSync(project);
+writeFileSync(join(project,'AGENTS.md'),'Only work in this acceptance workspace. Never alter slow_check.py or release.flag. No network, commits or external messages.\n');
+writeFileSync(join(project,'slow_check.py'),"from pathlib import Path\nimport time\nwhile not Path('release.flag').exists():\n Path('heartbeat.txt').write_text(str(time.time()))\n time.sleep(.2)\nprint('released')\n");
+const runtime=createProjectAgent({projectRoot:project,workspace:'copy'}).init();
+runtime.configureExecutor({driver:'codex-app-server',timeoutMs:240000},{expectedRevision:0});
+runtime.configureScheduler({maxWorkers:3},{expectedRevision:0});
+const evidence={startedAt:new Date().toISOString(),packageSha256:createHash('sha256').update(readFileSync(resolve(values.tarball))).digest('hex'),status:'running',checks:[]};
+const save=()=>writeFileSync(join(output,'acceptance.json'),JSON.stringify(evidence,null,2));
+const wait=async(fn,ms=180000)=>{const end=Date.now()+ms;while(Date.now()<end){if(fn())return;await delay(100);}throw new Error('Acceptance condition timed out');};
+const tasks=[1,2,3].map(n=>runtime.submit({text:`Run python3 slow_check.py and wait for the host to release it. Never modify the script or release.flag. After it succeeds write result.txt containing worker-${n}. Keep the process in the foreground until it finishes.`}));
+save();
+try{
+ runtime.start({intervalMs:50});
+ await wait(()=>tasks.every(t=>{const w=runtime.getWorkspace(t.id);return w&&existsSync(join(w.path,'heartbeat.txt'))&&runtime.get(t.id).status==='running';}));
+ const paths=tasks.map(t=>runtime.getWorkspace(t.id).path);assert.equal(new Set(paths).size,3);
+ evidence.checks.push({name:'three-real-concurrent-workers',tickets:tasks.map(t=>t.id),active:runtime.schedulerStatus().active.length});save();
+ runtime.reply(tasks[0].id,'Live correction: after the host releases the check, result.txt must contain corrected-worker-1 instead of worker-1. Acknowledge this input ID in your final report.');
+ await wait(()=>runtime.getDetailed(tasks[0].id).liveInputs.some(i=>i.status==='accepted'),60000);
+ assert.equal(runtime.getDetailed(tasks[0].id).liveInputs.some(i=>i.status==='read'),false);
+ const sessions=tasks.map(t=>runtime.getSession(t.id));evidence.checks.push({name:'receipt-before-read',passed:true});save();
+ runtime.cancel(tasks[2].id);
+ await wait(()=>runtime.get(tasks[2].id).status==='cancelled');
+ assert.ok(tasks.slice(0,2).every(t=>runtime.get(t.id).status==='running'));
+ runtime.retry(tasks[2].id);
+ evidence.checks.push({name:'cancel-one-keeps-other-workers-running',passed:true});save();
+ for(const path of paths)writeFileSync(join(path,'release.flag'),'released');
+ await wait(()=>tasks.every(t=>runtime.get(t.id).status==='completed'));
+ assert.equal(readFileSync(join(paths[0],'result.txt'),'utf8').trim(),'corrected-worker-1');
+ assert.equal(readFileSync(join(paths[1],'result.txt'),'utf8').trim(),'worker-2');
+ assert.equal(readFileSync(join(paths[2],'result.txt'),'utf8').trim(),'worker-3');
+ assert.ok(runtime.getDetailed(tasks[0].id).liveInputs.some(i=>i.status==='read'&&i.evidence.type==='model-final-ack'));
+ assert.deepEqual(tasks.map(t=>runtime.getSession(t.id)),sessions);
+ await runtime.stop();runtime.reply(tasks[1].id,'Write followup.txt containing same-session and finish.');
+ assert.equal((await runtime.runNext()).id,tasks[1].id);assert.deepEqual(runtime.getSession(tasks[1].id),sessions[1]);
+ evidence.checks.push({name:'live-correction-and-native-resume',passed:true,readEvidence:runtime.getDetailed(tasks[0].id).liveInputs.map(i=>({status:i.status,evidence:i.evidence}))});
+ evidence.status='passed';evidence.finishedAt=new Date().toISOString();save();console.log(JSON.stringify(evidence));
+}catch(error){evidence.status='failed';evidence.error=String(error);save();throw error;}
+finally{await runtime.stop();runtime.close();}

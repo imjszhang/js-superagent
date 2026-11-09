@@ -1,0 +1,92 @@
+{
+  "startedAt": "2026-11-01T11:45:10.907Z",
+  "package": "js-superagent-0.1.0-alpha.0.tgz",
+  "packageSha256": "9e0726edc9f6161bd050e3b468646fb87460f606d50ad83c46194465ea365252",
+  "issueUrl": "https://github.com/imjszhang/x-pkm-research/issues/9",
+  "node": "v24.22.1",
+  "polls": [
+    {
+      "at": 1793533514880,
+      "events": 1
+    },
+    {
+      "at": 1793533545772,
+      "events": 2
+    },
+    {
+      "at": 1793533576325,
+      "events": 2
+    },
+    {
+      "at": 1793533605263,
+      "events": 3
+    },
+    {
+      "at": 1793533637084,
+      "events": 3
+    },
+    {
+      "at": 1793533664117,
+      "events": 3
+    },
+    {
+      "at": 1793533694118,
+      "events": 3
+    },
+    {
+      "at": 1793533724824,
+      "events": 3
+    },
+    {
+      "at": 1793533754321,
+      "events": 3
+    },
+    {
+      "at": 1793533785854,
+      "events": 5
+    },
+    {
+      "at": 1793533813441,
+      "events": 6
+    }
+  ],
+  "turns": [
+    {
+      "started": 1793533520641,
+      "ended": 1793533742736
+    },
+    {
+      "started": 1793533742812,
+      "ended": 1793533765366
+    },
+    {
+      "started": 1793533785938,
+      "ended": 1793533814519
+    }
+  ],
+  "checks": [
+    {
+      "name": "followup-during-real-turn",
+      "latencyMs": 27757,
+      "commentUrl": "https://github.com/imjszhang/x-pkm-research/issues/9#issuecomment-6557498144"
+    },
+    {
+      "name": "independent-polling",
+      "durationMs": 185001,
+      "successfulPolls": 7
+    },
+    {
+      "name": "durable-pause-and-reopen",
+      "passed": true
+    },
+    {
+      "name": "remote-cancellation-during-real-turn",
+      "commentUrl": "https://github.com/imjszhang/x-pkm-research/issues/9#issuecomment-6557532350"
+    }
+  ],
+  "status": "passed",
+  "workerStartedAt": "2026-11-01T11:45:42.561Z",
+  "finishedAt": "2026-11-01T11:50:14.578Z",
+  "evidenceSource": "working/agent-runs/js-superagent-phase6-20261101/acceptance.json",
+  "scopeNote": "Recorded at execution time; package hash or implementation hashes identify the tested snapshot. Later aggregate checks are recorded separately."
+}

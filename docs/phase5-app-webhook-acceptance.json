@@ -1,0 +1,145 @@
+{
+  "status": "passed",
+  "startedAt": "2026-11-01T10:24:03.635Z",
+  "finishedAt": "2026-11-01T10:25:30.060Z",
+  "node": "v24.22.1",
+  "platform": "darwin",
+  "codex": "codex-cli 0.166.0-alpha.5.1",
+  "gh": "gh version 2.101.0 (2026-09-15)",
+  "package": "js-superagent-0.1.0-alpha.0.tgz",
+  "repository": "imjszhang/x-pkm-research",
+  "issueNumber": 5,
+  "issueUrl": "https://github.com/imjszhang/x-pkm-research/issues/5",
+  "appId": "5565229",
+  "installationId": 177461856,
+  "periodicPollIntervalMs": 86400000,
+  "checks": [
+    "real-app-signed-webhook-triggered-initial-task",
+    "real-codex-modification-and-independent-tests",
+    "isolated-worktree-source-unchanged",
+    "related-feedback-same-ticket-session-worktree",
+    "github-actual-redelivery-deduplicated",
+    "local-exact-replay-deduplicated",
+    "local-tampered-raw-body-rejected",
+    "local-delivery-collision-rejected",
+    "webhook-and-poll-native-event-deduplication",
+    "delivery-deduplication-survives-restart",
+    "results-posted-by-registered-app-bot",
+    "source-files-head-index-unchanged"
+  ],
+  "ticketId": "47620f086be61b177658e45aa5d29efc",
+  "session": {
+    "driver": "codex",
+    "id": "01a196a3-6e4d-76e2-8d34-9c406f95e1a8"
+  },
+  "githubDeliveries": [
+    {
+      "id": "3851573450644652032",
+      "guid": "600878e0-d5de-11f1-9935-47b86f6afaf7",
+      "delivered_at": "2026-11-01T10:24:11.199Z",
+      "redelivery": false,
+      "duration": 0.67,
+      "status": "OK",
+      "status_code": 202,
+      "event": "issue_comment",
+      "action": "created",
+      "installation_id": 177461856,
+      "repository_id": 1408495096
+    },
+    {
+      "id": "3851573532783804416",
+      "guid": "76f8f840-d5de-11f1-9742-c088bd298a9c",
+      "delivered_at": "2026-11-01T10:24:49.467Z",
+      "redelivery": false,
+      "duration": 0.5,
+      "status": "OK",
+      "status_code": 202,
+      "event": "issue_comment",
+      "action": "created",
+      "installation_id": 177461856,
+      "repository_id": 1408495096
+    }
+  ],
+  "githubRedelivery": {
+    "requestedAt": "2026-11-01T10:25:18.807Z",
+    "id": "3851573598705688576",
+    "guid": "600878e0-d5de-11f1-9935-47b86f6afaf7",
+    "delivered_at": "2026-11-01T10:25:20.141Z",
+    "redelivery": true,
+    "duration": 0.61,
+    "status": "OK",
+    "status_code": 200,
+    "event": "issue_comment",
+    "action": "created",
+    "installation_id": 177461856,
+    "repository_id": 1408495096
+  },
+  "localReplayChecks": {
+    "duplicate": 200,
+    "tamperedBody": 401,
+    "identityConflict": 409,
+    "newDeliverySameEvent": 202
+  },
+  "receipts": [
+    {
+      "id": "c1315176caf7145ef8349477c9831c49",
+      "kind": "acknowledgement",
+      "status": "sent",
+      "commentId": 6556689177,
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/5#issuecomment-6556689177",
+      "actor": "js-superagent-imjszhang-23aefa[bot]",
+      "actorId": 351027557,
+      "appId": "5565229",
+      "reportedAppId": 5565229
+    },
+    {
+      "id": "66d9e95536c06d2e30f29f11ce68e43e",
+      "kind": "reply",
+      "status": "sent",
+      "commentId": 6556693937,
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/5#issuecomment-6556693937",
+      "actor": "js-superagent-imjszhang-23aefa[bot]",
+      "actorId": 351027557,
+      "appId": "5565229",
+      "reportedAppId": 5565229
+    },
+    {
+      "id": "137a65145d511a9390b8bb3c5b56af5f",
+      "kind": "reply",
+      "status": "sent",
+      "commentId": 6556699257,
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/5#issuecomment-6556699257",
+      "actor": "js-superagent-imjszhang-23aefa[bot]",
+      "actorId": 351027557,
+      "appId": "5565229",
+      "reportedAppId": 5565229
+    }
+  ],
+  "initialIndependentTests": "test_basic (test_pricing.PricingTest.test_basic) ... ok\ntest_discount (test_pricing.PricingTest.test_discount) ... ok\ntest_zero (test_pricing.PricingTest.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 3 tests in 0.000s\n\nOK\n",
+  "finalIndependentTests": "test_basic (test_pricing.PricingTest.test_basic) ... ok\ntest_discount (test_pricing.PricingTest.test_discount) ... ok\ntest_fractional_discount (test_pricing.PricingTest.test_fractional_discount) ... ok\ntest_zero (test_pricing.PricingTest.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n",
+  "implementationSha256": {
+    "src/index.mjs": "afce2b66524d8ff2a5aab48145165dc82837341fdd729d62bbaad23dfb07d916",
+    "src/config.mjs": "ec87963e75204c88ba657bc1e21e51b07e3f34dadbb1beaa53aba7fbc0930988",
+    "src/outbox.mjs": "8b7820e68ff63082d3b0ba210ec75fca42377d517fd8ef9f21b1a3c979114ca7",
+    "src/channels/github.mjs": "079b19b2f18056b066e0f650f298a8b74513298656071b30253d3bfd1f7da40f",
+    "src/channels/github-app.mjs": "663b993261ab3924d5a28dbba68d7f3dccb8ccfff1f12001e36ed3d7b621542d",
+    "src/channels/github-webhook.mjs": "e2e48a1c655d73a2edcbd24b1375314e61641ce0cfe36526f09340827380576a",
+    "src/github-webhook-inbox.mjs": "7e5fac540318f544e843954a62634b69ad892b0ee5fdef7615bd2647d6196e38",
+    "src/github-intake.mjs": "a13854b189dd93b65334149e95b1567488462511cb257aac153d597a8fc89440",
+    "src/github-pull-intake.mjs": "a9ded7ad70bce1963eba059b8f41d3f4da6f7f959644a6104c18d3c54e28d752",
+    "src/workspaces.mjs": "cbfa62b1259c95c99ceb3931308240b9a1cccf29ab5a45d59d24ccf64b1fbc93",
+    "src/drivers/codex.mjs": "b8d7118dffbf13f08d217f908f6a85d2c4b08f4cea9101a5b528851866613e0e",
+    "bin/js-superagent.mjs": "3b961dac3a30aba033ae0a428b56db5dc928deb5d4b0fe724131d9cedcc8c2a7",
+    "examples/real-github-webhook-smoke.mjs": "cd3e4a88d76f052c6bb53896562495ff18ddf950b365c7df62bde219bbd3003b",
+    "examples/github-webhook-delivery-metadata.mjs": "f26c5df8751da6a5fcac01a54f12c453373a881edf0fd5d82de83b61355f9693"
+  },
+  "firstAttempt": {
+    "issueNumber": 4,
+    "status": "failed",
+    "cause": "Acceptance script parsed GitHub delivery IDs exceeding the JavaScript safe integer range. Corrected by preserving the original decimal string; production transport was not the cause."
+  },
+  "notes": [
+    "The webhook endpoint was a temporary tunnel used only during acceptance. Configure a stable HTTPS endpoint for continued operation.",
+    "Raw signed payloads and credentials remain in ignored local acceptance directories and are not included in this record."
+  ]
+}

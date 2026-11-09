@@ -1,0 +1,22 @@
+// Browser-driven executor/source settings fixture; real CLI work is submitted after configuration.
+import {mkdirSync,existsSync,readFileSync,writeFileSync} from 'node:fs';
+import {join,resolve} from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {spawnSync} from 'node:child_process';
+import { parseAcceptanceArgs as parseArgs } from './acceptance/frozen-package.mjs';
+import {createHash} from 'node:crypto';
+import assert from 'node:assert/strict';
+const { values, artifact } = parseArgs({options:{write:{type:'boolean'},output:{type:'string'},tarball:{type:'string'}}});
+if(!values.write||!values.tarball||!values.output)throw new Error('Requires --write --tarball --output');
+const output=resolve(values.output);if(existsSync(output))throw new Error('Use a new output');mkdirSync(output,{recursive:true,mode:0o700});
+const consumer=join(output,'consumer');mkdirSync(consumer);writeFileSync(join(consumer,'package.json'),'{"private":true,"type":"module"}');
+const installed=spawnSync('npm',['install','--offline','--ignore-scripts','--no-audit','--no-fund',resolve(values.tarball)],{cwd:consumer,encoding:'utf8'});assert.equal(installed.status,0,installed.stderr);
+const {createProjectAgent,createManagementServer}=await import(pathToFileURL(join(consumer,'node_modules/js-superagent/src/index.mjs')));
+const project=join(output,'project');mkdirSync(project);writeFileSync(join(project,'AGENTS.md'),'Only modify this acceptance workspace. Do not use network, Git or external messaging.\n');
+const runtime=createProjectAgent({projectRoot:project,workspace:'copy'}).init(),panel=await createManagementServer(runtime);
+writeFileSync(join(output,'panel-private.json'),JSON.stringify({url:panel.url,bootstrapUrl:panel.bootstrapUrl}),{mode:0o600});
+const evidence={status:'running',startedAt:new Date().toISOString(),packageSha256:createHash('sha256').update(readFileSync(resolve(values.tarball))).digest('hex')};
+const save=()=>{evidence.executor=runtime.executorStatus();evidence.repository=runtime.getRepositorySourceSettings();evidence.tickets=runtime.list().map(t=>runtime.getDetailed(t.id));writeFileSync(join(output,'acceptance.json'),JSON.stringify(evidence,null,2));};save();
+console.log(JSON.stringify({url:panel.url,project,cli:join(consumer,'node_modules/js-superagent/bin/js-superagent.mjs')}));
+const timer=setInterval(save,500);const finish=async()=>{clearInterval(timer);await panel.close();await runtime.stop();save();assert.ok(evidence.executor.settings.execution.prompt.includes('ROLE-VERIFIED'));assert.ok(evidence.repository.revision>0);assert.ok(evidence.tickets.some(d=>d.ticket.status==='completed'&&d.ticket.reports.at(-1).summary.startsWith('ROLE-VERIFIED')));evidence.status='passed';evidence.finishedAt=new Date().toISOString();evidence.checks=['browser-configured-trusted-worker-prompt','real-codex-used-prompt','pinned-session-settings-visible','browser-configured-repository-source-settings'];writeFileSync(join(output,'acceptance.json'),JSON.stringify(evidence,null,2));runtime.close();process.exit(0);};
+process.once('SIGINT',finish);process.once('SIGTERM',finish);

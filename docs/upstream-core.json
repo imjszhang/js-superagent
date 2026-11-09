@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/deepseek-ai/dsh-superagent-prototype",
+  "commit": "6337fc823ce20251c8de8085948165c81aaa701e",
+  "license": "MIT",
+  "extractedAt": "2026-11-01",
+  "modifications": "Original source/test/license hashes retained. Engine and Intake add optional host-only subscription narrowing, unowned-evaluation suppression, and idempotent deferred delivery from stored triggers. Engine and Evals add bounded per-trigger ignore/unavailable decisions with fresh evaluation of remaining batch inputs; original whole-eval decisions and upstream tests remain unchanged.",
+  "files": [
+    {
+      "source": "src/core/assignments.ts",
+      "target": "src/core/assignments.ts",
+      "sourceSha256": "6acf4b858b35d95c875680e39b1e3c41557bbe6d39f65031bb26927289327065",
+      "targetSha256": "6acf4b858b35d95c875680e39b1e3c41557bbe6d39f65031bb26927289327065"
+    },
+    {
+      "source": "src/core/engine.ts",
+      "target": "src/core/engine.ts",
+      "sourceSha256": "bd9a4caff834859877d1a08ccddebc990d0e1ca568674b80f9d59ce5adcac827",
+      "targetSha256": "7aba272326cd2ab19c518ec4fcd94a82ae8604b100ed34f7df6b67dfe02d0717",
+      "localModification": "Optional receive settings only narrow existing subscriptions/evaluation. deliverSubscribed uses stored trigger facts to finish deferred fanout to authorized owning subscriptions, without re-evaluation, replay, handback/ack bypass or new subscriptions. decideTrigger atomically closes only one current-eval input with ignore/unavailable and leaves all other inputs for a fresh evaluation; decide retains its whole-batch semantics."
+    },
+    {
+      "source": "src/core/errors.ts",
+      "target": "src/core/errors.ts",
+      "sourceSha256": "aa7532a2d1f8c443608683ef1231bf3d81b842f67a87d9b77742b5c76d515009",
+      "targetSha256": "aa7532a2d1f8c443608683ef1231bf3d81b842f67a87d9b77742b5c76d515009"
+    },
+    {
+      "source": "src/core/evals.ts",
+      "target": "src/core/evals.ts",
+      "sourceSha256": "38916de24ec6e1a27118dd5d7a7efa67bf7a2dfdbab26fb59d377516269e2fc8",
+      "targetSha256": "885ee3d3470533f2ab4c95bf4a58ae5b43c38611dc8c118e7df243b555b314af",
+      "localModification": "decideTrigger records a per-input ignore/unavailable decision only for a matching current evaluation under the same policy version. It rechecks target admission and actual worker ownership without borrowing batch authority, audits source evaluation and gate results, and queues remaining inputs without mutating worker state. Unavailable can record denied input failures; original decide retains whole-batch behavior."
+    },
+    {
+      "source": "src/core/ids.ts",
+      "target": "src/core/ids.ts",
+      "sourceSha256": "bc4bc6fd43ea1377087ff2815706c57f0200666aeb4a7711a40489c377f141ab",
+      "targetSha256": "bc4bc6fd43ea1377087ff2815706c57f0200666aeb4a7711a40489c377f141ab"
+    },
+    {
+      "source": "src/core/index.ts",
+      "target": "src/core/index.ts",
+      "sourceSha256": "a5a1cf43f02eafaf520a5bfaf5e76b71ba521d04ee648cfcf12b3843cc474a3e",
+      "targetSha256": "a5a1cf43f02eafaf520a5bfaf5e76b71ba521d04ee648cfcf12b3843cc474a3e"
+    },
+    {
+      "source": "src/core/intake.ts",
+      "target": "src/core/intake.ts",
+      "sourceSha256": "323aadefea69436ba23ed2de3bdbaad673d61915be9e239f3233ecf551a74179",
+      "targetSha256": "92d02f537b387517f31667d0fb263b240a80a0bb63820839712a562509519736",
+      "localModification": "Optional receive settings only narrow existing subscriptions/evaluation. deliverSubscribed uses stored trigger facts to finish deferred fanout to authorized owning subscriptions, without re-evaluation, replay, handback/ack bypass or new subscriptions."
+    },
+    {
+      "source": "src/core/memory.ts",
+      "target": "src/core/memory.ts",
+      "sourceSha256": "36cefca987a4e533369a414e52e3fb4754945ae942bb021f8e5cf23c186cf536",
+      "targetSha256": "36cefca987a4e533369a414e52e3fb4754945ae942bb021f8e5cf23c186cf536"
+    },
+    {
+      "source": "src/core/model.ts",
+      "target": "src/core/model.ts",
+      "sourceSha256": "982155fe6a03c887a7ac4475c6d1592d12aa23c5fe3698403c93bbfd6469d44a",
+      "targetSha256": "982155fe6a03c887a7ac4475c6d1592d12aa23c5fe3698403c93bbfd6469d44a"
+    },
+    {
+      "source": "src/core/part.ts",
+      "target": "src/core/part.ts",
+      "sourceSha256": "437c4f4bcc05e836c056cdb45bbf451e55242d62b602b489f4df902be112e73e",
+      "targetSha256": "437c4f4bcc05e836c056cdb45bbf451e55242d62b602b489f4df902be112e73e"
+    },
+    {
+      "source": "src/core/ports.ts",
+      "target": "src/core/ports.ts",
+      "sourceSha256": "0b44f1cd716d64776b0e3ea74a158cf0effd92e763b1b13c7705e766e9225a43",
+      "targetSha256": "0b44f1cd716d64776b0e3ea74a158cf0effd92e763b1b13c7705e766e9225a43"
+    },
+    {
+      "source": "src/core/reasons.ts",
+      "target": "src/core/reasons.ts",
+      "sourceSha256": "dc29e0c3c52e4ffd6e8f27a618cbe704a83fdbd9c5a1b99a1e0c4184d5c33af4",
+      "targetSha256": "dc29e0c3c52e4ffd6e8f27a618cbe704a83fdbd9c5a1b99a1e0c4184d5c33af4"
+    },
+    {
+      "source": "src/core/replies.ts",
+      "target": "src/core/replies.ts",
+      "sourceSha256": "5a8821a1b9d951d2255709543e0be762c6d3204bca07a77ff17c7bfe82ba66f4",
+      "targetSha256": "5a8821a1b9d951d2255709543e0be762c6d3204bca07a77ff17c7bfe82ba66f4"
+    },
+    {
+      "source": "src/core/stage.ts",
+      "target": "src/core/stage.ts",
+      "sourceSha256": "b935012a654d2a68ca20cb27909ddc8dceafb704b56a16a23a08036a546141df",
+      "targetSha256": "b935012a654d2a68ca20cb27909ddc8dceafb704b56a16a23a08036a546141df"
+    },
+    {
+      "source": "src/core/tickets.ts",
+      "target": "src/core/tickets.ts",
+      "sourceSha256": "1d9f964ad34b54cbb0403bde16af58851e5e80111177ce73a27b6034e9af940e",
+      "targetSha256": "1d9f964ad34b54cbb0403bde16af58851e5e80111177ce73a27b6034e9af940e"
+    },
+    {
+      "source": "tests/core-engine.spec.ts",
+      "target": "tests/core-engine.spec.ts",
+      "sourceSha256": "e29358c139a2dbb1a2877e980e043f34cf39bca1905fb10ee14e0b4866bc1a6b",
+      "targetSha256": "e29358c139a2dbb1a2877e980e043f34cf39bca1905fb10ee14e0b4866bc1a6b"
+    },
+    {
+      "source": "tests/stage.spec.ts",
+      "target": "tests/stage.spec.ts",
+      "sourceSha256": "3df130eae87d70643f0c924caf66fbca8cb27ced50467e0c7283dee0a39436be",
+      "targetSha256": "3df130eae87d70643f0c924caf66fbca8cb27ced50467e0c7283dee0a39436be"
+    },
+    {
+      "source": "LICENSE",
+      "target": "THIRD_PARTY_LICENSES/dsh-superagent-prototype-LICENSE",
+      "sourceSha256": "6d66f91815b720e18cfb2b3552043a0359236aec9a1a6917787900546f6ce550",
+      "targetSha256": "6d66f91815b720e18cfb2b3552043a0359236aec9a1a6917787900546f6ce550"
+    }
+  ]
+}

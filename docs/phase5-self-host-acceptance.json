@@ -1,0 +1,67 @@
+{
+  "status": "completed",
+  "verifiedAt": "2026-11-01T11:21:15.447Z",
+  "issue": "https://github.com/imjszhang/x-pkm-research/issues/8",
+  "baseCommit": "f7468ba36fe727b07f4f1679c774e3e6ecbaeb18",
+  "ticketId": "a3c441450c8e07914edd6b517014753f",
+  "session": {
+    "driver": "codex",
+    "id": "01a196d2-6abe-7da3-b996-5db93940ad70"
+  },
+  "workspaceMode": "worktree",
+  "changes": {
+    "packages/js-superagent/bin/js-superagent.mjs": "693aae37f37f2f617039a1e7725fb7b619cf40bab4657f5b10570c28c0dc2ce4",
+    "packages/js-superagent/test/cli.test.mjs": "3b3dcbc7b5f9778400d1b84cd437bb5dab25db6fd4dadbb5bccad1f9a84cb855",
+    "packages/js-superagent/README.md": "78c4cc6cfd5ed9676155b64977f1cf81f6a7f59ab57d9d60e387d89357c5812e"
+  },
+  "reports": [
+    {
+      "status": "waiting",
+      "summary": "Implemented and documented --version/-v using the package’s own package.json without project initialization. Offline npm ci succeeded; three new regressions, existing command lifecycle regression, core integrity, type/syntax checks, and git diff --check passed. Package npm run check encountered sandbox listen EPERM failures and pending tests; interrupted. Accidental repository check passed; its generated lineage file was removed. Can the host rerun the package check in an environment permitting localhost listeners and process-control tests?",
+      "artifacts": [
+        "packages/js-superagent/bin/js-superagent.mjs",
+        "packages/js-superagent/test/cli.test.mjs",
+        "packages/js-superagent/README.md"
+      ],
+      "runId": "ba01dabd-2237-4ef4-9f3a-bc795c765986",
+      "at": "2026-11-01T11:19:38.892Z"
+    },
+    {
+      "status": "completed",
+      "summary": "Implemented --version/-v, regression tests, and usage documentation. Only the three authorized files are modified; pre-existing .js-superagent remains untouched. Local offline installation, targeted tests, core/type/syntax checks, and final git diff --check passed. Host reports the full package npm run check passed against this exact worktree outside the restricted environment; local listener failures were sandbox-related. No commits or publishing performed.",
+      "artifacts": [
+        "packages/js-superagent/bin/js-superagent.mjs",
+        "packages/js-superagent/test/cli.test.mjs",
+        "packages/js-superagent/README.md"
+      ],
+      "runId": "a08efe9d-0b06-4c53-8b71-a521fee68368",
+      "at": "2026-11-01T11:20:39.111Z"
+    }
+  ],
+  "receipts": [
+    {
+      "kind": "acknowledgement",
+      "status": "sent",
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/8#issuecomment-6557190926"
+    },
+    {
+      "kind": "reply",
+      "status": "sent",
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/8#issuecomment-6557235703"
+    },
+    {
+      "kind": "reply",
+      "status": "sent",
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/8#issuecomment-6557245749"
+    }
+  ],
+  "validation": {
+    "worker": "targeted tests, core integrity, type and syntax checks passed; full suite blocked by localhost-listener permissions",
+    "host": "Full npm run check passed independently on the exact worker worktree",
+    "nodeTests": 263,
+    "memoryCoreTests": 144,
+    "sqliteCoreTests": 144,
+    "installedPackageAndTypes": "passed"
+  },
+  "scope": "Only CLI, CLI tests and README changed by worker; host adopted verified diff and records evidence"
+}

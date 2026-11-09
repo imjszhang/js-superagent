@@ -1,0 +1,365 @@
+{
+  "startedAt": "2026-11-01T08:23:42.074Z",
+  "node": "v24.22.1",
+  "platform": "darwin",
+  "codex": "codex-cli 0.166.0-alpha.5.1",
+  "gh": "gh version 2.101.0 (2026-09-15)",
+  "package": "js-superagent-0.1.0-alpha.0.tgz",
+  "repository": "imjszhang/x-pkm-research",
+  "issueNumber": 2,
+  "issueUrl": "https://github.com/imjszhang/x-pkm-research/issues/2",
+  "pullNumber": 3,
+  "pullUrl": "https://github.com/imjszhang/x-pkm-research/pull/3",
+  "branch": "codex/js-superagent-pr-ci-20261101",
+  "fixturePaths": [
+    "acceptance/js-superagent-pr-ci/pricing.py",
+    "acceptance/js-superagent-pr-ci/test_pricing.py"
+  ],
+  "initialRemoteHead": "80743a0bfdc251a0c59e4f9f29b91b10cd554c90",
+  "sourceHead": "ee9e3ee41c66653e5eeb74986e392186a9b3bd3f",
+  "status": "passed",
+  "checks": [
+    "issue-completed-with-real-codex-and-isolated-worktree",
+    "explicit-current-head-pr-binding",
+    "real-pr-review-resumes-original-ticket-session-worktree",
+    "review-result-returned-to-issue-and-pr",
+    "real-actions-failure-resumes-original-ticket-session-worktree",
+    "ci-fix-independent-tests",
+    "ci-result-returned-to-issue-and-pr",
+    "only-two-fixture-files-published",
+    "real-actions-green-recorded-without-execution",
+    "repeat-poll-and-receipt-echo-deduplication",
+    "source-files-head-and-index-unchanged"
+  ],
+  "publishedCommits": [
+    {
+      "sha": "c287837cc68aa78106be9b5214ce37e67e626bd9",
+      "parent": "80743a0bfdc251a0c59e4f9f29b91b10cd554c90",
+      "changedPaths": [
+        "acceptance/js-superagent-pr-ci/pricing.py",
+        "acceptance/js-superagent-pr-ci/test_pricing.py"
+      ],
+      "url": "https://github.com/imjszhang/x-pkm-research/commit/c287837cc68aa78106be9b5214ce37e67e626bd9"
+    },
+    {
+      "sha": "f2cd03d1a2f64ede0ee27caced0c04168d23510c",
+      "parent": "c287837cc68aa78106be9b5214ce37e67e626bd9",
+      "changedPaths": [
+        "acceptance/js-superagent-pr-ci/pricing.py",
+        "acceptance/js-superagent-pr-ci/test_pricing.py"
+      ],
+      "url": "https://github.com/imjszhang/x-pkm-research/commit/f2cd03d1a2f64ede0ee27caced0c04168d23510c"
+    }
+  ],
+  "implementationSha256": {
+    "src/index.mjs": "949b7bc81f4b5c55d84492254e6278e4da5ddf6f5817d4078ca1c5ef3a44f9c7",
+    "src/config.mjs": "4c97eb19176ce06fa9763c3df34b27f9ca9bea1b7603431a31e09be0011c3b9d",
+    "src/outbox.mjs": "8b7820e68ff63082d3b0ba210ec75fca42377d517fd8ef9f21b1a3c979114ca7",
+    "src/channels/github.mjs": "00dbdd0349f9bde0ff1571e18e9cff18d0f74a983ce04f187cc2d4d8a2ee0d89",
+    "src/github-intake.mjs": "a13854b189dd93b65334149e95b1567488462511cb257aac153d597a8fc89440",
+    "src/github-pull-intake.mjs": "a9ded7ad70bce1963eba059b8f41d3f4da6f7f959644a6104c18d3c54e28d752",
+    "src/workspaces.mjs": "cbfa62b1259c95c99ceb3931308240b9a1cccf29ab5a45d59d24ccf64b1fbc93",
+    "src/drivers/codex.mjs": "5f8000aa085599374ab72bc62988418b51333a147f35134b725b8c7175f59bd3",
+    "bin/js-superagent.mjs": "0585d5946e550addc77fb47fbb637402c0486768097fda4482efe3b81bf98a00"
+  },
+  "ticketId": "5b8dc79834e6d9f21ba4dc2cf06254ff",
+  "projectId": "7346e493-0684-46a1-b8cb-c8f75fb2fbaa",
+  "session": {
+    "driver": "codex",
+    "id": "01a19635-4350-7661-a5cb-6c1304d58483"
+  },
+  "workspace": {
+    "mode": "worktree",
+    "path": "working/agent-runs/js-superagent-phase5-pr-ci-20261101-a/python-project/.js-superagent/workspaces/5b8dc79834e6d9f21ba4dc2cf06254ff",
+    "projectRoot": "working/agent-runs/js-superagent-phase5-pr-ci-20261101-a/python-project",
+    "ticketId": "5b8dc79834e6d9f21ba4dc2cf06254ff",
+    "createdAt": "2026-11-01T08:23:55.343Z",
+    "state": "ready",
+    "provisionId": "e9d0685c-e2ba-48bb-8030-45e1b92d323e",
+    "config": {
+      "mode": "worktree",
+      "exclude": []
+    },
+    "baseCommit": "ee9e3ee41c66653e5eeb74986e392186a9b3bd3f",
+    "branch": "js-superagent/5b8dc79834e6d9f21ba4dc2cf06254ff",
+    "sourceDirty": false,
+    "gitDir": "working/agent-runs/js-superagent-phase5-pr-ci-20261101-a/python-project/.git/worktrees/5b8dc79834e6d9f21ba4dc2cf06254ff",
+    "commonDir": "working/agent-runs/js-superagent-phase5-pr-ci-20261101-a/python-project/.git"
+  },
+  "initialIndependentTests": "test_basic (test_pricing.PricingTest.test_basic) ... ok\ntest_discount (test_pricing.PricingTest.test_discount) ... ok\ntest_zero (test_pricing.PricingTest.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 3 tests in 0.000s\n\nOK\n",
+  "review": {
+    "id": 5727171405,
+    "state": "COMMENTED",
+    "commitId": "80743a0bfdc251a0c59e4f9f29b91b10cd554c90",
+    "url": "https://github.com/imjszhang/x-pkm-research/pull/3#pullrequestreview-5727171405"
+  },
+  "reviewIndependentTests": "test_basic (test_pricing.PricingTest.test_basic) ... ok\ntest_discount (test_pricing.PricingTest.test_discount) ... ok\ntest_fractional_discount (test_pricing.PricingTest.test_fractional_discount) ... ok\ntest_zero (test_pricing.PricingTest.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n",
+  "failedCheck": {
+    "id": 124795633280,
+    "name": "pricing-negative-quantity-contract",
+    "headSha": "c287837cc68aa78106be9b5214ce37e67e626bd9",
+    "app": "github-actions",
+    "status": "completed",
+    "conclusion": "failure",
+    "url": "https://github.com/imjszhang/x-pkm-research/actions/runs/41288835692/job/124795633280",
+    "annotations": [
+      {
+        "path": ".github",
+        "blob_href": "https://github.com/imjszhang/x-pkm-research/blob/c287837cc68aa78106be9b5214ce37e67e626bd9/.github",
+        "start_line": 15,
+        "start_column": null,
+        "end_line": 15,
+        "end_column": null,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "Process completed with exit code 1.",
+        "raw_details": ""
+      },
+      {
+        "path": ".github",
+        "blob_href": "https://github.com/imjszhang/x-pkm-research/blob/c287837cc68aa78106be9b5214ce37e67e626bd9/.github",
+        "start_line": 14,
+        "start_column": null,
+        "end_line": 14,
+        "end_column": null,
+        "annotation_level": "failure",
+        "title": "Pricing contract",
+        "message": "pricing.total must raise ValueError when quantity < 0; add a regression test",
+        "raw_details": ""
+      },
+      {
+        "path": ".github",
+        "blob_href": "https://github.com/imjszhang/x-pkm-research/blob/c287837cc68aa78106be9b5214ce37e67e626bd9/.github",
+        "start_line": 1,
+        "start_column": null,
+        "end_line": 1,
+        "end_column": null,
+        "annotation_level": "notice",
+        "title": "",
+        "message": "\"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"",
+        "raw_details": ""
+      }
+    ],
+    "output": {
+      "title": null,
+      "summary": null,
+      "text": null,
+      "annotations_count": 3,
+      "annotations_url": "https://api.github.com/repos/imjszhang/x-pkm-research/check-runs/124795633280/annotations"
+    }
+  },
+  "ciIndependentTests": "test_basic (test_pricing.PricingTest.test_basic) ... ok\ntest_discount (test_pricing.PricingTest.test_discount) ... ok\ntest_fractional_discount (test_pricing.PricingTest.test_fractional_discount) ... ok\ntest_negative_quantity (test_pricing.PricingTest.test_negative_quantity) ... ok\ntest_zero (test_pricing.PricingTest.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n",
+  "greenCheck": {
+    "id": 124795971915,
+    "name": "pricing-negative-quantity-contract",
+    "headSha": "f2cd03d1a2f64ede0ee27caced0c04168d23510c",
+    "app": "github-actions",
+    "status": "completed",
+    "conclusion": "success",
+    "url": "https://github.com/imjszhang/x-pkm-research/actions/runs/41288947574/job/124795971915",
+    "annotations": [
+      {
+        "path": ".github",
+        "blob_href": "https://github.com/imjszhang/x-pkm-research/blob/f2cd03d1a2f64ede0ee27caced0c04168d23510c/.github",
+        "start_line": 1,
+        "start_column": null,
+        "end_line": 1,
+        "end_column": null,
+        "annotation_level": "notice",
+        "title": "",
+        "message": "\"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"",
+        "raw_details": ""
+      }
+    ],
+    "output": {
+      "title": null,
+      "summary": null,
+      "text": null,
+      "annotations_count": 1,
+      "annotations_url": "https://api.github.com/repos/imjszhang/x-pkm-research/check-runs/124795971915/annotations"
+    }
+  },
+  "receipts": [
+    {
+      "id": "23d851105ebdd9a0f60d998364ebfe99",
+      "kind": "acknowledgement",
+      "status": "sent",
+      "issueNumber": 2,
+      "commentId": 6555496940,
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/2#issuecomment-6555496940"
+    },
+    {
+      "id": "ad7df09ccddbfd465b3fa060793d6195",
+      "kind": "reply",
+      "status": "sent",
+      "issueNumber": 2,
+      "commentId": 6555504871,
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/2#issuecomment-6555504871"
+    },
+    {
+      "id": "e11210aea86e0eb4c77e720ebcc5e6e6",
+      "kind": "reply",
+      "status": "sent",
+      "issueNumber": 2,
+      "commentId": 6555514313,
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/2#issuecomment-6555514313"
+    },
+    {
+      "id": "pr-1421af00-4da6-4cd3-8ba8-8e2a614bec73-3",
+      "kind": "reply",
+      "status": "sent",
+      "issueNumber": 3,
+      "commentId": 6555515006,
+      "url": "https://github.com/imjszhang/x-pkm-research/pull/3#issuecomment-6555515006"
+    },
+    {
+      "id": "35fa6cbe604d58bb4d5a3b2848254363",
+      "kind": "reply",
+      "status": "sent",
+      "issueNumber": 2,
+      "commentId": 6555528838,
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/2#issuecomment-6555528838"
+    },
+    {
+      "id": "pr-52b84f24-f851-49e3-95e8-f93f5f19ee40-3",
+      "kind": "reply",
+      "status": "sent",
+      "issueNumber": 3,
+      "commentId": 6555529787,
+      "url": "https://github.com/imjszhang/x-pkm-research/pull/3#issuecomment-6555529787"
+    }
+  ],
+  "reports": [
+    {
+      "status": "completed",
+      "summary": "Fixed total to calculate price * quantity * (1 - discount / 100). All 3 existing tests passed using python3 -m unittest -v. No validation policies or tests added.",
+      "artifacts": [
+        "pricing.py"
+      ],
+      "runId": "e7d8c600-e62b-45da-b412-99bb808762cf",
+      "at": "2026-11-01T08:24:27.210Z"
+    },
+    {
+      "status": "completed",
+      "summary": "Added test_fractional_discount asserting total(12.5, 2, 10) == 22.5. Pricing behavior is unchanged. python3 -m unittest -v passed all 4 tests.",
+      "artifacts": [
+        "test_pricing.py"
+      ],
+      "runId": "1421af00-4da6-4cd3-8ba8-8e2a614bec73",
+      "at": "2026-11-01T08:25:23.670Z"
+    },
+    {
+      "status": "completed",
+      "summary": "Updated pricing.total to raise ValueError when quantity < 0 and added test_negative_quantity. python3 -m unittest -v passed all 5 tests.",
+      "artifacts": [
+        "pricing.py",
+        "test_pricing.py"
+      ],
+      "runId": "52b84f24-f851-49e3-95e8-f93f5f19ee40",
+      "at": "2026-11-01T08:27:05.024Z"
+    }
+  ],
+  "binding": {
+    "repository": "imjszhang/x-pkm-research",
+    "number": 3,
+    "id": "5105658265",
+    "headSha": "f2cd03d1a2f64ede0ee27caced0c04168d23510c",
+    "headRef": "codex/js-superagent-pr-ci-20261101",
+    "headRepository": "imjszhang/x-pkm-research",
+    "state": "open",
+    "merged": false,
+    "title": "[js-superagent PR acceptance] Dedicated review and CI fixture",
+    "url": "https://github.com/imjszhang/x-pkm-research/pull/3",
+    "ticketId": "5b8dc79834e6d9f21ba4dc2cf06254ff",
+    "linkedAt": "2026-11-01T08:24:35.507Z",
+    "headHistory": [
+      "80743a0bfdc251a0c59e4f9f29b91b10cd554c90",
+      "c287837cc68aa78106be9b5214ce37e67e626bd9",
+      "f2cd03d1a2f64ede0ee27caced0c04168d23510c"
+    ],
+    "lastObservedHeadSha": "f2cd03d1a2f64ede0ee27caced0c04168d23510c",
+    "lastObservedState": "open",
+    "ci": [
+      {
+        "id": "github:imjszhang/x-pkm-research:check_run:124795971915:f2cd03d1a2f64ede0ee27caced0c04168d23510c:completed:success:pr:3",
+        "kind": "check_run",
+        "name": "pricing-negative-quantity-contract",
+        "app": "github-actions",
+        "status": "completed",
+        "conclusion": "success",
+        "headSha": "f2cd03d1a2f64ede0ee27caced0c04168d23510c",
+        "at": "2026-11-01T09:27:38.000Z",
+        "url": "https://github.com/imjszhang/x-pkm-research/commit/f2cd03d1a2f64ede0ee27caced0c04168d23510c/checks?check_run_id=124795971915"
+      }
+    ]
+  },
+  "workspaceReview": {
+    "workspace": {
+      "mode": "worktree",
+      "path": "working/agent-runs/js-superagent-phase5-pr-ci-20261101-a/python-project/.js-superagent/workspaces/5b8dc79834e6d9f21ba4dc2cf06254ff",
+      "projectRoot": "working/agent-runs/js-superagent-phase5-pr-ci-20261101-a/python-project",
+      "ticketId": "5b8dc79834e6d9f21ba4dc2cf06254ff",
+      "createdAt": "2026-11-01T08:23:55.343Z",
+      "state": "ready",
+      "provisionId": "e9d0685c-e2ba-48bb-8030-45e1b92d323e",
+      "config": {
+        "mode": "worktree",
+        "exclude": []
+      },
+      "baseCommit": "ee9e3ee41c66653e5eeb74986e392186a9b3bd3f",
+      "branch": "js-superagent/5b8dc79834e6d9f21ba4dc2cf06254ff",
+      "sourceDirty": false,
+      "gitDir": "working/agent-runs/js-superagent-phase5-pr-ci-20261101-a/python-project/.git/worktrees/5b8dc79834e6d9f21ba4dc2cf06254ff",
+      "commonDir": "working/agent-runs/js-superagent-phase5-pr-ci-20261101-a/python-project/.git"
+    },
+    "isolation": true,
+    "changes": [
+      {
+        "path": "__pycache__/pricing.cpython-313.pyc",
+        "status": "added"
+      },
+      {
+        "path": "__pycache__/test_pricing.cpython-313.pyc",
+        "status": "added"
+      },
+      {
+        "path": "pricing.py",
+        "status": "modified"
+      },
+      {
+        "path": "test_pricing.py",
+        "status": "modified"
+      }
+    ]
+  },
+  "finalRemoteHead": "f2cd03d1a2f64ede0ee27caced0c04168d23510c",
+  "finishedAt": "2026-11-01T08:29:01.050Z",
+  "localEvidenceDirectory": "working/agent-runs/js-superagent-phase5-pr-ci-20261101-a",
+  "paths": "Repository paths are relative in this summary; local acceptance.json preserves absolute paths.",
+  "testResourceCleanup": {
+    "pullRequest": {
+      "number": 3,
+      "state": "closed",
+      "merged": false,
+      "closedAt": "2026-11-01T08:29:58Z",
+      "url": "https://github.com/imjszhang/x-pkm-research/pull/3"
+    },
+    "issue": {
+      "number": 2,
+      "state": "closed",
+      "stateReason": "completed",
+      "closedAt": "2026-11-01T08:30:01Z",
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/2"
+    },
+    "branchRetained": "codex/js-superagent-pr-ci-20261101"
+  },
+  "automatedVerification": {
+    "nodeTests": 174,
+    "upstreamMemoryTests": 144,
+    "upstreamSqliteTests": 144,
+    "packageCheck": "passed",
+    "installedPackagePullRequestAndCI": "passed",
+    "consumerTypes": "passed",
+    "rootCheck": "passed"
+  }
+}

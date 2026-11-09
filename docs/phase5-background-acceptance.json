@@ -1,0 +1,233 @@
+{
+  "status": "passed",
+  "startedAt": "2026-11-01T10:51:26.684Z",
+  "finishedAt": "2026-11-01T10:54:28.216Z",
+  "node": "v24.22.1",
+  "platform": "darwin",
+  "codex": "codex-cli 0.166.0-alpha.5.1",
+  "package": "js-superagent-0.1.0-alpha.0.tgz",
+  "mode": "poll",
+  "localOnly": false,
+  "publicWebhook": {
+    "tested": false,
+    "reason": "Polling acceptance does not use or validate a public HTTPS endpoint."
+  },
+  "repository": "imjszhang/x-pkm-research",
+  "issueNumber": 7,
+  "issueUrl": "https://github.com/imjszhang/x-pkm-research/issues/7",
+  "appId": "5565229",
+  "installationId": 177461856,
+  "actor": "imjszhang",
+  "appActor": {
+    "login": "js-superagent-imjszhang-23aefa[bot]",
+    "id": "351027557",
+    "type": "Bot",
+    "appId": "5565229",
+    "installationId": 177461856
+  },
+  "periodicPollIntervalMs": 3000,
+  "checks": [
+    "packed-consumer-launchd-install-and-start",
+    "real-app-poll-issue-intake",
+    "real-codex-modification-and-independent-tests",
+    "continuous-follow-up-same-ticket",
+    "new-feedback-while-stopped-consumed-after-start",
+    "session-workspace-and-ticket-survive-restart",
+    "launchd-auto-restart-after-sigkill",
+    "durable-poll-deduplication-after-crash",
+    "active-worker-crash-stops-tool-tree",
+    "interrupted-work-needs-explicit-retry",
+    "explicit-retry-resumes-native-session",
+    "registered-app-receipts-exactly-once",
+    "source-files-head-index-unchanged"
+  ],
+  "projectId": "e52d44e6-04a5-429d-8d41-e83cb851d96c",
+  "ticketId": "38b0aee8293cf774c661fbb33ba26150",
+  "session": {
+    "driver": "codex",
+    "id": "01a196bc-73bb-7533-a245-6c9bc5378656"
+  },
+  "commandComment": {
+    "id": 6556952207,
+    "url": "https://github.com/imjszhang/x-pkm-research/issues/7#issuecomment-6556952207"
+  },
+  "feedbackComment": {
+    "id": 6556958910,
+    "url": "https://github.com/imjszhang/x-pkm-research/issues/7#issuecomment-6556958910"
+  },
+  "offlineFeedbackComment": {
+    "id": 6556964768,
+    "url": "https://github.com/imjszhang/x-pkm-research/issues/7#issuecomment-6556964768"
+  },
+  "initialIndependentTests": "test_basic (test_pricing.PricingTest.test_basic) ... ok\ntest_discount (test_pricing.PricingTest.test_discount) ... ok\ntest_zero (test_pricing.PricingTest.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 3 tests in 0.000s\n\nOK\n",
+  "continuousIndependentTests": "test_basic (test_pricing.PricingTest.test_basic) ... ok\ntest_discount (test_pricing.PricingTest.test_discount) ... ok\ntest_fractional_discount (test_pricing.PricingTest.test_fractional_discount) ... ok\ntest_zero (test_pricing.PricingTest.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n",
+  "finalIndependentTests": "test_basic (test_pricing.PricingTest.test_basic) ... ok\ntest_discount (test_pricing.PricingTest.test_discount) ... ok\ntest_fractional_discount (test_pricing.PricingTest.test_fractional_discount) ... ok\ntest_full_discount (test_pricing.PricingTest.test_full_discount) ... ok\ntest_zero (test_pricing.PricingTest.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n",
+  "scenarios": [
+    {
+      "name": "idle-crash-auto-restart",
+      "beforePid": 81933,
+      "afterPid": 85299,
+      "reports": 3,
+      "lastSync": {
+        "at": "2026-11-01T10:53:34.168Z",
+        "repository": "imjszhang/x-pkm-research",
+        "received": 0
+      }
+    },
+    {
+      "name": "active-crash-explicit-retry",
+      "ticketId": "7159991cd44013cdb26c619737cba4ed",
+      "beforePid": 85299,
+      "afterPid": 86821,
+      "toolPid": 86777,
+      "toolExited": true,
+      "heartbeatStopped": true,
+      "stoppedStatus": "interrupted",
+      "session": {
+        "driver": "codex",
+        "id": "01a196be-51cf-7a62-989d-b8a1ee9e0015"
+      },
+      "reports": [
+        {
+          "runId": "5e8020ff-3df4-4268-8e73-065cf3a8343a",
+          "status": "interrupted",
+          "summary": "Runtime stopped during execution. Inspect external effects before retrying.",
+          "at": "2026-11-01T10:53:49.213Z"
+        },
+        {
+          "status": "completed",
+          "summary": "Inspected existing files after interruption. python3 slow_check.py printed 'slow check passed' and exited 0. Wrote recovery.txt containing recovered; the requested assertion exited 0. The check itself updated worker.pid.",
+          "artifacts": [
+            "recovery.txt",
+            "worker.pid"
+          ],
+          "runId": "e9a3582b-4fa4-424d-bab7-2f6fecb37d93",
+          "at": "2026-11-01T10:54:21.601Z"
+        }
+      ]
+    }
+  ],
+  "receipts": [
+    {
+      "id": "cba8d78ecaec021a068a2f8936612eae",
+      "kind": "acknowledgement",
+      "status": "sent",
+      "commentId": 6556952990,
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/7#issuecomment-6556952990",
+      "actor": "js-superagent-imjszhang-23aefa[bot]",
+      "actorId": 351027557,
+      "reportedAppId": 5565229
+    },
+    {
+      "id": "9608b4adc1eedf24f07bedc019348081",
+      "kind": "reply",
+      "status": "sent",
+      "commentId": 6556958598,
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/7#issuecomment-6556958598",
+      "actor": "js-superagent-imjszhang-23aefa[bot]",
+      "actorId": 351027557,
+      "reportedAppId": 5565229
+    },
+    {
+      "id": "e858bcbe0cd1e096724b4bf33834aaae",
+      "kind": "reply",
+      "status": "sent",
+      "commentId": 6556964174,
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/7#issuecomment-6556964174",
+      "actor": "js-superagent-imjszhang-23aefa[bot]",
+      "actorId": 351027557,
+      "reportedAppId": 5565229
+    },
+    {
+      "id": "d4d737ceeff0f42579fd13b556553ccf",
+      "kind": "reply",
+      "status": "sent",
+      "commentId": 6556970224,
+      "url": "https://github.com/imjszhang/x-pkm-research/issues/7#issuecomment-6556970224",
+      "actor": "js-superagent-imjszhang-23aefa[bot]",
+      "actorId": 351027557,
+      "reportedAppId": 5565229
+    }
+  ],
+  "reports": [
+    {
+      "status": "completed",
+      "summary": "Fixed total to compute price * quantity * (1 - discount / 100). All three existing unit tests passed with `python3 -B -m unittest test_pricing -v`. No validation policies or tests added.",
+      "artifacts": [
+        "pricing.py"
+      ],
+      "runId": "db22eee0-f727-4452-ad8c-2e95438b6eba",
+      "at": "2026-11-01T10:52:07.219Z"
+    },
+    {
+      "status": "completed",
+      "summary": "Added test_fractional_discount asserting total(12.5, 2, 10) == 22.5. Pricing behavior preserved. `python3 -m unittest -v` passed all 4 tests.",
+      "artifacts": [
+        "test_pricing.py"
+      ],
+      "runId": "99d4ca04-3fb4-4555-9603-b6c019592125",
+      "at": "2026-11-01T10:52:43.490Z"
+    },
+    {
+      "status": "completed",
+      "summary": "Added test_full_discount asserting total(10, 2, 100) == 0. Pricing behavior preserved. `python3 -m unittest -v` passed all 5 tests.",
+      "artifacts": [
+        "test_pricing.py"
+      ],
+      "runId": "7f4f6087-5de3-479c-8d67-f687bddf21e0",
+      "at": "2026-11-01T10:53:21.611Z"
+    }
+  ],
+  "cleanup": {
+    "temporaryServiceRemoved": true,
+    "dedicatedIssueClosed": true
+  },
+  "implementationSha256": {
+    "src/index.mjs": "2016246f1875334354f32a92d7bbce2674a0df12a4e396672e901c82ff3f674c",
+    "src/service.mjs": "eb0b796a554767cbcb689f38cb686595ac21fe1c7cf543cb57d35c0c60ba0355",
+    "src/drivers/codex.mjs": "b8d7118dffbf13f08d217f908f6a85d2c4b08f4cea9101a5b528851866613e0e",
+    "src/drivers/codex-supervisor.mjs": "e6ec300592a8b506fd8d0e510b5e5f291772c47d2e7b8f51d0922aa2daee5c1b",
+    "bin/js-superagent.mjs": "85d1babb6d51811feff30347dcb5e53ce43c062e97790fc715122c77e551c566"
+  },
+  "service": {
+    "initial": {
+      "label": "com.js-superagent.project.39e1034de1c95ff0e04d",
+      "pid": 74224,
+      "mode": "poll"
+    },
+    "afterStopStart": {
+      "pid": 81933,
+      "mode": "poll"
+    },
+    "temporaryServiceRemoved": true
+  },
+  "workspace": {
+    "mode": "worktree",
+    "sourceFilesHeadIndexUnchanged": true,
+    "changes": [
+      {
+        "path": "__pycache__/pricing.cpython-313.pyc",
+        "status": "added"
+      },
+      {
+        "path": "__pycache__/test_pricing.cpython-313.pyc",
+        "status": "added"
+      },
+      {
+        "path": "pricing.py",
+        "status": "modified"
+      },
+      {
+        "path": "test_pricing.py",
+        "status": "modified"
+      }
+    ]
+  },
+  "localEvidence": "working/agent-runs/js-superagent-background-actual-20261101-c/acceptance.json",
+  "boundaries": [
+    "This acceptance used background GitHub App polling without a public HTTPS endpoint.",
+    "The temporary acceptance launchd service was removed; any permanent service deployment is recorded separately.",
+    "Interrupting an active worker required an explicit local retry after checking that its tool process had stopped.",
+    "Process crashes and stop/start were exercised; a full operating-system reboot/login was not performed."
+  ]
+}

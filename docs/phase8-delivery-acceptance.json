@@ -1,0 +1,283 @@
+{
+  "version": 1,
+  "status": "passed",
+  "startedAt": "2026-11-01T12:31:59.338Z",
+  "finishedAt": "2026-11-01T12:36:44.098Z",
+  "baseline": "49234b4b1053635231d3a3e688c68b358426e5e0",
+  "repository": "imjszhang/x-pkm-research",
+  "actor": "imjszhang",
+  "tarball": {
+    "name": "js-superagent-0.2.0-alpha.0.tgz",
+    "sha256": "34e5fc47cf026d21b2011e8b37f5763038f699d80125eb7be084e9b216e75228"
+  },
+  "installedVersion": "0.2.0-alpha.0",
+  "node": "v24.22.1",
+  "command": "/js-superagent-8",
+  "issue": {
+    "number": 12,
+    "url": "https://github.com/imjszhang/x-pkm-research/issues/12"
+  },
+  "ticketId": "f789abe9ed617fe03f7cad0cd8fe7170",
+  "workspace": {
+    "mode": "worktree",
+    "provisionId": "ce64b8d9-6e91-4e1c-a178-50fa960e0a8f",
+    "baseCommit": "49234b4b1053635231d3a3e688c68b358426e5e0",
+    "branch": "js-superagent/f789abe9ed617fe03f7cad0cd8fe7170",
+    "sourceDirty": false
+  },
+  "sessionDriver": "codex",
+  "phases": [
+    {
+      "name": "first",
+      "runId": "038f469b-2806-4e37-973a-dea4a3ea49f0",
+      "ticketId": "f789abe9ed617fe03f7cad0cd8fe7170",
+      "reportState": "ready",
+      "verification": {
+        "id": "0dbf263e-8845-4222-94b0-34f69a5c9564",
+        "profileId": "package-check",
+        "profileVersion": "1",
+        "profileDigest": "1b5f4c749cd11842cb7a8bae6293e84b23984e4b7f1781e8cd091714a6266230",
+        "kind": "verify",
+        "environment": "host",
+        "isolation": false,
+        "command": "npm",
+        "args": [
+          "run",
+          "check"
+        ],
+        "cwd": "packages/js-superagent",
+        "startedAt": "2026-11-01T12:33:18.382Z",
+        "endedAt": "2026-11-01T12:33:47.370Z",
+        "status": "passed",
+        "exitCode": 0,
+        "treeBefore": {
+          "algorithm": "sha256",
+          "paths": [
+            "packages/js-superagent"
+          ],
+          "digest": "69750542cb4350d217f5cd6028893de34b4d9795198e6d78e45f401e5b805900",
+          "files": 134,
+          "bytes": 1379815,
+          "exclusions": [
+            ".git",
+            ".js-superagent",
+            "node_modules",
+            ".venv",
+            "venv",
+            "__pycache__",
+            ".cache",
+            "coverage"
+          ]
+        },
+        "treeAfter": {
+          "algorithm": "sha256",
+          "paths": [
+            "packages/js-superagent"
+          ],
+          "digest": "69750542cb4350d217f5cd6028893de34b4d9795198e6d78e45f401e5b805900",
+          "files": 134,
+          "bytes": 1379815,
+          "exclusions": [
+            ".git",
+            ".js-superagent",
+            "node_modules",
+            ".venv",
+            "venv",
+            "__pycache__",
+            ".cache",
+            "coverage"
+          ]
+        }
+      },
+      "delivery": {
+        "state": "delivered",
+        "repository": "imjszhang/x-pkm-research",
+        "branch": "js-superagent/f789abe9ed617fe03f7cad0cd8fe7170",
+        "base": "main",
+        "allowedPaths": [
+          "packages/js-superagent"
+        ],
+        "treeDigest": "69750542cb4350d217f5cd6028893de34b4d9795198e6d78e45f401e5b805900",
+        "verificationId": "0dbf263e-8845-4222-94b0-34f69a5c9564",
+        "parentSha": "49234b4b1053635231d3a3e688c68b358426e5e0",
+        "commitSha": "e5fb3a74bf479afabcd48ed2f013161edab349a2",
+        "pullRequest": {
+          "number": 15,
+          "url": "https://github.com/imjszhang/x-pkm-research/pull/15",
+          "headSha": "e5fb3a74bf479afabcd48ed2f013161edab349a2",
+          "state": "open",
+          "merged": false,
+          "draft": true
+        },
+        "completedAt": "2026-11-01T12:33:56.595Z"
+      }
+    },
+    {
+      "name": "second",
+      "runId": "8369b6df-cbd5-4d0f-9143-805847e6fdec",
+      "ticketId": "f789abe9ed617fe03f7cad0cd8fe7170",
+      "reportState": "ready",
+      "verification": {
+        "id": "f9de6dd7-43a7-4114-a1ac-db480673cc23",
+        "profileId": "package-check",
+        "profileVersion": "1",
+        "profileDigest": "1b5f4c749cd11842cb7a8bae6293e84b23984e4b7f1781e8cd091714a6266230",
+        "kind": "verify",
+        "environment": "host",
+        "isolation": false,
+        "command": "npm",
+        "args": [
+          "run",
+          "check"
+        ],
+        "cwd": "packages/js-superagent",
+        "startedAt": "2026-11-01T12:35:22.016Z",
+        "endedAt": "2026-11-01T12:35:49.846Z",
+        "status": "passed",
+        "exitCode": 0,
+        "treeBefore": {
+          "algorithm": "sha256",
+          "paths": [
+            "packages/js-superagent"
+          ],
+          "digest": "e850eb5739015c0d4f04c441817ab454a1ce831e0ba424aa4fabe40078dfc013",
+          "files": 134,
+          "bytes": 1380272,
+          "exclusions": [
+            ".git",
+            ".js-superagent",
+            "node_modules",
+            ".venv",
+            "venv",
+            "__pycache__",
+            ".cache",
+            "coverage"
+          ]
+        },
+        "treeAfter": {
+          "algorithm": "sha256",
+          "paths": [
+            "packages/js-superagent"
+          ],
+          "digest": "e850eb5739015c0d4f04c441817ab454a1ce831e0ba424aa4fabe40078dfc013",
+          "files": 134,
+          "bytes": 1380272,
+          "exclusions": [
+            ".git",
+            ".js-superagent",
+            "node_modules",
+            ".venv",
+            "venv",
+            "__pycache__",
+            ".cache",
+            "coverage"
+          ]
+        }
+      },
+      "delivery": {
+        "state": "delivered",
+        "repository": "imjszhang/x-pkm-research",
+        "branch": "js-superagent/f789abe9ed617fe03f7cad0cd8fe7170",
+        "base": "main",
+        "allowedPaths": [
+          "packages/js-superagent"
+        ],
+        "treeDigest": "e850eb5739015c0d4f04c441817ab454a1ce831e0ba424aa4fabe40078dfc013",
+        "verificationId": "f9de6dd7-43a7-4114-a1ac-db480673cc23",
+        "parentSha": "e5fb3a74bf479afabcd48ed2f013161edab349a2",
+        "commitSha": "89c5c393495426bc08bafb7e542121c5828a66fe",
+        "pullRequest": {
+          "number": 15,
+          "url": "https://github.com/imjszhang/x-pkm-research/pull/15",
+          "headSha": "89c5c393495426bc08bafb7e542121c5828a66fe",
+          "state": "open",
+          "merged": false,
+          "draft": true
+        },
+        "completedAt": "2026-11-01T12:35:59.887Z"
+      }
+    }
+  ],
+  "review": {
+    "id": 5728056440,
+    "url": "https://github.com/imjszhang/x-pkm-research/pull/15#pullrequestreview-5728056440"
+  },
+  "ci": {
+    "verified": true,
+    "provider": "host-command-status",
+    "context": "js-superagent/host-package-identity",
+    "runs": [
+      {
+        "commitSha": "e5fb3a74bf479afabcd48ed2f013161edab349a2",
+        "context": "js-superagent/host-package-identity",
+        "exitCode": 1,
+        "state": "failure",
+        "statusId": 57778949075,
+        "log": "host-ci-e5fb3a74bf479afabcd48ed2f013161edab349a2.log"
+      },
+      {
+        "commitSha": "89c5c393495426bc08bafb7e542121c5828a66fe",
+        "context": "js-superagent/host-package-identity",
+        "exitCode": 0,
+        "state": "success",
+        "statusId": 57779010287,
+        "log": "host-ci-89c5c393495426bc08bafb7e542121c5828a66fe.log"
+      }
+    ],
+    "limitation": "Actual host command results published as GitHub commit statuses; not GitHub Actions."
+  },
+  "checks": [
+    "Actual package doctor reports its installed version without initializing or trusting target metadata",
+    "Actual review returned to original ticket/session/workspace/PR and host advanced the owned head",
+    "Source baseline unchanged; no merge or default-branch push",
+    "Actual failing and passing host CI command statuses followed the owned PR head and original ticket",
+    "Owned PR closure ended the original domain ticket"
+  ],
+  "completion": {
+    "ended": {
+      "at": "2026-11-01T12:36:42.371Z",
+      "by": "executor",
+      "outcome": "closed"
+    },
+    "assignments": [
+      {
+        "id": "183c46d451104206a536473b05dbe6cd",
+        "state": "ended",
+        "endedAt": "2026-11-01T12:36:42.371Z"
+      }
+    ],
+    "ownedThreads": [
+      {
+        "thread": "github:imjszhang/x-pkm-research#pr:15",
+        "own": true,
+        "closed": {
+          "at": "2026-11-01T12:36:42.371Z",
+          "outcome": "closed"
+        }
+      }
+    ]
+  },
+  "cleanup": {
+    "resourcesClosed": true,
+    "issue": {
+      "number": 12,
+      "state": "closed",
+      "closedAt": "2026-11-01T12:36:43Z"
+    },
+    "pullRequest": {
+      "number": 15,
+      "state": "closed",
+      "draft": true,
+      "merged": false,
+      "mergedAt": null,
+      "closedAt": "2026-11-01T12:36:35Z",
+      "headSha": "89c5c393495426bc08bafb7e542121c5828a66fe"
+    },
+    "branchRetainedForAudit": true,
+    "defaultBranchPushed": false
+  },
+  "evidenceSource": "working/agent-runs/js-superagent-phase8-delivery-real-v2/acceptance.json",
+  "evidenceSha256": "48ed1b2a2a790be3bdd7efd5b2d2167f9b7954905fe2cc7abe794cc26c4ad4c9",
+  "redaction": "Allowlisted execution facts only; local absolute paths, raw task messages, model transcripts, process identifiers, and credential data omitted.",
+  "scopeNote": "Installed tarball and repository baseline identify this exact acceptance snapshot. Host verification ran the package check including localhost tests without OS isolation. Commit statuses came from actual host commands, not GitHub Actions. Later source hardening requires separate checks."
+}

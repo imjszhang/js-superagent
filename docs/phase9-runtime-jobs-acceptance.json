@@ -1,0 +1,95 @@
+{
+  "status": "passed",
+  "startedAt": "2026-11-01T12:37:13.027Z",
+  "finishedAt": "2026-11-01T12:41:24.045Z",
+  "packageSha256": "34e5fc47cf026d21b2011e8b37f5763038f699d80125eb7be084e9b216e75228",
+  "ticketId": "3ad2af7084f739ebaf18d832d216ebc2",
+  "session": {
+    "driver": "codex-app-server",
+    "id": "01a1971d-290c-76e3-bf0e-a02f1d8b2f15"
+  },
+  "checks": [
+    "real-native-job-tools",
+    "host-check-exit-zero",
+    "real-child-verified",
+    "parent-and-source-isolated",
+    "single-parent-turn",
+    "restart-no-replay"
+  ],
+  "jobs": [
+    {
+      "id": "796451b4-7cc6-46d9-9fe7-7adf37802429",
+      "kind": "command",
+      "status": "completed",
+      "completion": {
+        "id": "job-completed:796451b4-7cc6-46d9-9fe7-7adf37802429",
+        "jobId": "796451b4-7cc6-46d9-9fe7-7adf37802429",
+        "parent": {
+          "ticketId": "3ad2af7084f739ebaf18d832d216ebc2",
+          "assignmentId": "b1f6083a1b0dba815b1e465d76fa41fd",
+          "runId": "22c8b228-7e88-4331-9276-64e1f38618e2"
+        },
+        "status": "completed",
+        "at": "2026-11-01T12:37:25.629Z",
+        "deliveredAt": "2026-11-01T12:37:25.630Z"
+      }
+    },
+    {
+      "id": "19d993d7-cb6c-4306-99b9-58a4602e82a6",
+      "kind": "agent",
+      "status": "handed-off",
+      "report": {
+        "version": 2,
+        "sourceVersion": 1,
+        "state": "waiting",
+        "summary": "Managed job tools, including job_wait, are unavailable. No files changed or delegated checks run. Can you enable the managed job tools so I can start profiles check and helper, inspect both completions, and then write src/parent.txt?",
+        "artifacts": [],
+        "attention": {
+          "question": "Managed job tools, including job_wait, are unavailable. No files changed or delegated checks run. Can you enable the managed job tools so I can start profiles check and helper, inspect both completions, and then write src/parent.txt?"
+        }
+      },
+      "completion": {
+        "id": "job-completed:19d993d7-cb6c-4306-99b9-58a4602e82a6",
+        "jobId": "19d993d7-cb6c-4306-99b9-58a4602e82a6",
+        "parent": {
+          "ticketId": "3ad2af7084f739ebaf18d832d216ebc2",
+          "assignmentId": "b1f6083a1b0dba815b1e465d76fa41fd",
+          "runId": "22c8b228-7e88-4331-9276-64e1f38618e2"
+        },
+        "status": "handed-off",
+        "at": "2026-11-01T12:37:55.516Z",
+        "deliveredAt": "2026-11-01T12:37:55.516Z"
+      }
+    },
+    {
+      "id": "ef49407d-3089-4627-b405-87b4417705ab",
+      "kind": "agent",
+      "status": "completed",
+      "report": {
+        "version": 2,
+        "sourceVersion": 1,
+        "state": "ready",
+        "summary": "Ready. Replaced src/example.txt with exactly child-runtime-verified followed by one newline. Local byte assertion passed (23 bytes).",
+        "artifacts": [
+          "src/example.txt"
+        ],
+        "attention": null
+      },
+      "completion": {
+        "id": "job-completed:ef49407d-3089-4627-b405-87b4417705ab",
+        "jobId": "ef49407d-3089-4627-b405-87b4417705ab",
+        "parent": {
+          "ticketId": "3ad2af7084f739ebaf18d832d216ebc2",
+          "assignmentId": "b1f6083a1b0dba815b1e465d76fa41fd",
+          "runId": "22c8b228-7e88-4331-9276-64e1f38618e2"
+        },
+        "status": "completed",
+        "at": "2026-11-01T12:38:35.895Z",
+        "deliveredAt": "2026-11-01T12:38:35.896Z"
+      }
+    }
+  ],
+  "harnessCorrection": "Original postcondition required exactly two jobs. Actual parent had one handed-off child (inherited orchestration context), then explicitly launched a corrected child within the configured budget. All outputs and ownership were independently rechecked; no model run was replayed.",
+  "initialEvidence": "acceptance.json",
+  "evidenceSource": "working/agent-runs/js-superagent-phase9-runtime-jobs-real/post-validation.json"
+}

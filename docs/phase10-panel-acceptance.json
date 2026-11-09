@@ -1,0 +1,104 @@
+{
+  "status": "passed",
+  "startedAt": "2026-11-01T12:32:10.055Z",
+  "finishedAt": "2026-11-01T12:36:17.674Z",
+  "packageSha256": "34e5fc47cf026d21b2011e8b37f5763038f699d80125eb7be084e9b216e75228",
+  "ticketId": "6e50d41eaab7a3876613e58c78d2b711",
+  "events": [
+    {
+      "at": "2026-11-01T12:32:10.256Z",
+      "status": "running",
+      "paused": false,
+      "reports": 0,
+      "revision": 0
+    },
+    {
+      "at": "2026-11-01T12:32:28.115Z",
+      "status": "waiting",
+      "paused": false,
+      "reports": 1,
+      "revision": 0
+    },
+    {
+      "at": "2026-11-01T12:32:33.337Z",
+      "status": "waiting",
+      "paused": true,
+      "reports": 1,
+      "revision": 0
+    },
+    {
+      "at": "2026-11-01T12:32:36.750Z",
+      "status": "queued",
+      "paused": true,
+      "reports": 1,
+      "revision": 0
+    },
+    {
+      "at": "2026-11-01T12:32:45.186Z",
+      "status": "running",
+      "paused": false,
+      "reports": 1,
+      "revision": 0
+    },
+    {
+      "at": "2026-11-01T12:32:57.430Z",
+      "status": "running",
+      "paused": false,
+      "reports": 1,
+      "revision": 1
+    },
+    {
+      "at": "2026-11-01T12:33:01.879Z",
+      "status": "running",
+      "paused": false,
+      "reports": 1,
+      "revision": 2
+    },
+    {
+      "at": "2026-11-01T12:33:37.673Z",
+      "status": "failed",
+      "paused": false,
+      "reports": 2,
+      "revision": 2
+    },
+    {
+      "at": "2026-11-01T12:34:23.561Z",
+      "status": "running",
+      "paused": false,
+      "reports": 2,
+      "revision": 2
+    },
+    {
+      "at": "2026-11-01T12:34:47.254Z",
+      "status": "completed",
+      "paused": false,
+      "reports": 3,
+      "revision": 2
+    }
+  ],
+  "checks": [
+    "real-codex-question",
+    "browser-answer-while-paused",
+    "resume-and-host-verify-failure",
+    "browser-retry-after-host-prerequisite",
+    "successful-local-delivery",
+    "settings-revision-and-history-diff"
+  ],
+  "finalStatus": "completed",
+  "verificationStatus": "passed",
+  "reportStatuses": [
+    "waiting",
+    "failed",
+    "completed"
+  ],
+  "screenshot": "working/agent-runs/js-superagent-phase10-panel-real/panel.jpg",
+  "cleanup": {
+    "serverStopped": true,
+    "browserTabsClosed": true
+  },
+  "notCovered": [
+    "remote-draft-PR-review-from-panel",
+    "second-browser-client conflict (API regression only)",
+    "full role-specific prompt editor"
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "startedAt": "2026-11-01T12:32:10.039Z",
+  "packageSha256": "34e5fc47cf026d21b2011e8b37f5763038f699d80125eb7be084e9b216e75228",
+  "status": "passed",
+  "checks": [
+    {
+      "name": "three-real-concurrent-workers",
+      "tickets": [
+        "bdbd6fa70c4a1381dc1ccb747a6dd22f",
+        "92b48b476564f4562dbf31077e2b6883",
+        "a750433d79e8a056255a3b691142c3d1"
+      ],
+      "active": 3
+    },
+    {
+      "name": "receipt-before-read",
+      "passed": true
+    },
+    {
+      "name": "cancel-one-keeps-other-workers-running",
+      "passed": true
+    },
+    {
+      "name": "live-correction-and-native-resume",
+      "passed": true,
+      "readEvidence": [
+        {
+          "status": "read",
+          "evidence": {
+            "type": "model-final-ack",
+            "sessionId": "01a19718-89f2-7ef3-86e9-910ab598e597",
+            "turnId": "01a19718-8a50-7aa3-8205-fc7396dca312"
+          }
+        }
+      ]
+    }
+  ],
+  "finishedAt": "2026-11-01T12:33:02.010Z",
+  "evidenceSource": "working/agent-runs/js-superagent-phase9-concurrency-real/acceptance.json"
+}

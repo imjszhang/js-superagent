@@ -1,0 +1,604 @@
+{
+  "schemaVersion": 1,
+  "kind": "candidate-validation-summary",
+  "snapshotAt": "2026-11-01T17:14:24.398450+00:00",
+  "status": "implementation-complete-acceptance-shortened-by-user",
+  "artifact": {
+    "name": "js-superagent-0.3.0-alpha.0.tgz",
+    "version": "0.3.0-alpha.0",
+    "candidate": 8,
+    "sha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+    "sourceCommit": "53e64f3250b616fdaf43ad39696afb370c00788f",
+    "sourcePackageCleanAtFreeze": true,
+    "manifest": {
+      "path": "working/agent-runs/js-superagent-alignment-candidate8/frozen-manifest.json",
+      "sha256": "d9af7522441a9ef59aaf955396fcb36c88e04d7c38f6a1673cfe7dc585c6ad9e"
+    }
+  },
+  "documentation": {
+    "writtenAfterArtifactFreeze": true,
+    "includedInFrozenArtifact": false,
+    "evidencePathsRelativeTo": "repository root",
+    "rawEvidenceStorage": "Local working/agent-runs; excluded from distribution. This file contains a sanitized index, not private raw logs."
+  },
+  "implementation": {
+    "phases": [
+      13,
+      14,
+      15,
+      16,
+      17,
+      18
+    ],
+    "status": "implemented",
+    "productionEnabled": false,
+    "scope": "GitHub and local CLI/SDK; independent DSH-free runtime; defaults preserved."
+  },
+  "regressions": {
+    "sourceBaseline": {
+      "status": "passed",
+      "tests": 843,
+      "reportedBy": "root full package check before candidate8 freeze",
+      "scope": "Node tests and both core repository implementations; types, provenance and packaging checks also passed.",
+      "groups": {
+        "node": 555,
+        "memoryCore": 144,
+        "sqliteCore": 144
+      }
+    },
+    "node22InstalledPackage": {
+      "status": "passed",
+      "nodeVersion": "v22.13.0",
+      "tests": 177,
+      "pass": 177,
+      "fail": 0,
+      "groups": [
+        135,
+        42
+      ],
+      "installedFiles": 172,
+      "allInstalledFilesMatchTarball": true,
+      "browserVerified": false,
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-node22-candidate8/compatibility-summary.json",
+        "sha256": "6ce705f36e316e42eb944eeeeace018837e91ef643bfb243a8aae4176354cc63"
+      },
+      "groupEvidence": [
+        {
+          "path": "working/agent-runs/js-superagent-alignment-node22-candidate8/compatibility-result.json",
+          "sha256": "5da91c40fa5243dc6e734a0fe67c6d86c12fc4382e52169667d4043e1a34fbaa"
+        },
+        {
+          "path": "working/agent-runs/js-superagent-alignment-node22-candidate8/management-compatibility-result.json",
+          "sha256": "233f3b19912cbfdc8b2b355040f89582e1fba5fdf587a7ec4b4c543847695be5"
+        }
+      ]
+    },
+    "node22SupplementalContracts": {
+      "status": "passed",
+      "nodeVersion": "v22.13.0",
+      "includedIn177TestCount": false,
+      "types": {
+        "compiler": "TypeScript 6.0.3",
+        "strict": true,
+        "skipLibCheck": false,
+        "consumers": [
+          "legacy",
+          "advanced"
+        ],
+        "consumerRuntimeExecuted": false
+      },
+      "cancellation": {
+        "fixture": "Injected EAGAIN before model/process start with actual timers",
+        "cases": [
+          "abort during retry backoff",
+          "already aborted before first attempt"
+        ],
+        "delayMs": 180,
+        "cancelledAfterMs": 26,
+        "rejectedAfterMs": 27,
+        "observedPastFirstRetryDeadline": true,
+        "attempts": 1,
+        "preCancelledAttempts": 0,
+        "sideEffects": 0
+      },
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-node22-contracts8/acceptance.json",
+        "sha256": "fef91c73684390a5277a5f010779308db1069cbc92a74e2c92e5483d435c08af"
+      },
+      "artifactEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-node22-contracts8/artifact-evidence.json",
+        "sha256": "4d09eb3c9ec63ff9eec1d676c26a639c0d0d843c10a21cc9e1a41e39dc86367c"
+      }
+    }
+  },
+  "realScenarios": [
+    {
+      "id": "github-issue-pr-actions",
+      "status": "passed",
+      "summary": "真实 Issue → 修改验收 fixture → draft PR → Actions 失败及审阅 → 同工单/会话/工作区修复 → Actions 成功和 App 唯一回传。",
+      "startedAt": "2026-11-01T16:46:32.337Z",
+      "completedAt": "2026-11-01T16:48:52.720Z",
+      "artifactSha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+      "commitIdentitySource": "frozen-manifest-matched-by-tarball-sha256",
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-full-chain8/acceptance.json",
+        "sha256": "aa7ced37e54cf7c5500464f7719ea5271fb86c549b070b91fa856fe8365d3ede"
+      },
+      "artifactEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-full-chain8/artifact-evidence.json",
+        "sha256": "62ff8edb133e4c52284d371460c3598688123053ed5067c76bfc42be8dd79e41"
+      },
+      "limitations": [
+        "专用验收 fixture，不声称修复生产缺陷。",
+        "App 接单/评论与 native-gh 提交/PR 交付分别记录身份。"
+      ],
+      "remoteUrls": [
+        "https://github.com/imjszhang/js-superagent-acceptance/issues/24",
+        "https://github.com/imjszhang/js-superagent-acceptance/pull/26"
+      ]
+    },
+    {
+      "id": "github-new-pr",
+      "status": "passed",
+      "summary": "真实 App 新 PR 接单、协调研判、受控获取缺失固定 SHA、隔离修改、独立验证和唯一 PR 回执。",
+      "startedAt": "2026-11-01T16:48:53.450Z",
+      "completedAt": "2026-11-01T16:50:23.208Z",
+      "artifactSha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+      "commitIdentitySource": "frozen-manifest-matched-by-tarball-sha256",
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-pr8/acceptance.json",
+        "sha256": "74247c49817e28f712679f15ac8bf31e2164a9633b78445f91397bf3b7c367ec"
+      },
+      "artifactEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-pr8/artifact-evidence.json",
+        "sha256": "70f759ab2aa6e78505513f81ca9b49f7a99014b6309143bcf73d708ecb0f3566"
+      },
+      "limitations": [
+        "同仓库非 owned PR；未推送 Worker 修改或更改默认分支。"
+      ],
+      "remoteUrls": [
+        "https://github.com/imjszhang/js-superagent-acceptance/pull/28"
+      ]
+    },
+    {
+      "id": "local-codex",
+      "status": "passed",
+      "summary": "真实修改、验证、提问回复、取消及停止后的显式同会话恢复。",
+      "startedAt": "2026-11-01T16:46:49.268Z",
+      "completedAt": "2026-11-01T16:49:06.428Z",
+      "artifactSha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+      "commitIdentitySource": "caller-and-frozen-manifest",
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-codex8/acceptance.json",
+        "sha256": "732b36325ae615db73485974c70892c36f64a8b3092dcc58508eff81f351b38e"
+      },
+      "artifactEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-codex8/artifact-evidence.json",
+        "sha256": "fb0bc75e288fbdf6a74b487aa7cb334e1862a2c740c06565421ec9768cabb4fb"
+      },
+      "limitations": [],
+      "scenarioNames": [
+        "modify-verify-question-reply",
+        "cancel-restart-resume",
+        "stop-restart-resume"
+      ],
+      "capabilityAuditEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-codex8/capability-audit.json",
+        "sha256": "5246eb960b6816ff5368e8a0d61df18009c48160022ceb8bd9c64501adbf5bea"
+      }
+    },
+    {
+      "id": "model-business-tools",
+      "status": "passed",
+      "summary": "真实模型读取初始预算外旧事实、确认输入、退回一次，真实协调者重新路由独立工单。",
+      "startedAt": "2026-11-01T16:46:49.308Z",
+      "completedAt": "2026-11-01T16:48:31.165Z",
+      "artifactSha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+      "commitIdentitySource": "caller-and-frozen-manifest",
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-tools8/acceptance.json",
+        "sha256": "0988c7b2312a45e9b60cf86c415c15f23728ab9726ccc782c9b7fd28f6b48342"
+      },
+      "artifactEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-tools8/artifact-evidence.json",
+        "sha256": "b4e152a3a22494fac7f57fff8a05d0e44d14a44042fe462c4198351c9120294d"
+      },
+      "limitations": [],
+      "capabilityAuditEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-tools8/capability-audit.json",
+        "sha256": "72410e2011c01281e98ff21cb6426c6394c65101792f14419632a187e1e08273"
+      }
+    },
+    {
+      "id": "persistent-jobs-scheduling",
+      "status": "passed",
+      "summary": "普通命令跨两个真实模型轮次完成且唤醒一次；三个真实 Worker 让槽并重新取得容量。",
+      "startedAt": "2026-11-01T16:46:49.275Z",
+      "completedAt": "2026-11-01T16:48:39.830Z",
+      "artifactSha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+      "commitIdentitySource": "caller-and-frozen-manifest",
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-scheduling8/acceptance.json",
+        "sha256": "363d0db15b966f36eae278c7b7e528c4e2e10f72fc06bbc932b6d956b8d86ad5"
+      },
+      "artifactEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-scheduling8/artifact-evidence.json",
+        "sha256": "d533319312eff57b6e5dad83db661fd6e8e88a29ee92d9855e122d34415fc5b5"
+      },
+      "limitations": [],
+      "scenarioNames": [
+        "real-ordinary-command-cross-turn-single-wake",
+        "three-real-workers-yield-and-capacity-reclaim"
+      ],
+      "capabilityAuditEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-scheduling8/capability-audit.json",
+        "sha256": "d482abb0d67ad2e1544e6289ca59389d62e20b9976bb9c16dfb69e34523bd2eb"
+      }
+    },
+    {
+      "id": "open-pr-preview",
+      "status": "passed",
+      "summary": "owned 开放 PR 保留预览期间其他真实 Worker 执行；远端关闭 PR 后无额外模型轮次即清理预览。",
+      "startedAt": "2026-11-01T16:46:49.276Z",
+      "completedAt": "2026-11-01T16:48:30.397Z",
+      "artifactSha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+      "commitIdentitySource": "caller-and-frozen-manifest",
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-open-pr-preview8/acceptance.json",
+        "sha256": "7285f7c584597738fe62be1312682868bc95aae907b317690988be41d49fb892"
+      },
+      "artifactEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-open-pr-preview8/artifact-evidence.json",
+        "sha256": "8f384d4cdbf0f6f05b6195ca527c3094f752308d33e22eb77ca950ba4d0bf853"
+      },
+      "limitations": [],
+      "scenarioNames": [
+        "real-open-owned-pr-ready-retains-preview",
+        "independent-real-worker-runs-during-open-pr-review",
+        "remote-pr-close-cleans-preview-without-extra-model-turn"
+      ],
+      "remoteUrls": [
+        "https://github.com/imjszhang/js-superagent-acceptance/pull/27"
+      ],
+      "capabilityAuditEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-open-pr-preview8/capability-audit.json",
+        "sha256": "8d7e997135e6585c0280bfa6221461db4a9dbd7cb5bc9259333d904e20b61b24"
+      }
+    },
+    {
+      "id": "child-adoption-and-preview",
+      "status": "passed",
+      "summary": "真实父子会话、允许的父未提交快照、受控差异采纳与验证失效、无 PR 预览、续期关闭及同会话回复后重新验证。",
+      "startedAt": "2026-11-01T16:47:17.209Z",
+      "completedAt": "2026-11-01T16:48:34.806Z",
+      "artifactSha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+      "commitIdentitySource": "caller-and-frozen-manifest",
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-jobs8/acceptance.json",
+        "sha256": "505991867f1ed1a3bdc3b11b26432848153590933e81094a0527348d7a013589"
+      },
+      "artifactEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-jobs8/artifact-evidence.json",
+        "sha256": "b70bcf49e2fbcf601559c5cccf048c9b03e6c995c417a5c969c294b8ba3b3cc4"
+      },
+      "limitations": [
+        "采纳为操作者显式 SDK 动作，不由子模型直接写父目录。"
+      ],
+      "scenarioNames": [
+        "native-parent-snapshot-child-adoption",
+        "native-human-preview-no-pr",
+        "human-review-reply-cleanup-and-reverify"
+      ]
+    },
+    {
+      "id": "session-replacement",
+      "status": "passed",
+      "summary": "真实原生恢复拒绝无效会话引用，明确替换后保留工单、工作区和授权回复继续执行。",
+      "startedAt": "2026-11-01T16:46:58.352Z",
+      "completedAt": "2026-11-01T16:47:34.377Z",
+      "artifactSha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+      "commitIdentitySource": "caller-and-frozen-manifest",
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-session-recovery8/acceptance.json",
+        "sha256": "a0116c49898400914bf56dafe8365eefc1dedf9a611d83bad4a3e8bf6424a8ae"
+      },
+      "artifactEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-session-recovery8/artifact-evidence.json",
+        "sha256": "7eb74590578ca0ec459b0b6046d914dba4ccbf6ea2050644694e011bfada1962"
+      },
+      "limitations": [
+        "故障注入只修改隔离项目保存的 session 引用；未损坏原生会话文件或用户全局配置。"
+      ]
+    },
+    {
+      "id": "stale-source-and-lost-receipt",
+      "status": "passed",
+      "summary": "活进程的真实来源响应被扣留至 120 秒阈值并恢复；实际 App 评论成功后、本地收据持久化前杀死验收进程，重启按原意图核对。",
+      "startedAt": "2026-11-01T16:47:06.375Z",
+      "completedAt": "2026-11-01T16:49:51.906Z",
+      "artifactSha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+      "commitIdentitySource": "caller-and-frozen-manifest",
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-remote-recovery8/acceptance.json",
+        "sha256": "60ae9fde3ab8840bdebbf7a3ced2828aef424842f8412c4e6894b39b881e398a"
+      },
+      "artifactEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-remote-recovery8/artifact-evidence.json",
+        "sha256": "ce282e37755335e4224e1e7a37dff2b1d2bdd287f5baaf4dec6cb8dd400794ef"
+      },
+      "limitations": [
+        "重启 3 次 GET、0 次 POST、0 次 Worker 重放。",
+        "来源停滞为明确传输故障注入，不声称真实 GitHub 故障。"
+      ],
+      "remoteUrls": [
+        "https://github.com/imjszhang/js-superagent-acceptance/issues/25"
+      ],
+      "cleanupEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-real-remote-recovery8/cleanup.json",
+        "sha256": "48b2be21da4b4a1b2423e4f29949939266614820f64c1a3901104e4d7f1d1310"
+      }
+    },
+    {
+      "id": "management-http-real-model",
+      "status": "passed",
+      "summary": "公开 SDK、认证 HTTP、真实模型验证追溯、退回重评、失败恢复、预览关闭、提示词历史及新旧会话版本。",
+      "startedAt": "2026-11-01T16:46:58.351Z",
+      "completedAt": "2026-11-01T16:49:45.934Z",
+      "artifactSha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+      "commitIdentitySource": "caller-and-frozen-manifest",
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-management-api8/acceptance.json",
+        "sha256": "8d0a34afc4e9bde4256b241dd81aafe7821d0cadc276edafba37115a4c0a6fba"
+      },
+      "artifactEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-management-api8/artifact-evidence.json",
+        "sha256": "ada5b7be02189cabf37392f442c4eb1851b45e1a380a0a0d944a7ccb132a2485"
+      },
+      "limitations": [
+        "HTTP 双客户端保留草稿不单独证明真实浏览器。",
+        "旧默认 base 为公开 API 导入 fixture，不声称二进制默认升级实测。"
+      ],
+      "scenarioNames": [
+        "two-http-clients-conflict-and-invalid-config-recovery",
+        "real-event-decision-ticket-preview-trace",
+        "prompt-upgrade-old-session-pinned-new-session-current-and-http-preview-close",
+        "http-explicit-session-replacement-real-new-prompt",
+        "real-command-failure-http-retry-and-reply-recovery",
+        "public-handback-http-reevaluation-real-new-ticket",
+        "prompt-history-restore-is-new-revision"
+      ],
+      "cleanupEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-management-api8/cleanup.json",
+        "sha256": "f3adace75828841f35ead91294b8af29b6003df3b51a5d68bd99831551c8a674"
+      }
+    },
+    {
+      "id": "isolated-upgrade-rollback",
+      "status": "passed",
+      "summary": "旧安装包创建 schema 3、实际停止隔离服务、升级 schema 4、旧包拒绝新库、恢复一致性备份并实际以旧 SDK/CLI 打开；再升级和真实 Worker 续作。",
+      "startedAt": "2026-11-01T16:46:22.981Z",
+      "completedAt": "2026-11-01T16:47:09.619Z",
+      "artifactSha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+      "commitIdentitySource": "frozen-manifest-matched-by-tarball-sha256",
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-upgrade8/acceptance.json",
+        "sha256": "0119a950ea0c663e0ffa1f4cc830829d8d5da88d61e36dd9a0b1b9a5e7712a2d"
+      },
+      "artifactEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-upgrade8/artifact-evidence.json",
+        "sha256": "f7f9ab16f681a09bd93928c22527cb86618e53f8663ed7777fff839be61c7d30"
+      },
+      "limitations": [
+        "隔离项目和临时 launchd 服务，不是生产升级。",
+        "未实测整机重启、注销登录、Linux/Windows 服务。"
+      ]
+    },
+    {
+      "id": "management-real-browser",
+      "status": "passed",
+      "browserVerified": true,
+      "observedUsing": "IAB computer-use actual page operations, independently attested by root",
+      "artifactSha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+      "completedAt": "2026-11-01T16:57:30.669164+00:00",
+      "checks": [
+        "Actual browser source-to-decision-to-ticket trace and full record",
+        "Actual browser question reply and pinned old session",
+        "Actual browser host-seeded handback event reevaluation and separate real worker",
+        "Actual browser command-failure inspection, explicit approval, retry and successful verification",
+        "Actual preview page content and browser lease close",
+        "Actual browser default change, historical revision restore to new revision",
+        "Actual two-client 409, local draft preservation and explicit rebase",
+        "Real old ALPHA and new BETA session reports; new BETA remains pinned after history restore",
+        "Only approved.txt added in failure copy workspace; source and other copies unchanged",
+        "No additional model invocation during cleanup; no pending effects, active owners or reachable preview/panels"
+      ],
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-browser8/acceptance.json",
+        "sha256": "737b25f60f7534caa8a649fe3d1340dcd408d5bc05190c414d8151995e4c2f58"
+      },
+      "artifactEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-browser8/artifact-evidence.json",
+        "sha256": "e434c1e6f2710d6741091454066ef7ce973a875416ccea613a3936f54c3471a4"
+      },
+      "browserAttestation": {
+        "path": "working/agent-runs/js-superagent-alignment-browser8/browser-attestation.json",
+        "sha256": "b7a5f40e75ef66cabca72c47337c78060ec2efbcaaaf413c16db6a7e3d8f8204"
+      },
+      "observations": {
+        "path": "working/agent-runs/js-superagent-alignment-browser8/browser-observations.json",
+        "sha256": "f9b29846b482cb582047fcb9ef6483a7a471b2f264a94db8dfb2eb908ae766d3"
+      },
+      "cleanupEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-browser8/cleanup.json",
+        "sha256": "0c6aa7c13d7b124d3f229289b3b885eca86ebcdd8f780b708336bea738053d83"
+      },
+      "sourceIntegrityEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-browser8/source-integrity.json",
+        "sha256": "8fb9b84ef8793d5845e50d3578c7c6a1bb341f8ad997fc696f90ddcdcf129a80"
+      },
+      "capabilityAuditEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-browser8/capability-audit.json",
+        "sha256": "79638ee0dfce3af0d38b72c2afae985e2015b89ca42f7812ada737513d733790"
+      },
+      "limitations": [
+        "Browser handback starts from a public SDK fixture; real model handback is independently covered by real-tools8.",
+        "Old default base imported through public API; not a binary-default upgrade.",
+        "No claim of draft persistence across whole-page reload or browser close."
+      ]
+    },
+    {
+      "id": "coordinator-paged-context",
+      "status": "passed",
+      "artifactSha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+      "startedAt": "2026-11-01T16:59:53.334Z",
+      "completedAt": "2026-11-01T17:00:44.569Z",
+      "summary": "真实协调者读取两页原始长请求，三个模型 turn 复用同一原生会话，在精确授权范围内接单。",
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-coordinator-context8/acceptance.json",
+        "sha256": "9e374837e9a4ebf6ac3fe529cc1dd76461cf0bb637df51d83a94ca94d00531ba"
+      },
+      "artifactEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-coordinator-context8/artifact-evidence.json",
+        "sha256": "1732acab362381314afd4b3de2994ec88a25c88b465a65c8feefcd3ee4b48748"
+      },
+      "capabilityAuditEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-coordinator-context8/capability-audit.json",
+        "sha256": "8c068e250a14cef5a82c1e2fa16874115e0733b94485e7c3b921b1e727bcd482"
+      },
+      "limitations": [
+        "Remote root-thread and repository directory-reader combinations remain protocol regressions; not all combinations were exercised by real models."
+      ]
+    }
+  ],
+  "remaining": [
+    {
+      "id": "continuous-30-minutes",
+      "status": "aborted-user-requested",
+      "originalDurationGateMet": false,
+      "requiredDurationMs": 1800000,
+      "actualDurationMs": 1604886,
+      "requiredSuccessfulPolls": 60,
+      "actualSuccessfulPolls": 53,
+      "businessScenariosCompleted": 5,
+      "reports": 6,
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-continuous8/acceptance.json",
+        "sha256": "baacd2d9acaf33dfd7f2a48201996b7c99822a94137c1b57f3c4318bfba559df"
+      },
+      "stopRequestEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-continuous8/abort-request.json",
+        "sha256": "7ef49b369c3ffa26bd88656c8afc89e0c9eebb197bc90a2a9c968278e5fd8aa5"
+      },
+      "originalSnapshotEvidence": {
+        "path": "working/agent-runs/js-superagent-alignment-continuous8/acceptance.before-user-stop.json",
+        "sha256": "95c5dff50fe7c2d4d1fba9d1891ee951fca16bb584be292fb8cecc165c41c5c3"
+      },
+      "cleanup": {
+        "issueNumber": 23,
+        "issueClosed": true,
+        "temporaryServiceUninstalled": true,
+        "runtimeActive": false,
+        "pendingReceipts": 0,
+        "ticketStatus": "completed",
+        "mainUnchanged": true
+      },
+      "note": "Five business scenarios passed; the full 30-minute/60-poll gate did not pass because the user requested early completion."
+    },
+    {
+      "id": "default-branch-actions",
+      "status": "not-run-user-shortened-scope"
+    },
+    {
+      "id": "production-deployment",
+      "status": "not-performed-current-service-preserved"
+    }
+  ],
+  "deployment": {
+    "status": "not-performed-current-service-preserved",
+    "candidate8ProductionModified": false,
+    "preparedOnly": [
+      "pinned artifact integrity check",
+      "fresh readonly owner/configuration/side-effect inventory",
+      "actual service stop and process exit checks",
+      "consistent database and original configuration backup",
+      "explicit schema upgrade with unchanged settings",
+      "fixed install path switch",
+      "single owner/start/sync checks",
+      "rollback after external-write reconciliation"
+    ],
+    "previousRecordedVersion": "0.2.0-alpha.0",
+    "previousRecordedSchema": 3,
+    "previousEvidence": "docs/phase12-deployment-acceptance.json",
+    "note": "Production remains the original running 0.2/schema3 service. The fixed 0.3 package was installed separately and inspected read-only; no production switch was performed.",
+    "currentVersion": "0.2.0-alpha.0",
+    "currentSchema": 3,
+    "fixedCandidate8InstallationPrepared": true,
+    "preparedInstalledFiles": 172,
+    "preparedRuntimeFiles": 93,
+    "preparedFilesMatchArtifact": true,
+    "readonlyCaptureAt": "2026-11-01T17:11:24.670Z",
+    "readonlyCapture": {
+      "path": "working/agent-runs/js-superagent-production-upgrade-20261102-candidate8/before.json",
+      "sha256": "000c9925b078f7e97b6918e19ce4132017901257f1aa5688d7e8719dff97fb44"
+    },
+    "configSha256": "23ff02764d4b256ea85e92b0d3d0689ffc8527ab328a223668380fd5dbde6903",
+    "activeTasks": 0,
+    "pendingReceipts": 0,
+    "pendingEffects": 0,
+    "originalServiceStopped": false,
+    "schemaUpgradeExecuted": false
+  },
+  "deferred": [
+    "Feishu and cross-channel live acceptance",
+    "stable public HTTPS Webhook endpoint",
+    "npm publication and own-code public license selection",
+    "fork PRs",
+    "Linux/Windows service installers and live acceptance",
+    "whole-machine reboot/logout-login acceptance",
+    "distributed/multi-project runtime and OS security isolation"
+  ],
+  "limitations": [
+    "No assertion of complete behavioral equivalence with DSH host or unpublished upstream implementation.",
+    "Worktrees and directory copies provide file separation, not an OS security boundary.",
+    "Codex exec has a documented final configuration check-to-load concurrent-write window; app-server rechecks effective configuration in the actual process.",
+    "Earlier candidate or v0.2 successes do not count as candidate8 reruns."
+  ],
+  "originalPlanGatesAllMet": false,
+  "partialRealScenarios": [
+    {
+      "id": "continuous-service",
+      "status": "aborted-user-requested",
+      "artifactSha256": "6ed843b8780dbdef1fad3918f93494a48babf464ee2fecc66687ac3a6bfa9c90",
+      "businessScenarioResults": [
+        {
+          "name": "long-worker-independent-ingress",
+          "status": "passed"
+        },
+        {
+          "name": "business-pause-persists-ingress-and-restart",
+          "status": "passed"
+        },
+        {
+          "name": "stopped-service-backfill",
+          "status": "passed"
+        },
+        {
+          "name": "idle-crash-no-replay",
+          "status": "passed"
+        },
+        {
+          "name": "active-crash-owned-tool-stopped-explicit-retry",
+          "status": "passed"
+        }
+      ],
+      "actualDurationMs": 1604886,
+      "successfulPolls": 53,
+      "originalObservationGateMet": false,
+      "evidence": {
+        "path": "working/agent-runs/js-superagent-alignment-continuous8/acceptance.json",
+        "sha256": "baacd2d9acaf33dfd7f2a48201996b7c99822a94137c1b57f3c4318bfba559df"
+      }
+    }
+  ]
+}

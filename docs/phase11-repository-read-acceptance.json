@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "phase": "11a-read-only-repository-source",
+  "status": "passed",
+  "startedAt": "2026-11-01T12:14:24.896Z",
+  "completedAt": "2026-11-01T12:14:29.109Z",
+  "repository": "imjszhang/x-pkm-research",
+  "authentication": "app",
+  "baselineEvents": 0,
+  "followupEvents": 0,
+  "streamCursors": {
+    "pulls": {
+      "since": "2026-11-01T12:14:26.937Z"
+    },
+    "issues": {
+      "since": "2026-11-01T12:14:26.937Z"
+    },
+    "comments": {
+      "since": "2026-11-01T12:14:26.937Z"
+    }
+  },
+  "errors": [],
+  "limits": "Read-only transport and baseline acceptance only. No external messages, new PR, CI failure injection, model invocation, or Engine work dispatch were performed."
+}

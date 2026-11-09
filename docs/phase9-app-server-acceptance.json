@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "startedAt": "2026-11-01T12:00:00.192Z",
+  "executableVersion": "codex-cli 0.166.0-alpha.5.1",
+  "scenarios": [
+    {
+      "name": "live-steering",
+      "runId": "aafb5265-8706-47fb-b41f-cd45e3d37b73",
+      "session": {
+        "driver": "codex-app-server",
+        "id": "01a196fb-170c-75b3-96ee-735f2853df78"
+      },
+      "receipt": {
+        "accepted": true,
+        "read": false,
+        "inputId": "56f67fd1-fecc-44f4-9d00-2ed3ff36533b",
+        "sessionId": "01a196fb-170c-75b3-96ee-735f2853df78",
+        "turnId": "01a196fb-1743-7fa0-a679-ce75c1813738",
+        "at": "2026-11-01T12:00:12.016Z",
+        "readsAtReceipt": 0
+      },
+      "reads": [
+        {
+          "inputId": "56f67fd1-fecc-44f4-9d00-2ed3ff36533b",
+          "evidence": {
+            "type": "model-final-ack",
+            "sessionId": "01a196fb-170c-75b3-96ee-735f2853df78",
+            "turnId": "01a196fb-1743-7fa0-a679-ce75c1813738"
+          },
+          "at": "2026-11-01T12:00:38.064Z"
+        }
+      ],
+      "progressCount": 1,
+      "report": {
+        "version": 2,
+        "state": "ready",
+        "summary": "Completed sleep 10, then wrote and verified result.txt contains exactly: steered-62e40764-127b-41b3-8e13-23abc5a5582a",
+        "artifacts": [
+          "result.txt"
+        ],
+        "attention": null
+      },
+      "fileMatched": true
+    },
+    {
+      "name": "native-session-resume",
+      "runId": "621f1cee-70e7-4362-a138-b22a414c990d",
+      "sameSession": true,
+      "report": {
+        "version": 2,
+        "state": "ready",
+        "summary": "Confirmed result.txt contains the corrected value: steered-62e40764-127b-41b3-8e13-23abc5a5582a. No changes made.",
+        "artifacts": [
+          "result.txt"
+        ],
+        "attention": null
+      }
+    },
+    {
+      "name": "cancel-active-turn",
+      "runId": "b881e18c-2956-40eb-8030-3f7e7148a83c",
+      "cancelled": true,
+      "postCancelFileAbsent": true
+    }
+  ],
+  "completedAt": "2026-11-01T12:01:05.437Z",
+  "status": "passed",
+  "evidenceSource": "working/agent-runs/js-superagent-app-server-acceptance-20261101/acceptance.json",
+  "scopeNote": "Recorded at execution time; package hash or implementation hashes identify the tested snapshot. Later aggregate checks are recorded separately."
+}

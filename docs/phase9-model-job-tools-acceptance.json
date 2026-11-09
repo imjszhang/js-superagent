@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "startedAt": "2026-11-01T12:15:13.154Z",
+  "runId": "fd499b7a-cbd8-4490-9300-1ff14a847a49",
+  "scenarios": [
+    {
+      "id": "2d99e12f-b1d6-438d-b752-bb7e3bb647c8",
+      "kind": "command",
+      "status": "completed",
+      "requestId": "exec-e86b1485-cf51-44ed-b009-837e38f7887e",
+      "completionId": "job-completed:2d99e12f-b1d6-438d-b752-bb7e3bb647c8",
+      "exitCode": 0
+    },
+    {
+      "id": "de620627-6f9e-4993-8669-329e4a6419a0",
+      "kind": "agent",
+      "status": "completed",
+      "requestId": "exec-22bad9b1-ed7b-4e6a-ba89-6adf239e0422",
+      "completionId": "job-completed:de620627-6f9e-4993-8669-329e4a6419a0",
+      "childSession": {
+        "driver": "codex",
+        "id": "01a19709-3282-7691-80e4-24a47de8e405"
+      }
+    }
+  ],
+  "owners": [
+    94874,
+    94903
+  ],
+  "session": {
+    "driver": "codex-app-server",
+    "id": "01a19709-0544-7ff3-bba9-751bf7296b57"
+  },
+  "status": "passed",
+  "report": {
+    "version": 2,
+    "state": "ready",
+    "summary": "Both jobs completed and their results were inspected. background-check passed (exit 0). The child replaced example.txt with exactly \"child-tool-verified\\n\" and passed its Node assertion. The child edit remains isolated for host review; the parent workspace is unchanged.",
+    "artifacts": [],
+    "attention": null
+  },
+  "toolCalls": [
+    {
+      "tool": "js_superagent_job_start",
+      "callId": "exec-e86b1485-cf51-44ed-b009-837e38f7887e",
+      "threadId": "01a19709-0544-7ff3-bba9-751bf7296b57",
+      "turnId": "01a19709-057a-7d91-b829-cd9588f81359"
+    },
+    {
+      "tool": "js_superagent_job_start",
+      "callId": "exec-22bad9b1-ed7b-4e6a-ba89-6adf239e0422",
+      "threadId": "01a19709-0544-7ff3-bba9-751bf7296b57",
+      "turnId": "01a19709-057a-7d91-b829-cd9588f81359"
+    },
+    {
+      "tool": "js_superagent_job_wait",
+      "callId": "exec-92922383-1805-4103-8b8b-3d159c7f5b63",
+      "threadId": "01a19709-0544-7ff3-bba9-751bf7296b57",
+      "turnId": "01a19709-057a-7d91-b829-cd9588f81359"
+    },
+    {
+      "tool": "js_superagent_job_wait",
+      "callId": "exec-288324db-11f1-4868-a469-6364bde4f41f",
+      "threadId": "01a19709-0544-7ff3-bba9-751bf7296b57",
+      "turnId": "01a19709-057a-7d91-b829-cd9588f81359"
+    }
+  ],
+  "slots": [
+    {
+      "held": false,
+      "reason": "waiting-for-managed-job"
+    },
+    {
+      "held": true,
+      "reason": "managed-job-settled"
+    }
+  ],
+  "parentUnchanged": true,
+  "childChangeVerified": true,
+  "completedAt": "2026-11-01T12:15:54.942Z",
+  "evidenceSource": "working/agent-runs/js-superagent-managed-job-tools-20261101/acceptance.json",
+  "scopeNote": "Recorded at execution time; package hash or implementation hashes identify the tested snapshot. Later aggregate checks are recorded separately."
+}

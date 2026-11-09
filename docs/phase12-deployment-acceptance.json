@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "status": "passed",
+  "checkedAt": "2026-11-01T12:53:53.131Z",
+  "repository": "imjszhang/x-pkm-research",
+  "package": {
+    "version": "0.2.0-alpha.0",
+    "sha256": "c5714956a7ceeca1ad1d221324388fa3f7f7054516c7e321af5643c5601c1bcd",
+    "installation": ".js-superagent/installation/20261101-v02-complete/",
+    "previousVersion": "0.1.0-alpha.0",
+    "previousSha256": "efa222d611876a31dabea5c704bf783980122d903e1eeadeaff7d2b3a457e3ca"
+  },
+  "service": {
+    "label": "com.js-superagent.project.ca4776dc88748411f031",
+    "pid": 21552,
+    "childPid": 21554,
+    "running": true,
+    "mode": "poll",
+    "oldPid": 90997,
+    "firstV02Pid": 22180,
+    "restartedV02Pid": 23341,
+    "previousFixedPackagePid": 13937
+  },
+  "configuration": {
+    "unchanged": true,
+    "sha256": "23ff02764d4b256ea85e92b0d3d0689ffc8527ab328a223668380fd5dbde6903",
+    "driver": "codex",
+    "workers": 1,
+    "workspace": "worktree",
+    "github": {
+      "authentication": "app",
+      "command": "/js-superagent",
+      "allowedActors": [
+        "imjszhang"
+      ],
+      "pollIntervalMs": 30000
+    },
+    "proactivePolicy": "off",
+    "automaticDelivery": false,
+    "networkEnvironmentPreserved": true,
+    "credentialValuesPublished": false,
+    "customWorkerPrompt": false
+  },
+  "database": {
+    "fromVersion": 2,
+    "toVersion": 3,
+    "migrationBusinessDigestPreserved": true,
+    "originalBackup": {
+      "id": "035b889a-d2a6-4376-beb1-f81df2cd110e",
+      "schemaVersion": 2,
+      "sha256": "ae21dbbdd04f09221f629ce39ea2c0c7da8db214c5cd172c1866c87549085a07"
+    },
+    "finalReplacementBackup": {
+      "id": "06f98b2e-577a-414a-883e-87bbd04d13e0",
+      "schemaVersion": 3,
+      "sha256": "1b6d45ddf35ba79fd42e51c121616562be7cfb7bc6b6d828deffd41ed2840634"
+    },
+    "protectedPrivateEvidenceRetained": true,
+    "priorReplacementBackups": [
+      {
+        "id": "93852efd-e740-4cfe-83c5-ba1cb70e2ffc",
+        "schemaVersion": 3,
+        "sha256": "a2d0c7db8f9b11c5018dffc97d31adfbfdf3558c9e4a6e8133f1822e9cbb8839"
+      }
+    ]
+  },
+  "upgradePolls": [
+    {
+      "at": "2026-11-01T12:38:52.082Z",
+      "received": 0,
+      "repository": "imjszhang/x-pkm-research",
+      "authentication": "github-app"
+    },
+    {
+      "at": "2026-11-01T12:39:24.811Z",
+      "received": 0,
+      "repository": "imjszhang/x-pkm-research",
+      "authentication": "github-app"
+    },
+    {
+      "at": "2026-11-01T12:39:52.668Z",
+      "received": 0,
+      "repository": "imjszhang/x-pkm-research",
+      "authentication": "github-app"
+    }
+  ],
+  "finalPackagePoll": {
+    "at": "2026-11-01T12:53:52.880Z",
+    "repository": "imjszhang/x-pkm-research",
+    "received": 0,
+    "authentication": "github-app"
+  },
+  "preservation": {
+    "ticketCount": 1,
+    "reportCount": 2,
+    "notificationCount": 3,
+    "businessDigest": "c56dd0efcfb7805190f182570d55c0346c880e2936d73babbbcf8d7e0e98f09f",
+    "unchangedAfterMigrationAndRestart": true,
+    "duplicateTickets": 0,
+    "duplicateReports": 0,
+    "duplicateNotifications": 0
+  },
+  "rollback": {
+    "needed": false,
+    "previousInstallationsAndConsistentBackupsRetained": true
+  },
+  "checks": [
+    "Idle production service stopped, business records rechecked, consistent DB2 backup stored with protected original configuration and service definition",
+    "Fixed 0.2 package installed, DB2 upgraded to DB3, business records/configuration/allowed identities/single Codex worker unchanged; original proxy settings preserved",
+    "Two authenticated GitHub App polling cycles succeeded with zero new intake",
+    "Explicit service restart changed PID; another authenticated App poll succeeded; no duplicate tickets, reports or notifications",
+    "Stopped idle service and saved consistent DB3 backup; original DB2 upgrade backup remains retained",
+    "Installed exact final 0.2 tarball in a separate directory; no state migration or policy expansion",
+    "Authenticated GitHub App poll succeeded after restart; tickets, reports, notifications and business table digest unchanged",
+    "Final role-settings package installed at its fixed digest; production keeps its existing default Worker prompt and disabled repository-wide source settings; one actual App poll succeeded with unchanged configuration and business digest"
+  ],
+  "limitations": [
+    "No whole-machine reboot or logout/login was performed. Existing polling policy only; no new proactive or automatic delivery policy enabled."
+  ],
+  "intermediatePackages": [
+    {
+      "version": "0.2.0-alpha.0",
+      "sha256": "170bcac35412c8195e5c52ce1052c125a47c6301e57a73086134746a28b62a6e",
+      "installation": ".js-superagent/installation/20261101-v02-final/"
+    }
+  ],
+  "previousFixedPackagePoll": {
+    "at": "2026-11-01T12:44:23.256Z",
+    "repository": "imjszhang/x-pkm-research",
+    "received": 0,
+    "authentication": "github-app"
+  }
+}

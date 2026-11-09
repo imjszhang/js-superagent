@@ -1,0 +1,319 @@
+{
+  "startedAt": "2026-11-01T07:41:57.564Z",
+  "node": "v24.22.1",
+  "platform": "darwin",
+  "codex": "codex-cli 0.166.0-alpha.5.1",
+  "package": "js-superagent-0.1.0-alpha.0.tgz",
+  "status": "passed",
+  "scenarios": [
+    {
+      "name": "worktree-configuration-isolation-resume",
+      "status": "passed",
+      "project": "git-project",
+      "ticketId": "2342d6645773df9115c9397c6856e660",
+      "session": {
+        "driver": "codex",
+        "id": "01a1960e-d8fd-7b33-ba57-a89bfa90c7b1"
+      },
+      "workspace": {
+        "mode": "worktree",
+        "path": "working/agent-runs/js-superagent-phase4-20261101-b/git-project/.js-superagent/workspaces/2342d6645773df9115c9397c6856e660",
+        "projectRoot": "working/agent-runs/js-superagent-phase4-20261101-b/git-project",
+        "ticketId": "2342d6645773df9115c9397c6856e660",
+        "createdAt": "2026-11-01T07:41:57.762Z",
+        "state": "ready",
+        "provisionId": "6767394f-6467-43f2-bfeb-1664d76e5cc7",
+        "config": {
+          "mode": "auto",
+          "exclude": []
+        },
+        "baseCommit": "51e2dbbf6bda6041a3e415a048e58a139d481689",
+        "branch": "js-superagent/2342d6645773df9115c9397c6856e660",
+        "sourceDirty": true,
+        "gitDir": "working/agent-runs/js-superagent-phase4-20261101-b/git-project/.git/worktrees/2342d6645773df9115c9397c6856e660",
+        "commonDir": "working/agent-runs/js-superagent-phase4-20261101-b/git-project/.git"
+      },
+      "config": {
+        "schemaVersion": 2,
+        "projectId": "bd6a669b-db59-46ef-ba2f-744765a3eeac",
+        "concurrency": 1,
+        "workspace": {
+          "mode": "auto"
+        },
+        "execution": {
+          "driver": "codex",
+          "timeoutMs": 300000
+        }
+      },
+      "review": {
+        "workspace": {
+          "mode": "worktree",
+          "path": "working/agent-runs/js-superagent-phase4-20261101-b/git-project/.js-superagent/workspaces/2342d6645773df9115c9397c6856e660",
+          "projectRoot": "working/agent-runs/js-superagent-phase4-20261101-b/git-project",
+          "ticketId": "2342d6645773df9115c9397c6856e660",
+          "createdAt": "2026-11-01T07:41:57.762Z",
+          "state": "ready",
+          "provisionId": "6767394f-6467-43f2-bfeb-1664d76e5cc7",
+          "config": {
+            "mode": "auto",
+            "exclude": []
+          },
+          "baseCommit": "51e2dbbf6bda6041a3e415a048e58a139d481689",
+          "branch": "js-superagent/2342d6645773df9115c9397c6856e660",
+          "sourceDirty": true,
+          "gitDir": "working/agent-runs/js-superagent-phase4-20261101-b/git-project/.git/worktrees/2342d6645773df9115c9397c6856e660",
+          "commonDir": "working/agent-runs/js-superagent-phase4-20261101-b/git-project/.git"
+        },
+        "isolation": true,
+        "changes": [
+          {
+            "path": "__pycache__/pricing.cpython-313.pyc",
+            "status": "added"
+          },
+          {
+            "path": "__pycache__/test_pricing.cpython-313.pyc",
+            "status": "added"
+          },
+          {
+            "path": "pricing.py",
+            "status": "modified"
+          },
+          {
+            "path": "test_pricing.py",
+            "status": "modified"
+          }
+        ]
+      },
+      "sourceUnchanged": true,
+      "independentTests": "test_basic (test_pricing.PricingTest.test_basic) ... ok\ntest_discount (test_pricing.PricingTest.test_discount) ... ok\ntest_discount_above_100 (test_pricing.PricingTest.test_discount_above_100) ... ok\ntest_discount_endpoints (test_pricing.PricingTest.test_discount_endpoints) ... ok\ntest_fractional_discount (test_pricing.PricingTest.test_fractional_discount) ... ok\ntest_negative_discount (test_pricing.PricingTest.test_negative_discount) ... ok\ntest_zero (test_pricing.PricingTest.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 7 tests in 0.000s\n\nOK\n",
+      "reports": [
+        {
+          "status": "waiting",
+          "summary": "Inspected pricing.py and existing tests, which cover basic totals, a 25% discount, and zero quantity. No files changed. For discounts below 0 or above 100, should total raise ValueError, clamp to 0..100, or apply the percentage as supplied?",
+          "artifacts": [],
+          "runId": "7434d749-c344-4008-844c-1ad5288de9b0",
+          "at": "2026-11-01T07:42:24.654Z"
+        },
+        {
+          "status": "completed",
+          "summary": "Fixed total to calculate price × quantity with percentage discount, without rounding. Discounts outside 0–100 raise ValueError; both endpoints are accepted. Added boundary, out-of-range, and fractional discount tests. python3 -m unittest -v passed all 7 tests.",
+          "artifacts": [
+            "pricing.py",
+            "test_pricing.py"
+          ],
+          "runId": "1b0be700-3364-46a5-9483-a961e43738c5",
+          "at": "2026-11-01T07:42:59.991Z"
+        }
+      ],
+      "secondTicket": {
+        "id": "2a0e8fb40b2d3ced8a662cb195d77d29",
+        "workspace": {
+          "mode": "worktree",
+          "path": "working/agent-runs/js-superagent-phase4-20261101-b/git-project/.js-superagent/workspaces/2a0e8fb40b2d3ced8a662cb195d77d29",
+          "projectRoot": "working/agent-runs/js-superagent-phase4-20261101-b/git-project",
+          "ticketId": "2a0e8fb40b2d3ced8a662cb195d77d29",
+          "createdAt": "2026-11-01T07:43:00.166Z",
+          "state": "ready",
+          "provisionId": "405b0304-d94d-4147-b6b0-cefded3aabb8",
+          "config": {
+            "mode": "auto",
+            "exclude": []
+          },
+          "baseCommit": "51e2dbbf6bda6041a3e415a048e58a139d481689",
+          "branch": "js-superagent/2a0e8fb40b2d3ced8a662cb195d77d29",
+          "sourceDirty": true,
+          "gitDir": "working/agent-runs/js-superagent-phase4-20261101-b/git-project/.git/worktrees/2a0e8fb40b2d3ced8a662cb195d77d29",
+          "commonDir": "working/agent-runs/js-superagent-phase4-20261101-b/git-project/.git"
+        },
+        "session": {
+          "driver": "codex",
+          "id": "01a1960f-ccb5-7f23-9949-6b66311243b2"
+        },
+        "independentBaseline": true
+      },
+      "sourceHead": "51e2dbbf6bda6041a3e415a048e58a139d481689",
+      "sourceIndexUnchanged": true,
+      "noAutomaticCommit": true
+    },
+    {
+      "name": "copy-configuration-isolation-resume",
+      "status": "passed",
+      "project": "plain-project",
+      "ticketId": "d9208f2741e0d8a4b8e0fabbcaf3fdfc",
+      "session": {
+        "driver": "codex",
+        "id": "01a19610-2e85-7bd0-abdc-35c93a505717"
+      },
+      "workspace": {
+        "mode": "copy",
+        "path": "working/agent-runs/js-superagent-phase4-20261101-b/plain-project/.js-superagent/workspaces/d9208f2741e0d8a4b8e0fabbcaf3fdfc",
+        "projectRoot": "working/agent-runs/js-superagent-phase4-20261101-b/plain-project",
+        "ticketId": "d9208f2741e0d8a4b8e0fabbcaf3fdfc",
+        "createdAt": "2026-11-01T07:43:25.251Z",
+        "state": "ready",
+        "provisionId": "450a32f5-849b-49d6-b203-2c7aa1f8eaa3",
+        "config": {
+          "mode": "auto",
+          "exclude": []
+        },
+        "fallbackReason": "nested-project",
+        "manifestPath": "working/agent-runs/js-superagent-phase4-20261101-b/plain-project/.js-superagent/workspaces/.records/d9208f2741e0d8a4b8e0fabbcaf3fdfc.baseline.json",
+        "manifestSha256": "4d068ad6a8bb06e7f2d0f15db7bbb96d67b8d599c0015e1f252c8e28704183fe",
+        "excludedPaths": [
+          {
+            "path": ".env",
+            "reason": "excluded"
+          },
+          {
+            "path": ".js-superagent",
+            "reason": "excluded"
+          },
+          {
+            "path": "external-link",
+            "reason": "symlink-not-copied"
+          }
+        ],
+        "snapshotFiles": 5,
+        "snapshotBytes": 650
+      },
+      "config": {
+        "schemaVersion": 2,
+        "projectId": "48be6de9-5d99-479c-ba15-a737ff1f14cc",
+        "concurrency": 1,
+        "workspace": {
+          "mode": "auto"
+        },
+        "execution": {
+          "driver": "codex",
+          "timeoutMs": 300000
+        }
+      },
+      "review": {
+        "workspace": {
+          "mode": "copy",
+          "path": "working/agent-runs/js-superagent-phase4-20261101-b/plain-project/.js-superagent/workspaces/d9208f2741e0d8a4b8e0fabbcaf3fdfc",
+          "projectRoot": "working/agent-runs/js-superagent-phase4-20261101-b/plain-project",
+          "ticketId": "d9208f2741e0d8a4b8e0fabbcaf3fdfc",
+          "createdAt": "2026-11-01T07:43:25.251Z",
+          "state": "ready",
+          "provisionId": "450a32f5-849b-49d6-b203-2c7aa1f8eaa3",
+          "config": {
+            "mode": "auto",
+            "exclude": []
+          },
+          "fallbackReason": "nested-project",
+          "manifestPath": "working/agent-runs/js-superagent-phase4-20261101-b/plain-project/.js-superagent/workspaces/.records/d9208f2741e0d8a4b8e0fabbcaf3fdfc.baseline.json",
+          "manifestSha256": "4d068ad6a8bb06e7f2d0f15db7bbb96d67b8d599c0015e1f252c8e28704183fe",
+          "excludedPaths": [
+            {
+              "path": ".env",
+              "reason": "excluded"
+            },
+            {
+              "path": ".js-superagent",
+              "reason": "excluded"
+            },
+            {
+              "path": "external-link",
+              "reason": "symlink-not-copied"
+            }
+          ],
+          "snapshotFiles": 5,
+          "snapshotBytes": 650
+        },
+        "isolation": true,
+        "changes": [
+          {
+            "path": "pricing.py",
+            "status": "modified"
+          },
+          {
+            "path": "test_pricing.py",
+            "status": "modified"
+          }
+        ]
+      },
+      "sourceUnchanged": true,
+      "independentTests": "test_basic (test_pricing.PricingTest.test_basic) ... ok\ntest_discount (test_pricing.PricingTest.test_discount) ... ok\ntest_discount_endpoints (test_pricing.PricingTest.test_discount_endpoints) ... ok\ntest_discount_out_of_range (test_pricing.PricingTest.test_discount_out_of_range) ... ok\ntest_fractional_discount (test_pricing.PricingTest.test_fractional_discount) ... ok\ntest_zero (test_pricing.PricingTest.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 0.000s\n\nOK\n",
+      "reports": [
+        {
+          "status": "waiting",
+          "summary": "Inspected pricing.py and existing tests, which cover basic totals, a 25% discount, and zero quantity. No files changed; verification deferred pending your decision. For discounts below 0 or above 100, should total raise ValueError, clamp to 0–100, or apply the percentage as provided?",
+          "artifacts": [],
+          "runId": "aa591b25-34ef-4691-9c29-2398c19de60c",
+          "at": "2026-11-01T07:43:51.171Z"
+        },
+        {
+          "status": "completed",
+          "summary": "Fixed total to calculate price × quantity with percentage discount, without rounding. Discounts outside 0–100 raise ValueError; both endpoints are accepted. Added boundary, out-of-range, and fractional discount tests. python3 -m unittest -v passed all 6 tests.",
+          "artifacts": [
+            "pricing.py",
+            "test_pricing.py"
+          ],
+          "runId": "88a0fca8-a9ff-4e1b-9204-6fbac03ff076",
+          "at": "2026-11-01T07:44:20.563Z"
+        }
+      ],
+      "secondTicket": {
+        "id": "0ae6d7b4f908adc47c19f392e1bc9c6c",
+        "workspace": {
+          "mode": "copy",
+          "path": "working/agent-runs/js-superagent-phase4-20261101-b/plain-project/.js-superagent/workspaces/0ae6d7b4f908adc47c19f392e1bc9c6c",
+          "projectRoot": "working/agent-runs/js-superagent-phase4-20261101-b/plain-project",
+          "ticketId": "0ae6d7b4f908adc47c19f392e1bc9c6c",
+          "createdAt": "2026-11-01T07:44:20.701Z",
+          "state": "ready",
+          "provisionId": "a36f3359-9ccd-4e4c-b78f-5073b9202e51",
+          "config": {
+            "mode": "auto",
+            "exclude": []
+          },
+          "fallbackReason": "nested-project",
+          "manifestPath": "working/agent-runs/js-superagent-phase4-20261101-b/plain-project/.js-superagent/workspaces/.records/0ae6d7b4f908adc47c19f392e1bc9c6c.baseline.json",
+          "manifestSha256": "4d068ad6a8bb06e7f2d0f15db7bbb96d67b8d599c0015e1f252c8e28704183fe",
+          "excludedPaths": [
+            {
+              "path": ".env",
+              "reason": "excluded"
+            },
+            {
+              "path": ".js-superagent",
+              "reason": "excluded"
+            },
+            {
+              "path": "external-link",
+              "reason": "symlink-not-copied"
+            }
+          ],
+          "snapshotFiles": 5,
+          "snapshotBytes": 650
+        },
+        "session": {
+          "driver": "codex",
+          "id": "01a19611-071d-78c2-9316-40e44e958f58"
+        },
+        "independentBaseline": true
+      }
+    }
+  ],
+  "implementationSha256": {
+    "src/index.mjs": "15d0e52b6faef891e4f630e587c871bb71fc3888c2e09fab2615d76e8ec92989",
+    "src/config.mjs": "e04362674b3f1767f9ad8be94f8e73238e603262cffc5e1fad61c873bdaa00e4",
+    "src/workspaces.mjs": "cbfa62b1259c95c99ceb3931308240b9a1cccf29ab5a45d59d24ccf64b1fbc93",
+    "src/drivers/codex.mjs": "5f8000aa085599374ab72bc62988418b51333a147f35134b725b8c7175f59bd3",
+    "src/drivers/codex-supervisor.mjs": "e6ec300592a8b506fd8d0e510b5e5f291772c47d2e7b8f51d0922aa2daee5c1b",
+    "src/drivers/posix-process-tree.mjs": "df876064b4cc63add943a881cedab8747fe81840f18eb44ff9629ff46b38e3ec",
+    "bin/js-superagent.mjs": "1119f86cfa4ebaa5e97ae61ba03a56f3739aa6c5198ba9cf83ef3e09ec8f928f"
+  },
+  "finishedAt": "2026-11-01T07:44:47.400Z",
+  "localEvidenceDirectory": "working/agent-runs/js-superagent-phase4-20261101-b",
+  "paths": "Paths within the repository are made relative in this summary; the local acceptance.json preserves original absolute paths.",
+  "automatedVerification": {
+    "nodeTests": 113,
+    "upstreamMemoryTests": 144,
+    "upstreamSqliteTests": 144,
+    "packageCheck": "passed",
+    "installedPackageCliSdkAndWorkspace": "passed",
+    "rootCheck": "passed"
+  }
+}

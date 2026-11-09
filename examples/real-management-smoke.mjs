@@ -1,0 +1,25 @@
+// Starts an isolated real-model panel fixture; the operator drives its visible UI.
+import assert from 'node:assert/strict';
+import {mkdirSync,existsSync,writeFileSync,readFileSync} from 'node:fs';
+import {resolve,join} from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {spawnSync} from 'node:child_process';
+import { parseAcceptanceArgs as parseArgs } from './acceptance/frozen-package.mjs';
+import {createHash} from 'node:crypto';
+const { values, artifact } = parseArgs({options:{write:{type:'boolean'},tarball:{type:'string'},output:{type:'string'}}});
+if(!values.write||!values.tarball||!values.output)throw new Error('Requires --write --tarball <package> --output <new directory>');
+const output=resolve(values.output);if(existsSync(output))throw new Error('Use a new output directory');mkdirSync(output,{recursive:true,mode:0o700});
+const consumer=join(output,'consumer');mkdirSync(consumer);writeFileSync(join(consumer,'package.json'),'{"private":true,"type":"module"}');
+const install=spawnSync('npm',['install','--offline','--ignore-scripts','--no-audit','--no-fund',resolve(values.tarball)],{cwd:consumer,encoding:'utf8'});assert.equal(install.status,0,install.stderr);
+const {createProjectAgent,createManagementServer}=await import(pathToFileURL(join(consumer,'node_modules/js-superagent/src/index.mjs')));
+const project=join(output,'project');mkdirSync(project);writeFileSync(join(project,'AGENTS.md'),'Work only inside this fixture. Never create or modify retry-ready.flag; the host controls it. No network or commits.\n');
+const runtime=createProjectAgent({projectRoot:project,workspace:'copy',execution:{driver:'codex-app-server',timeoutMs:180000}}).init();
+runtime.configureDelivery({mode:'local',automatic:true,verify:{id:'panel-check',version:'1',command:process.execPath,args:['-e',"const f=require('node:fs');if(f.readFileSync('answer.txt','utf8').trim()!=='blue'||!f.existsSync('retry-ready.flag'))process.exit(7)"],environment:'host',allowHostExecution:true}},{expectedRevision:0});
+const ticket=runtime.submit({text:'First ask the human which color to use and return waiting. After the human answers, write that exact color with a newline to answer.txt. Do not invent a color. On later retry keep the chosen color and verify the file; never create retry-ready.flag.'});
+const panel=await createManagementServer(runtime);runtime.start({intervalMs:100});
+const evidence={status:'running',startedAt:new Date().toISOString(),packageSha256:createHash('sha256').update(readFileSync(resolve(values.tarball))).digest('hex'),ticketId:ticket.id,project,events:[]};
+writeFileSync(join(output,'panel-private.json'),JSON.stringify({url:panel.url,bootstrapUrl:panel.bootstrapUrl}),{mode:0o600});
+let last='';const timer=setInterval(()=>{const detail=runtime.getDetailed(ticket.id);const marker=JSON.stringify({status:detail.ticket.status,paused:runtime.isPaused(),reports:detail.ticket.reports.length,revision:runtime.coordinatorStatus().settings.revision});if(marker!==last){last=marker;evidence.events.push({at:new Date().toISOString(),...JSON.parse(marker)});}evidence.latest=detail;writeFileSync(join(output,'acceptance.json'),JSON.stringify(evidence,null,2));},200);
+console.log(JSON.stringify({url:panel.url,ticketId:ticket.id,privateSetupFile:join(output,'panel-private.json')}));
+const finish=async()=>{clearInterval(timer);await panel.close();await runtime.stop();evidence.status=runtime.get(ticket.id).status==='completed'?'passed':'incomplete';evidence.finishedAt=new Date().toISOString();evidence.latest=runtime.getDetailed(ticket.id);writeFileSync(join(output,'acceptance.json'),JSON.stringify(evidence,null,2));runtime.close();process.exit(0);};
+process.once('SIGINT',finish);process.once('SIGTERM',finish);

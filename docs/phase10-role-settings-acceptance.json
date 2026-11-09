@@ -1,0 +1,38 @@
+{
+  "status": "passed",
+  "startedAt": "2026-11-01T12:52:28.020Z",
+  "finishedAt": "2026-11-01T12:55:13.881Z",
+  "packageSha256": "c5714956a7ceeca1ad1d221324388fa3f7f7054516c7e321af5643c5601c1bcd",
+  "checks": [
+    "browser-configured-trusted-worker-prompt",
+    "real-codex-used-prompt",
+    "pinned-session-settings-visible",
+    "browser-configured-repository-source-settings",
+    "existing-ticket-keeps-revision-1-after-role-revision-2",
+    "history-diff-and-load-as-draft"
+  ],
+  "executorRevisions": [
+    1,
+    2
+  ],
+  "repositoryRevision": 1,
+  "ticket": {
+    "id": "09995c8cfb6f9fddc7ae4fc57658bdd2",
+    "status": "completed",
+    "summary": "ROLE-VERIFIED: Wrote role.txt and read it back. Exact-byte verification passed: role-configured followed by one newline (16 bytes).",
+    "sessionSettings": {
+      "execution": {
+        "driver": "codex",
+        "prompt": "Always begin your final summary with ROLE-VERIFIED: and briefly state the actual verification. Follow the task scope and fixed runtime restrictions."
+      },
+      "revision": 1,
+      "promptVersion": "worker-v1:74bde4119a35d2e4",
+      "pinOrigin": "session-start"
+    }
+  },
+  "screenshot": "working/agent-runs/js-superagent-phase10-role-panel-real/role-settings.jpg",
+  "cleanup": {
+    "serverStopped": true,
+    "browserTabClosed": true
+  }
+}

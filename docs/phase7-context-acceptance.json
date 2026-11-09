@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "phase": "7-context-read",
+  "status": "passed",
+  "startedAt": "2026-11-01T12:02:15.769Z",
+  "completedAt": "2026-11-01T12:03:01.600Z",
+  "executor": "real local Codex CLI with native session resume",
+  "contextReads": [
+    {
+      "resource": "triggers",
+      "offset": 0,
+      "limit": 8000,
+      "versionPinned": false
+    },
+    {
+      "resource": "triggers",
+      "offset": 8000,
+      "limit": 8000,
+      "versionPinned": true
+    }
+  ],
+  "modelTurns": 3,
+  "nativeSessionCount": 1,
+  "outcome": "accept",
+  "authorizedScope": "Add only parser-empty.test.mjs. Do not change implementation files.",
+  "applied": true,
+  "ticketCount": 1,
+  "limits": {
+    "maxContextReads": 3,
+    "maxContextBytes": 32000,
+    "timeoutMs": 180000
+  },
+  "scope": "Bounded host lookup of records referenced by the candidate, resumed in one native coordinator session; no shell tools, remote writes or external messages."
+}

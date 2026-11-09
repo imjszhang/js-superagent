@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "phase": "11a-real-repository-intake",
+  "status": "passed",
+  "startedAt": "2026-11-01T12:33:37.137Z",
+  "completedAt": "2026-11-01T12:38:56.817Z",
+  "repository": "imjszhang/x-pkm-research",
+  "pull": {
+    "number": 14,
+    "url": "https://github.com/imjszhang/x-pkm-research/pull/14",
+    "headSha": "6b7abe182b742c6457a7215d808e345d014b2b14"
+  },
+  "closed": true,
+  "tarball": {
+    "name": "js-superagent-0.2.0-alpha.0.tgz",
+    "sha256": "34e5fc47cf026d21b2011e8b37f5763038f699d80125eb7be084e9b216e75228"
+  },
+  "installedVersion": "0.2.0-alpha.0",
+  "authentication": {
+    "intake": "github-app",
+    "delivery": "native-gh",
+    "deliveryRecovery": "App comment POST returned HTTP 403. Explicitly configured native gh in the isolated project and retried the same durable notification; no silent fallback or Worker rerun."
+  },
+  "ticketId": "a63cb64f17bdab60c841508a66b5bff7",
+  "workspace": {
+    "mode": "worktree",
+    "baseCommit": "6b7abe182b742c6457a7215d808e345d014b2b14",
+    "changedPath": "acceptance/js-superagent-repository-1793536411655-1485cd/accepted.txt"
+  },
+  "assessments": [
+    {
+      "runId": "assessment-4710c5f8-0891-4dde-8b38-ec859c21b524",
+      "status": "finished",
+      "kind": "accept"
+    }
+  ],
+  "workerSession": {
+    "driver": "codex",
+    "id": "01a1971a-6709-75b2-935d-92b33f47e163"
+  },
+  "verification": {
+    "status": "passed",
+    "exitCode": 0
+  },
+  "receipts": [
+    {
+      "id": "4ea39a9d4bcacb31c5cde10702193d57",
+      "kind": "reply",
+      "url": "https://github.com/imjszhang/x-pkm-research/pull/14#issuecomment-6558050713",
+      "actor": "imjszhang",
+      "actorType": "User"
+    }
+  ],
+  "checks": [
+    "real App repository baseline without history replay",
+    "new same-repository draft PR classified by real Codex assessor",
+    "one task bound as non-owned PR",
+    "real Worker changes only acceptance file in PR-head-pinned worktree",
+    "independent host verification passed",
+    "exactly one actual native-gh result receipt after explicit credential reconfiguration",
+    "no Worker push or default-branch change",
+    "reopened runtime restores repository settings without repeating task",
+    "real closed non-owned PR observed without rewriting ticket outcome"
+  ],
+  "postflight": {
+    "at": "2026-11-01T12:38:56.817Z",
+    "reason": "Corrected acceptance harness to exclude only the known host-generated .js-superagent/workspace-owner.json marker. Reused the existing actual model execution and closed PR; no model rerun or additional PR was created.",
+    "priorEvidence": "acceptance-before-postflight.json"
+  },
+  "earlierAttempt": {
+    "pullNumber": 13,
+    "closed": true,
+    "failure": "Acceptance script used unsupported delivery mode before any model execution; corrected to local."
+  },
+  "limits": [
+    "No GitHub Actions or default-branch CI failure was injected in this acceptance.",
+    "Current App accepted repository reads but returned HTTP 403 for comment POST; delivery succeeded only after explicit native-gh configuration.",
+    "Worker edits stayed local; this acceptance did not push changes to the existing PR."
+  ]
+}

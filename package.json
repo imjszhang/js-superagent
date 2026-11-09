@@ -1,0 +1,64 @@
+{
+  "name": "js-superagent",
+  "version": "0.14.0-alpha.0",
+  "description": "Project-local, driver-independent agent task runtime.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.mjs"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    }
+  },
+  "bin": {
+    "js-superagent": "./bin/js-superagent.mjs"
+  },
+  "files": [
+    "src",
+    "bin",
+    "README.md",
+    "docs",
+    "examples",
+    "dist/core",
+    "THIRD_PARTY_NOTICES.md",
+    "THIRD_PARTY_LICENSES"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check:core": "node scripts/check-core.mjs",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test:legacy": "node --import ./test/helpers/state-home.mjs --test test/*.test.mjs",
+    "test:core": "vitest run",
+    "test:package": "node scripts/pack-smoke.mjs",
+    "test": "npm run build && npm run test:legacy && npm run test:core && npm run test:sqlite",
+    "check": "npm run check:core && npm run build && npm run typecheck && node --check src/index.mjs && node --check src/store.mjs && node --check bin/js-superagent.mjs && npm test && npm run test:package",
+    "prepack": "npm run check:core && npm run typecheck && npm run build",
+    "test:sqlite": "vitest run --config vitest.sqlite.config.mjs",
+    "test:real": "npm run build && node examples/real-codex-smoke.mjs",
+    "test:workspaces:real": "npm run build && node examples/real-workspace-smoke.mjs",
+    "test:github:real": "npm run build && node examples/real-github-smoke.mjs",
+    "test:github:pr:real": "npm run build && node examples/real-github-pr-smoke.mjs",
+    "test:github:webhook:real": "npm run build && node examples/real-github-webhook-smoke.mjs",
+    "test:service:real": "npm run build && node examples/real-background-service-smoke.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.12"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/imjszhang/js-superagent.git"
+  },
+  "homepage": "https://github.com/imjszhang/js-superagent#readme",
+  "bugs": {
+    "url": "https://github.com/imjszhang/js-superagent/issues"
+  }
+}

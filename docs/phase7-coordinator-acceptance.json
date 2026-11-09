@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "phase": "7-coordinator-module",
+  "startedAt": "2026-11-01T11:49:00.226Z",
+  "completedAt": "2026-11-01T11:50:51.372Z",
+  "status": "passed",
+  "executor": "real local Codex CLI, read-only, inherited project/config tools disabled",
+  "results": [
+    {
+      "name": "explicit-new-task",
+      "expected": "accept",
+      "actual": "accept",
+      "applied": true,
+      "domainKind": "accept",
+      "ticketCount": 1,
+      "sessionSeen": true,
+      "supervisedProcesses": 2,
+      "elapsedMs": 28908,
+      "runId": "explicit-new-task"
+    },
+    {
+      "name": "attach-existing-task",
+      "expected": "attach",
+      "actual": "attach",
+      "applied": true,
+      "domainKind": "attach",
+      "ticketCount": 1,
+      "sessionSeen": true,
+      "supervisedProcesses": 2,
+      "elapsedMs": 13892,
+      "runId": "attach-existing-task"
+    },
+    {
+      "name": "handback-unrelated-task",
+      "expected": "accept",
+      "actual": "accept",
+      "applied": true,
+      "domainKind": "accept",
+      "ticketCount": 2,
+      "sessionSeen": true,
+      "supervisedProcesses": 2,
+      "elapsedMs": 25819,
+      "runId": "handback-unrelated-task"
+    },
+    {
+      "name": "observe-ci-rule",
+      "expected": "accept",
+      "actual": "accept",
+      "applied": true,
+      "domainKind": "ignore",
+      "ticketCount": 0,
+      "sessionSeen": true,
+      "supervisedProcesses": 2,
+      "elapsedMs": 30598,
+      "runId": "observe-ci-rule"
+    },
+    {
+      "name": "unauthorized-source-identity",
+      "modelCalls": 0,
+      "ticketCount": 0,
+      "result": "program-rejected"
+    },
+    {
+      "name": "policy-changed-during-assessment",
+      "expected": "accept",
+      "actual": "accept",
+      "applied": false,
+      "domainKind": null,
+      "ticketCount": 0,
+      "sessionSeen": true,
+      "supervisedProcesses": 2,
+      "elapsedMs": 11926,
+      "runId": "policy-changed-during-assessment"
+    }
+  ],
+  "scope": "Actual model classification applied to independent Engine/SQLite Store instances; runtime integration and external channel acceptance are recorded separately.",
+  "digest": "29c0f334a024375c4542efbe4159d7bce6e34f10600d743615a54411aa85117b"
+}
