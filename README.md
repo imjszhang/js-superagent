@@ -14,7 +14,7 @@ npm run build
 node bin/js-superagent.mjs --help
 ```
 
-项目采用 [MIT 许可](LICENSE)，上游核心的版权及 MIT 许可原样保留，见 [第三方声明](THIRD_PARTY_NOTICES.md)。npm 首发准备版本为 `0.14.0-alpha.0`，使用 `alpha` 渠道；准备完成不表示已经发布。版本与发布流程见[发布指南](docs/releasing.md)。
+项目采用 [MIT 许可](LICENSE)，上游核心的版权及 MIT 许可原样保留，见 [第三方声明](THIRD_PARTY_NOTICES.md)。npm 首发版本 [`0.14.0-alpha.0`](https://www.npmjs.com/package/js-superagent/v/0.14.0-alpha.0) 已于 2026-11-09 发布，使用 `alpha` 渠道。版本与发布流程见[发布指南](docs/releasing.md)。
 
 ## 环境与本地使用
 
@@ -193,7 +193,7 @@ npm pack --dry-run
 npm pack
 ```
 
-`npm pack` 只生成本地安装包，不会发布。包尚未由本次工作发布到 npm，不应使用 `npx js-superagent` 作为本项目的安装验证。
+`npm pack` 只生成本地安装包，不会发布。已发布版本可通过 `npm install js-superagent@0.14.0-alpha.0` 安装；CLI 可通过 `npx js-superagent@0.14.0-alpha.0 --help` 查看。
 
 核心与对应测试原样提取自 [deepseek-ai/dsh-superagent-prototype 固定提交](https://github.com/deepseek-ai/dsh-superagent-prototype/tree/6337fc823ce20251c8de8085948165c81aaa701e)，来源摘要和 MIT 许可见 [来源清单](docs/upstream-core.json)与[第三方声明](THIRD_PARTY_NOTICES.md)。本阶段的存储、队列、迁移和运行时适配独立编写，未新增复制上游应用层源码。
 
