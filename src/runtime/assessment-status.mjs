@@ -1,0 +1,38 @@
+/** Read-only projection of one original request; old databases resolve through decision eval IDs. */
+export function assessmentStatus(store, triggerId) {
+  const trigger = store.triggers.get(triggerId);
+  if (!trigger) return { triggerId, status: 'missing', ticketId: null };
+  const thread = store.threads.get(`${trigger.threads[0].source}:${trigger.threads[0].id}`);
+  const disposition = store.triggers.disposition(triggerId);
+  const pointer = store.getMeta(`assessment-trigger:${triggerId}`);
+  const evaluation = thread?.evaluating?.triggerIds.includes(triggerId) ? thread.evaluating : null;
+  const evalId = evaluation?.id ?? pointer?.evalId ?? disposition?.evalId;
+  const record = evalId ? store.getMeta(`assessment:${evalId}`) : null;
+  const decision = disposition?.decisionId ? store.decisions.get(disposition.decisionId) : null;
+  const accepted = store.decisions.byThread(thread?.key ?? `${trigger.threads[0].source}:${trigger.threads[0].id}`)
+    .find(item => item.kind === 'accept' && item.triggerIds.includes(triggerId));
+  const ticketId = accepted?.ticketId ?? (record?.result?.applied ? record.result.ticket?.id ?? record.result.decision?.ticketId : null);
+  const status = accepted ? 'accepted' : record?.result?.applied && record.result.kind === 'attach' ? 'attached' : evaluation ? (record?.phase === 'correcting' ? 'correcting' : 'evaluating')
+    : thread?.pending.includes(triggerId) ? 'pending' : record?.status === 'failed' ? 'failed' : decision?.kind ?? record?.status ?? 'pending';
+  return { triggerId, evalId: evalId ?? null, status, ticketId: ticketId ? store.getMeta(`public:${ticketId}`) ?? ticketId : null,
+    ...(record?.status === 'failed' ? publicAssessmentFailure(record) : {}),
+    ...(record?.attempts != null ? { attempts: record.attempts, corrections: record.corrections ?? 0, retries: record.retries ?? 0 } : {}),
+    ...(record?.status === 'failed' ? { message: assessmentFailureMessage(record) } : {}),
+    ...(record?.status === 'finished' && typeof record.outcome?.reason === 'string' ? { reason: record.outcome.reason.slice(0, 600) } : {}) };
+}
+
+export function assessmentFailureMessage(record) {
+  const kind = publicAssessmentFailure(record).failureKind;
+  if (kind === 'format') return `建单评估返回格式不符合要求${record.corrections ? `，已尝试纠正 ${record.corrections} 次` : ''}。请求已保留，尚未开始执行。`;
+  if (kind === 'transient' || kind === 'timeout') return '建单评估暂时无法完成。请求已保留，尚未开始执行，可在服务恢复后重试。';
+  if (kind === 'authority') return '建单评估未通过授权检查。请求已保留，尚未开始执行，需要核对权限或授权。';
+  if (kind === 'context') return '建单评估所需上下文不可用或已经变化。请求已保留，尚未开始执行，需要重新核对。';
+  return '建单评估发生内部错误。请求已保留，尚未开始执行，需要检查诊断记录。';
+}
+
+export function publicAssessmentFailure(record) {
+  // Exact historical validator message only; this is display compatibility, not automatic retry authorization.
+  const legacyFormat = record.error === 'Answer fields are only valid for an answer outcome; triggerId may also select attach, ignore or unavailable input';
+  return { failureKind: record.failureKind ?? (legacyFormat ? 'format' : 'internal'),
+    code: record.code ?? (legacyFormat ? 'assessment_format' : 'assessment_internal'), retryable: record.retryable === true || legacyFormat };
+}

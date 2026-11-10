@@ -1,3 +1,4 @@
+import { parseAssessmentReport } from '../runtime/assessment.mjs';
 import { spawn } from 'node:child_process';
 import { buildWorkerContext, contextLimits as validateContextLimits } from '../runtime/worker-context.mjs';
 import { mkdirSync, openSync, writeSync, closeSync, writeFileSync, readFileSync } from 'node:fs';
@@ -397,8 +398,7 @@ function createRoleDriver({ executable = 'codex', model, prompt: rolePrompt, tim
         if (failure) throw failure;
         if (input.signal?.aborted) throw new Error('App-server execution cancelled');
         if (coordinator) {
-          if (typeof raw !== 'string' || Buffer.byteLength(raw) > 128 * 1024) throw new Error('Coordinator result exceeded its report bound');
-          return JSON.parse(raw);
+          return parseAssessmentReport(raw, 'Codex');
         }
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== 'object' || Object.keys(parsed).some(key => !['state', 'summary', 'artifacts', 'question', 'questionForTriggerId', 'decision', 'answers', 'acknowledgedInputIds'].includes(key)) ||

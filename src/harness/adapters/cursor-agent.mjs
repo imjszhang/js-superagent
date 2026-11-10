@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createCursorAgentDriver, cursorEnvironment, executeCursorTurn, probeCursor, validateCursorOptions } from '../../drivers/cursor-agent.mjs';
-import { jsonAssessmentPrompt } from '../../runtime/assessment.mjs';
+import { jsonAssessmentPrompt, parseAssessmentReport } from '../../runtime/assessment.mjs';
 import { createTurnAssessor } from '../../runtime/turn-assessor.mjs';
 import { projectStateDirectory } from '../../state-paths.mjs';
 export { createCursorAgentDriver, validateCursorOptions };
@@ -30,6 +30,7 @@ async function runTurn(options, turn) {
     ...(continuation ? {} : { session: turn.session, runId: turn.runId, checkpoint: turn.checkpoint }),
     registerProcess: turn.registerProcess ?? turn.input.registerProcess,
   });
+  if (turn.kind === 'assessment') return parseAssessmentReport(result.text, 'Cursor');
   return parsedResult(result, continuation ? 'continuation decision' : turn.kind === 'event' ? 'work-event report' : 'JSON report');
 }
 /** A read-only Cursor classifier runs in an empty context directory; scoped reads are performed by the host. */

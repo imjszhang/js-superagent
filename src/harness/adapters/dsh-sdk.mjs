@@ -1,6 +1,6 @@
 import { createDshSdkDriver, executeDshTurn, validateDshOptions, probeDsh } from '../../drivers/dsh.mjs';
 import { validateNativeHandoff } from '../../drivers/dsh-lease.mjs';
-import { jsonAssessmentPrompt } from '../../runtime/assessment.mjs';
+import { jsonAssessmentPrompt, parseAssessmentReport } from '../../runtime/assessment.mjs';
 import { createTurnAssessor } from '../../runtime/turn-assessor.mjs';
 
 function stripCoordinatorTools(execution) {
@@ -24,11 +24,7 @@ async function runTurn(config, turn) {
     try { return JSON.parse(boundedText(result, 'DSH coordination result exceeded its report bound')); }
     catch (error) { if (error.message === 'DSH coordination result exceeded its report bound') throw error; throw new Error('DSH coordinator returned an invalid work-event report'); }
   }
-  let value;
-  try { value = JSON.parse(boundedText(result, 'DSH coordinator result exceeded its report bound')); }
-  catch (error) { if (error.message === 'DSH coordinator result exceeded its report bound') throw error; throw new Error('DSH coordinator returned an invalid JSON report'); }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid DSH assessment report');
-  return value;
+  return parseAssessmentReport(result.text, 'DSH');
 }
 /** A DSH classifier has no native tools; scoped reads are performed by the host. */
 export function createDshAssessor(options = {}) {

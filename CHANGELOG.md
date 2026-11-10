@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.0-alpha.2 — Prepared 2026-11-10
+
+- Make per-action candidate assessment constraints explicit in the model contract and runtime validation.
+- Correct malformed assessment output within a bounded budget, without retrying authorization or ownership failures.
+- Preserve failed assessment diagnostics and original request identity for safe recovery; expose request outcomes to operator conversations.
+- Add regression coverage for format correction, exhaustion, recovery, policy changes and duplicate prevention.
+
+Prepared source version; npm publication is a separate operation.
+
 ## 0.14.0-alpha.1 — Released 2026-11-10
 
 - Apply per-ticket `managedJobs: false` to the effective DSH execution configuration as well as runtime tool inputs.

@@ -94,7 +94,8 @@ export interface ReplyDiagnostic {
 export interface EventDiagnostic {
   id:string;source:string;at:string|null;url:string|null;actor:{source:string;id:string|null}|null;available:boolean;text:string;textTruncated:boolean;
   intake:{status:string;reason:string|null;outcomes:Array<{ticketId:string;status:string;reason:string|null}>};
-  evaluation:{status:'decided'|'evaluating'|'pending'|'none';decisions:Array<{id:string;kind:string;reason:unknown;at:string|null;ticketId:string|null}>;threads:Array<{key:string;status:string;evalId:string|null}>};
+  requests?:Array<{triggerId:string;evalId?:string|null;status:string;ticketId:string|null;failureKind?:string;code?:string;retryable?:boolean;attempts?:number;corrections?:number;retries?:number;message?:string;reason?:string}>;
+  evaluation:{status:'decided'|'evaluating'|'pending'|'none'|'failed';assessment?:{evalId:string;status:string;failureKind:string|null;code:string|null;retryable:boolean;attempts:number|null;corrections:number;retries:number;message:string|null};decisions:Array<{id:string;kind:string;reason:unknown;at:string|null;ticketId:string|null}>;threads:Array<{key:string;status:string;evalId:string|null}>};
   tickets:Array<{ticketId:string;domainId:string;origin:boolean;fanout:boolean;context:boolean;acknowledged:boolean;handback:unknown;ended:unknown;inputs:Array<{id:string;kind:string;state:'pending'|'delivered'|'read'|'retired'|'unknown';at:string|null;readAt:string|null;deliveredAt:string|null}>}>;
   replies:ReplyDiagnostic[];problem:boolean;omitted:Record<'threads'|'decisions'|'tickets'|'inputs'|'replies'|'outcomes',number>;
 }

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { assessmentStatus, assessmentFailureMessage, publicAssessmentFailure } from './assessment-status.mjs';
 import { key } from '../../dist/core/index.js';
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -53,6 +54,7 @@ function snapshot(store) {
   const meta=new Map(rows('kv').map(row=>[row.key,JSON.parse(row.data)]));
   const state={meta,triggers:domain('triggers'),dispositions:domain('dispositions'),threads:domain('threads'),tickets:domain('tickets'),decisions:domain('decisions'),
     receipts:rows('receipts').map(row=>({...JSON.parse(row.data),id:row.id,status:row.status})),effects:rows('effects').map(row=>({...row,payload:JSON.parse(row.payload)}))};
+  state.store = store;
   state.ids=unique([...state.triggers.keys(),...[...meta.keys()].filter(id=>id.startsWith('github:event:')).map(id=>id.slice('github:event:'.length)),
     ...[...meta.keys()].filter(id=>id.startsWith('github:paused:')).map(id=>id.slice('github:paused:'.length))]);
   state.publicId=id=>id?(meta.get(`public:${id}`)??id):null;
@@ -124,7 +126,12 @@ function eventView(state, id) {
   const threadFacts=[...new Map([...keys.map(name=>state.threads.get(name)),...state.evalThreads.get(id)??[]].filter(Boolean).map(thread=>[thread.key,thread])).values()];
   const decisions=[...new Map((state.decisionsByEvent.get(id)??[]).map(decision=>[decision.id,decision])).values()].sort((a,b)=>String(b.at??'').localeCompare(String(a.at??'')));
   const evalThreads=threadFacts.map(thread=>({key:thread.key,status:list(thread.evaluating?.triggerIds).includes(id)?'evaluating':list(thread.pending).includes(id)?'pending':'none',evalId:list(thread.evaluating?.triggerIds).includes(id)?thread.evaluating.id:null}));
-  const evaluationStatus=evalThreads.some(thread=>thread.status==='evaluating')?'evaluating':evalThreads.some(thread=>thread.status==='pending')?'pending':decisions.length?'decided':'none';
+  const assessmentRef = state.meta.get(`assessment-trigger:${id}`)?.evalId ?? disposition?.evalId;
+  const assessment = assessmentRef ? state.meta.get(`assessment:${assessmentRef}`) : null;
+  const assessmentInfo = assessment ? { evalId: assessmentRef, status: assessment.status, ...(assessment.status==='failed'?publicAssessmentFailure(assessment):{failureKind:null,code:null,retryable:false}), attempts: assessment.attempts ?? null, corrections: assessment.corrections ?? 0, retries: assessment.retries ?? 0, message: assessment.status === 'failed' ? assessmentFailureMessage(assessment) : null } : null;
+  const requests = [...state.meta.entries()].filter(([key, value]) => key.startsWith('coordination:event:') && value.references?.triggerId === id)
+    .flatMap(([, value]) => (value.receipts ?? []).filter(receipt => receipt.kind === 'request' && receipt.result?.triggerId).map(receipt => assessmentStatus(state.store, receipt.result.triggerId)));
+  const evaluationStatus=evalThreads.some(thread=>thread.status==='evaluating')?'evaluating':evalThreads.some(thread=>thread.status==='pending')?'pending':assessment?.status==='failed'?'failed':decisions.length?'decided':'none';
   const contextNotices=state.notesByEvent.get(id)??[];
   const tickets=[];
   for(const domainId of unique(state.ticketsByEvent.get(id)??[])){
@@ -141,10 +148,10 @@ function eventView(state, id) {
   const hold=state.meta.get(`pull-link-required:${id}`);
   const intake={status:deferred?'deferred':filtered?'filtered':trigger||receipt?.status==='received'?'received':receipt?.status??'unknown',reason:hold?.status==='pending'?'pull-link-required':reason(disposition?.filtered)??receipt?.reason??(deferred?'runtime-paused':null),
     outcomes:list(receipt?.outcomes).map(item=>({ticketId:state.publicId(item.ticketId),status:item.status,reason:reason(item.reason)}))};
-  const problem=filtered||deferred||hold?.status==='pending'||decisions.some(item=>item.kind==='unavailable'&&!item.dismissed)||replies.some(item=>['failed','dropped'].includes(item.status));
+  const problem=assessment?.status==='failed'||filtered||deferred||hold?.status==='pending'||decisions.some(item=>item.kind==='unavailable'&&!item.dismissed)||replies.some(item=>['failed','dropped'].includes(item.status));
   return {id,source,at:reference.at??reference.updatedAt??reference.createdAt??receipt?.at??paused?.at??null,url:reference.url??null,
     actor:reference.actor?{source:reference.actor.source??source,id:typeof reference.actor==='string'?reference.actor:reference.actor.id??reference.actor.login??null}:null,available:!!trigger,text:reference.text??'',textTruncated:!trigger&&!!receipt?.reference,
-    intake,evaluation:{status:evaluationStatus,decisions:decisions.map(decision=>({id:decision.id,kind:decision.audit?.coordinatorAnswer?'answer':decision.kind,reason:decision.reason??[],at:decision.at??null,ticketId:state.publicId(decision.ticketId)})),threads:evalThreads},
+    intake,...(requests.length?{requests}:{}),evaluation:{status:evaluationStatus,...(assessmentInfo?{assessment:assessmentInfo}:{}),decisions:decisions.map(decision=>({id:decision.id,kind:decision.audit?.coordinatorAnswer?'answer':decision.kind,reason:decision.reason??[],at:decision.at??null,ticketId:state.publicId(decision.ticketId)})),threads:evalThreads},
     tickets,replies,problem,omitted:{threads:0,decisions:0,tickets:0,inputs:0,replies:0,outcomes:0}};
 }
 
@@ -192,7 +199,7 @@ function page(store, kind, options, values, summary, bound) {
 export function readEventDiagnostics(store, options = {}) {
   optionsFor(store,'events',options);const state=snapshot(store),values=state.ids.map(id=>eventView(state,id));
   return page(store,'events',options,values,items=>({total:items.length,problems:items.filter(item=>item.problem).length,filtered:items.filter(item=>item.intake.status==='filtered').length,deferred:items.filter(item=>item.intake.status==='deferred').length,
-    pending:items.filter(item=>item.evaluation.status==='pending').length,evaluating:items.filter(item=>item.evaluation.status==='evaluating').length,decided:items.filter(item=>item.evaluation.status==='decided').length}),boundEvent);
+    pending:items.filter(item=>item.evaluation.status==='pending').length,evaluating:items.filter(item=>item.evaluation.status==='evaluating').length,decided:items.filter(item=>item.evaluation.status==='decided').length,failed:items.filter(item=>item.evaluation.status==='failed').length}),boundEvent);
 }
 export function readEventDiagnostic(store, id, options = {}) {
   optionsFor(store,'events',options);

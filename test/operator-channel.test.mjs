@@ -20,7 +20,7 @@ const dm = (id, text, extra = {}) => ({ sender: { sender_id: { open_id: extra.fr
   message: { message_id: id, chat_id: 'oc_dm', chat_type: 'p2p', message_type: 'text', create_time: '1793491200000', content: JSON.stringify({ text }),
     ...(extra.parent ? { parent_id: extra.parent } : {}) } });
 
-function project(t, { worker = [], coordinator = () => ({ summary: 'nothing', actions: [] }) } = {}) {
+function project(t, { worker = [], assess = async () => ({ kind: 'ignore', reason: 'unused', rules: [] }), coordinator = () => ({ summary: 'nothing', actions: [] }) } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'js-superagent-operator-')));
   const calls = { create: [], reply: [], patch: [], failed: 0 }, events = [], control = { failCreate: false };
   let sent = 0, runs = 0;
@@ -42,7 +42,7 @@ function project(t, { worker = [], coordinator = () => ({ summary: 'nothing', ac
       return typeof step === 'function' ? step(input) : step;
     } }),
     createAssessor: () => ({
-      async assess() { return { kind: 'ignore', reason: 'unused', rules: [] }; },
+      assess,
       async handleEvent(input) { events.push(input); input.checkpoint({ driver: 'operator-fixture', id: 'coordinator-session' }); return coordinator(input); },
     }) }] });
   process.env.TEST_FEISHU_APP_SECRET = 'fixture-secret';
@@ -430,4 +430,96 @@ test('upgrading an unsent legacy question withdraws the text retry and sends onl
   assert.equal(runtime.get(ticket.id).status, 'waiting');
   assert.equal(runtime.get(ticket.id).reports.length, 1);
   assert.deepEqual(runtime.listAnswers(ticket.id), []);
+});
+
+
+test('candidate assessment failures reach the original operator and remain recoverable without duplicate tickets', async t => {
+  let accept = false;
+  const { runtime, calls, events } = project(t, { worker: [waiting],
+    coordinator: input => input.event.text === 'Inspect the project' ? { summary: 'New authorized request', actions: [{ kind: 'request', ticketId: null, text: input.event.text }] }
+      : { summary: 'Inspected request status', actions: [] },
+    assess: async input => {
+      if (!accept) throw Object.assign(new Error('private-token-should-not-leak'), { failureKind: 'format', code: 'assessment_format', retryable: true, attempts: 3, corrections: 2, exhausted: true });
+      return { kind: 'accept', reason: 'Explicit request', title: 'Inspect project', scope: 'Read-only inspection', rules: [] };
+    } });
+  await runtime.prepareExecution();
+  runtime.receiveSourceEvent('feishu', dm('om_request', 'Inspect the project'));
+  await runtime.runNext();
+  const event = runtime.coordinationStatus().events.find(item => item.text === 'Inspect the project');
+  const triggerId = event.receipts[0].result.triggerId;
+  await runtime.runNext();
+  const failed = runtime.eventDiagnostic(triggerId);
+  assert.equal(failed.evaluation.status, 'failed');
+  assert.equal(failed.evaluation.assessment.failureKind, 'format');
+  assert.equal(failed.evaluation.assessment.retryable, true);
+  assert.equal(failed.evaluation.assessment.corrections, 2);
+  assert.equal(runtime.list().length, 0);
+  await runtime.flushNotifications();
+  const receipt = calls.reply.find(request => request.path.message_id === 'om_request');
+  assert.ok(receipt); assert.match(receipt.data.content, /纠正 2 次/); assert.doesNotMatch(receipt.data.content, /private-token/);
+  const original = runtime.eventDiagnostics({ query: 'Inspect the project' }).items.find(item => item.source === 'feishu');
+  assert.equal(original.requests[0].status, 'failed');
+  runtime.receiveSourceEvent('feishu', dm('om_status', 'What happened?'));
+  await runtime.runNext();
+  const request = events.at(-1).context.recentEvents.find(item => item.id === event.id).requests[0];
+  assert.equal(request.status, 'failed'); assert.equal(request.failureKind, 'format');
+  assert.doesNotMatch(JSON.stringify(request), /private-token/);
+  accept = true;
+  assert.equal(runtime.reevaluate(triggerId), true);
+  assert.equal(runtime.eventDiagnostic(triggerId).evaluation.status, 'pending');
+  await runtime.runNext();
+  assert.equal(runtime.list().length, 1);
+  assert.equal(runtime.reevaluate(triggerId), false);
+  await runtime.runNext(); assert.equal(runtime.list().length, 1);
+  assert.equal(runtime.notifications().filter(item => item.id.startsWith('assessment-result:')).length, 2);
+  assert.equal(runtime.eventDiagnostic(triggerId).evaluation.status, 'decided');
+});
+
+test('legacy request receipts recover provenance and revoked operator authority cannot be retried', async t => {
+  const { runtime, root } = project(t, { coordinator: input => ({ summary: 'Request', actions: [{ kind: 'request', ticketId: null, text: input.event.text }] }),
+    assess: async () => { throw new Error('Unavailable adapter'); } });
+  await runtime.prepareExecution();
+  runtime.receiveSourceEvent('feishu', dm('om_legacy', 'Inspect source records'));
+  await runtime.runNext();
+  const triggerId = runtime.coordinationStatus().events[0].receipts[0].result.triggerId;
+  const db = new DatabaseSync(join(stateDir(root), 'state.sqlite'));
+  db.prepare('DELETE FROM kv WHERE key=?').run(`assessment-origin:${triggerId}`); db.close();
+  await runtime.runNext();
+  await runtime.stop();
+  runtime.configureV2({ feishu: { operator: { openId: 'ou_bob' } } });
+  assert.throws(() => runtime.reevaluate(triggerId), /authority/);
+  assert.equal(runtime.list().length, 0);
+});
+
+test('candidate ticket creation rolls back if its durable operator receipt cannot be queued', async t => {
+  const { runtime, root } = project(t, { worker: [waiting],
+    coordinator: input => ({ summary: 'Request', actions: [{ kind: 'request', ticketId: null, text: input.event.text }] }),
+    assess: async () => ({ kind: 'accept', reason: 'Authorized', title: 'Inspect source', scope: 'Read-only inspection', rules: [] }) });
+  await runtime.prepareExecution();
+  runtime.receiveSourceEvent('feishu', dm('om_atomic', 'Inspect source'));
+  await runtime.runNext();
+  const triggerId = runtime.coordinationStatus().events[0].receipts[0].result.triggerId;
+  const db = new DatabaseSync(join(stateDir(root), 'state.sqlite'));
+  db.exec("CREATE TRIGGER fail_assessment_receipt BEFORE INSERT ON receipts WHEN json_extract(NEW.data, '$.text') LIKE '已建立工单 %' BEGIN SELECT RAISE(ABORT, 'receipt storage failure'); END");
+  await runtime.runNext();
+  assert.equal(runtime.list().length, 0);
+  assert.equal(runtime.eventDiagnostic(triggerId).evaluation.status, 'failed');
+  assert.equal(runtime.notifications().some(item => item.text.startsWith('已建立工单')), false);
+  db.exec('DROP TRIGGER fail_assessment_receipt'); db.close();
+  runtime.reevaluate(triggerId); await runtime.runNext();
+  assert.equal(runtime.list().length, 1);
+});
+
+test('semantic unavailable replies once without being reported as an execution failure', async t => {
+  const { runtime, calls } = project(t, {
+    coordinator: input => ({ summary: 'Request', actions: [{ kind: 'request', ticketId: null, text: input.event.text }] }),
+    assess: async () => ({ kind: 'unavailable', reason: 'The source date is missing', rules: [] }) });
+  await runtime.prepareExecution();
+  runtime.receiveSourceEvent('feishu', dm('om_missing_info', 'Check the source'));
+  await runtime.runNext(); const triggerId = runtime.coordinationStatus().events[0].receipts[0].result.triggerId;
+  await runtime.runNext(); await runtime.flushNotifications();
+  assert.equal(runtime.eventDiagnostic(triggerId).evaluation.status, 'decided');
+  assert.equal(runtime.eventDiagnostic(triggerId).evaluation.assessment.failureKind, null);
+  assert.equal(calls.reply.filter(item => item.path.message_id === 'om_missing_info').length, 1);
+  assert.match(calls.reply.at(-1).data.content, /补充信息/);
 });

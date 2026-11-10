@@ -15,6 +15,8 @@ import { executorMigration } from './harness/migration.mjs';
 import { CoordinationInbox, normalizeWorkRetry, coordinationFailure } from './runtime/coordination.mjs';
 import { normalizeUIEvidence, uiTree, uiEvidenceRequired, captureUIEvidence, validateUIEvidence, readUIEvidencePNG } from './runtime/ui-evidence.mjs';
 import { managementRevision, normalizeManagementIntent, managementCommand } from './runtime/operator-management.mjs';
+import { assessmentFailure } from './runtime/assessment.mjs';
+import { assessmentStatus, assessmentFailureMessage } from './runtime/assessment-status.mjs';
 import { createCoordinationReader } from './runtime/coordination-context.mjs';
 import { feedbackDisposition } from './runtime/feedback.mjs';
 import { projectStateDirectory } from './state-paths.mjs';
@@ -851,7 +853,9 @@ export class ProjectRuntime {
     const recentEvents = [];
     for (const item of this.#coordinationInbox().list({ limit: 20 }).reverse()) {
       const row = { id: item.id, kind: item.kind, ticketId: item.ticketId ?? null, status: item.status,
-        text: item.text.slice(0, 400), summary: item.result?.summary?.slice(0, 400) ?? null };
+        text: item.text.slice(0, 400), summary: item.result?.summary?.slice(0, 400) ?? null,
+        requests: (item.receipts ?? []).filter(receipt => receipt.kind === 'request' && receipt.result?.triggerId).slice(0, 4)
+          .map(receipt => assessmentStatus(this.#store, receipt.result.triggerId)) };
       if (Buffer.byteLength(JSON.stringify([...recentEvents, row])) > 8000) break;
       recentEvents.push(row);
     }
@@ -951,7 +955,11 @@ export class ProjectRuntime {
             return { ticketId: action.ticketId, attentionId: record.attentionId };
           }
           if (action.kind === 'notify') return this.#notifyOperator({ id: action.id, ticketId: action.ticketId, text: action.text });
-          if (action.kind === 'request') return this.request({ text: event.text, threadId: `coordination-${event.id}` });
+          if (action.kind === 'request') {
+            const result = this.request({ text: event.text, threadId: `coordination-${event.id}` });
+            this.#store.setMeta(`assessment-origin:${result.triggerId}`, { eventId: event.id });
+            return result;
+          }
           if (action.kind === 'note') { this.note(action.ticketId, action.text); return { ticketId: action.ticketId }; }
           if (action.kind === 'requestStatus') { this.requestStatus(action.ticketId); return { ticketId: action.ticketId }; }
           if (action.kind === 'stop') {
@@ -1091,6 +1099,37 @@ export class ProjectRuntime {
         headHistory: [pull.headSha], lastObservedHeadSha: pull.headSha, lastObservedState: pull.state, ci: [] });
     }
   }
+  #assessmentOrigin(triggerId) {
+    const link = this.#store.getMeta(`assessment-origin:${triggerId}`);
+    if (link) return this.#coordinationInbox().get(link.eventId);
+    // Upgrade compatibility: the committed request receipt is the authoritative link.
+    return this.#store.listMeta('coordination:event:').map(row => row.value).find(event =>
+      event.receipts?.some(receipt => receipt.kind === 'request' && receipt.result?.triggerId === triggerId));
+  }
+  #assessmentOriginAllowed(triggerId) {
+    const event = this.#assessmentOrigin(triggerId);
+    if (!event || event.source?.channel !== 'feishu') return true;
+    const feishu = this.#operatorFeishu(), original = this.#store.triggers.get(event.references?.triggerId);
+    return !!feishu && event.actor?.id === feishu.operator.openId && original?.meta?.tenantKey === feishu.tenantKey;
+  }
+  #assessmentReceipt(candidate, record) {
+    for (const trigger of candidate.triggers) {
+      const event = this.#assessmentOrigin(trigger.id);
+      if (!event || !this.#assessmentOriginAllowed(trigger.id)) continue;
+      const status = assessmentStatus(this.#store, trigger.id);
+      if (record.status !== 'failed' && !['accepted', 'attached', 'ignore', 'unavailable', 'stop'].includes(status.status)) continue;
+      const feishu = event.source?.channel === 'feishu' && this.#operatorFeishu();
+      this.#outbox.send({ id: `assessment-result:${candidate.evalId}:${trigger.id}`, kind: 'reply',
+        ...(status.ticketId ? { ticketId: status.ticketId } : {}),
+        channel: feishu ? operatorReplyChannel(feishu, event.source.chatId, event.source.messageId)
+          : { source: 'local', thread: event.id, address: {} },
+        text: status.status === 'accepted' ? `已建立工单 ${status.ticketId}，将按授权范围执行。`
+          : status.status === 'attached' ? `请求已关联到现有工单 ${status.ticketId}。`
+          : record.status === 'failed' ? assessmentFailureMessage(record)
+          : status.status === 'unavailable' ? '本次请求评估未能建立工单，需要补充信息或核对相关条件。请求记录已保留。'
+          : status.status === 'stop' ? '本次请求已按授权处理停止操作。' : '本次请求评估已结束，未创建新工单。请求记录已保留。' });
+    }
+  }
   #processAssessments() {
     if (this.#assessing) return this.#assessing;
     if (this.#stopping || this.isPaused()) return Promise.resolve(false);
@@ -1113,16 +1152,14 @@ export class ProjectRuntime {
     const promptRegistry=new PromptRegistry(this.#store), promptSettings=promptRegistry.current();
     const promptAssembly=promptSettings.revision>0?promptRegistry.assemble({role:'coordinator'}):null;
     const assessorOptions=settings.assessor&&{...settings.assessor,...(promptAssembly?{prompt:[settings.assessor.prompt,promptAssembly.text].filter(Boolean).join('\n\n')}: {})};
-    const assessor = assessorOptions && this.#machine.driver(this.#harnessRegistry.createAssessor(assessorOptions), 'coordinator');
-    if (!assessor) {
-      this.#engine.decide(candidate.triggers[0].id, { kind: 'unavailable', reason: 'No semantic assessor configured', evalId: candidate.evalId }); return;
-    }
+    let assessor;
     const token = randomUUID(), runId = `assessment-${randomUUID()}`;
     this.#store.atomic(() => {
       const owner = this.#store.getMeta('coordinator:owner');
       if (owner && (!ownerIsDead(owner) || !guardiansExited(owner))) throw new Later('Coordinator is owned by another process');
       this.#store.setMeta('coordinator:owner', { token, pid: process.pid, host: hostname() });
-      this.#store.setMeta(`assessment:${candidate.evalId}`, { runId, evalId: candidate.evalId, policyVersion: candidate.policyVersion, status: 'running', at: this.#now() });
+      this.#store.setMeta(`assessment:${candidate.evalId}`, { runId, evalId: candidate.evalId, policyVersion: candidate.policyVersion, status: 'running', triggerIds: candidate.triggers.map(trigger => trigger.id), at: this.#now() });
+      for (const trigger of candidate.triggers) this.#store.setMeta(`assessment-trigger:${trigger.id}`, { evalId: candidate.evalId });
     });
     this.#assessmentAbort = new AbortController();
     const guard = fn => this.#store.atomic(() => {
@@ -1130,8 +1167,13 @@ export class ProjectRuntime {
       if (owner?.token !== token || this.#assessmentAbort.signal.aborted || this.#policy().version !== candidate.policyVersion) throw new Error('Stale coordinator callback');
       return fn(owner);
     });
-    let outcome;
+    let outcome, progress = {};
+    const recordBase = { runId, evalId: candidate.evalId, policyVersion: candidate.policyVersion, triggerIds: candidate.triggers.map(trigger => trigger.id) };
     try {
+      assessor = assessorOptions && this.#machine.driver(this.#harnessRegistry.createAssessor(assessorOptions), 'coordinator');
+      if (!assessor) throw Object.assign(new Error('No semantic assessor configured'), { code: 'assessment_configuration' });
+      if (candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id)))
+        throw Object.assign(new Error('Original operator authority is no longer configured'), { failureKind: 'authority', code: 'assessment_authority', retryable: false });
       this.#engine.candidateDelivered(candidate.evalId);
       const links = createCandidateLinks({ store:this.#store, policy:()=>this.#policy(), candidate, repository:this.#config().github?.repository });
       const assessmentCandidate = links.candidate;
@@ -1143,6 +1185,11 @@ export class ProjectRuntime {
       const sessionKey=`coordinator:session:${settings.version}${promptAssembly?`:${promptAssembly.version}`:''}`;
       outcome = await assessor.assess({ candidate:assessmentCandidate, projectRoot: this.projectRoot, runId,
         signal: this.#assessmentAbort.signal, rules: settings.policy.rules,
+        timeoutMs: Math.max(1, Date.parse(this.#store.threads.get(candidate.thread.key)?.evaluating?.deadline) - Date.parse(this.#now())),
+        onAssessmentAttempt: update => guard(() => {
+          progress = { attempts: update.attempts, corrections: update.corrections, retries: update.retries ?? 0, phase: update.phase };
+          this.#store.setMeta(`assessment:${candidate.evalId}`, { ...recordBase, ...progress, status: 'running', at: this.#now() });
+        }),
         contextReferences:sourceContext.contextReferences,
         readContextRecord: async (resource, id, options) => {
           assertAssessment();
@@ -1158,8 +1205,17 @@ export class ProjectRuntime {
           if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) throw new Error('Invalid coordinator process');
           (owner.guardians ??= []).push(captureProcessIdentity(pid) ?? { pid, host: hostname() }); this.#store.setMeta('coordinator:owner', owner);
         }) });
+      const recordCompletion = result => {
+        const record = { ...recordBase, ...progress, status: 'finished', contextReads,
+          ticketReferences:assessmentCandidate.ticketReferences ?? [], outcome, result, at: this.#now() };
+        this.#store.setMeta(`assessment:${candidate.evalId}`, record);
+        this.#assessmentReceipt(candidate, record);
+        return result;
+      };
       const result = guard(()=>{
         links.verify();
+        if (candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id)))
+          throw Object.assign(new Error('Original operator authority changed during assessment'), { failureKind: 'authority', code: 'assessment_authority', retryable: false });
         if (outcome.kind === 'attach') links.verify(outcome.ticketId, outcome.triggerId ?? candidate.triggers[0].id);
         if (outcome.kind === 'attach') {
           const triggerId = outcome.triggerId ?? candidate.triggers[0].id;
@@ -1173,7 +1229,7 @@ export class ProjectRuntime {
                 note: typeof note === 'string' ? note : null, now: this.#now() });
             }
             this.#engine.decideTrigger(triggerId, { kind: 'unavailable', reason: '需要先关联此 PR', evalId: candidate.evalId });
-            return { applied: false, reason: 'pull-link-required', triggerId };
+            return recordCompletion({ applied: false, reason: 'pull-link-required', triggerId });
           }
         }
         const applied=applyAssessment({ engine: this.#engine, store: this.#store, candidate:assessmentCandidate, outcome, policy: this.#policy(),
@@ -1183,10 +1239,8 @@ export class ProjectRuntime {
           const budget=this.#botReviewGate(input,{ticketId:this.#store.getMeta(`public:${applied.ticket.id}`)??applied.ticket.id,reserve:true});
           if(!budget.allowed)throw new Error(`Routing includes unavailable bot review work (${budget.reason}); inspect and split the candidate`);
         }
-        return applied;
+        return recordCompletion(applied);
       });
-      this.#store.setMeta(`assessment:${candidate.evalId}`, { runId, evalId: candidate.evalId, policyVersion: candidate.policyVersion, status: 'finished', contextReads,
-        ticketReferences:assessmentCandidate.ticketReferences ?? [], outcome, result, at: this.#now() });
       if (!result.applied && this.isPaused()) throw new Later('Assessment is waiting for resume');
     } catch (error) {
       if (error instanceof Later) throw error;
@@ -1194,9 +1248,15 @@ export class ProjectRuntime {
       if (this.#store.getMeta('coordinator:owner')?.token !== token || this.#assessmentAbort.signal.aborted) throw new Later('Assessment ownership changed');
       const failedTrigger = candidate.triggers.find(trigger => trigger.id === error.triggerId) ?? candidate.triggers.find(trigger => trigger.id === outcome?.triggerId) ?? candidate.triggers[0];
       const held = this.#engine.candidate(failedTrigger.id);
-      if (held?.evalId === candidate.evalId && this.#policy().version === candidate.policyVersion && !this.isPaused())
-        this.#engine.decideTrigger(failedTrigger.id, { kind: 'unavailable', reason: String(error.message ?? error), evalId: candidate.evalId });
-      this.#store.setMeta(`assessment:${candidate.evalId}`, { runId, status: 'failed', error: String(error.message ?? error), at: this.#now() });
+      this.#store.atomic(() => {
+        const current = held?.evalId === candidate.evalId && this.#policy().version === candidate.policyVersion && !this.isPaused();
+        const failure = assessmentFailure(error);
+        if (coordinationFailure(error) === 'transient') Object.assign(failure, { failureKind: 'transient', retryable: true });
+        const record = { ...recordBase, ...progress, ...failure, status: 'failed', at: this.#now() };
+        if (current) this.#engine.decideTrigger(failedTrigger.id, { kind: 'unavailable', reason: assessmentFailureMessage(record), evalId: candidate.evalId });
+        this.#store.setMeta(`assessment:${candidate.evalId}`, record);
+        if (current) this.#assessmentReceipt({ ...candidate, triggers: [failedTrigger] }, record);
+      });
     } finally {
       this.#store.atomic(() => { const owner = this.#store.getMeta('coordinator:owner'); if (owner?.token === token && guardiansExited(owner)) this.#store.deleteMeta('coordinator:owner'); });
       this.#assessmentAbort = undefined;
@@ -1806,6 +1866,8 @@ export class ProjectRuntime {
   reevaluate(triggerId) { return this.#db().atomic(()=>{
     const trigger=this.#store.triggers.get(nonempty(triggerId,'triggerId'));
     if(trigger && !this.#botReviewGate(trigger).allowed)return false;
+    if (trigger && assessmentStatus(this.#store, triggerId).ticketId) return false;
+    if (trigger && !this.#assessmentOriginAllowed(triggerId)) throw new Error('Original operator authority is no longer configured');
     return this.#engine.reevaluate(triggerId);
   }); }
   requestStatus(id) { return this.#db().atomic(()=>this.#engine.requestStatus(this.#meta(id).domainId)); }

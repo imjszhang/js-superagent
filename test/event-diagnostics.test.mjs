@@ -55,7 +55,7 @@ test('filtered receipt references and paused events remain diagnosable without i
   store.setMeta(`github:paused:${paused}`,{event:{id:paused,repository:'owner/repo',actor:{login:'alice',id:'7'},thread,text:'Held while paused',createdAt:at},at});
   const value=readEventDiagnostic(store,filtered);assert.equal(value.available,false);assert.equal(value.intake.status,'filtered');assert.equal(value.intake.reason,'actor-not-authorized');assert.equal(value.actor.id,'someone');
   const held=readEventDiagnostic(store,paused);assert.equal(held.intake.status,'deferred');assert.equal(held.available,false);assert.equal(held.text,'Held while paused');
-  assert.deepEqual(readEventDiagnostics(store,{problemsOnly:true}).summary,{total:2,problems:2,filtered:1,deferred:1,pending:0,evaluating:0,decided:0});
+  assert.deepEqual(readEventDiagnostics(store,{problemsOnly:true}).summary,{total:2,problems:2,filtered:1,deferred:1,pending:0,evaluating:0,decided:0,failed:0});
   assert.equal(readEventDiagnostic(store,'not-present'),null);
 });
 
