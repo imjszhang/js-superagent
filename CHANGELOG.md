@@ -1,13 +1,13 @@
 # Changelog
 
-## 0.14.0-alpha.3 — Prepared 2026-11-11
+## 0.14.0-alpha.3 — Released 2026-11-11
 
 - Let authenticated operator conversations recover original failed requests through a scoped retryRequest action.
 - Expose current recovery eligibility and bounded lookup for older requests; preserve authorization and original request identity.
 - Return durable acknowledgements for recovery, pending work, existing tickets and blocked requests without duplicate admissions.
 - Cover conversation recovery, replay, stale state, current authority and request lookup in regression tests.
 
-Prepared version; npm publication is recorded separately after registry verification.
+Published to npm with the alpha tag from `4108e81e817479c6c6276ab60b7e902ca74ffb3b`; registry integrity and clean consumer verification passed.
 
 ## 0.14.0-alpha.2 — Released 2026-11-10
 
