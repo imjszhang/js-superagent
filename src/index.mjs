@@ -840,6 +840,60 @@ export class ProjectRuntime {
       ...(domain.attention ? { question: { answered: !!this.#attentionAnswer(domain.attention.id), choices: !!this.#attentionDecision(domain.attention.id) } } : {}),
       stateVersion: createHash('sha256').update(JSON.stringify({ domain, failure: meta.failure, interrupted: meta.interrupted })).digest('hex') };
   }
+  #recoveryOperatorAllowed(event) {
+    if (event?.kind !== 'operator' || event.actor?.kind !== 'human') return false;
+    if (event.actor.source === 'local') return event.source?.channel === 'local';
+    const feishu = this.#operatorFeishu(), source = this.#store.triggers.get(event.references?.triggerId);
+    return !!feishu && event.actor.source === 'feishu' && event.source?.channel === 'feishu' &&
+      event.actor.id === feishu.operator.openId && source?.meta?.tenantKey === feishu.tenantKey;
+  }
+  #coordinationRequestCard(triggerId, event) {
+    const origin = this.#assessmentOrigin(triggerId), trigger = this.#store.triggers.get(triggerId);
+    if (!origin || !trigger || origin.kind !== 'operator' || origin.actor?.kind !== 'human') return null;
+    // A remote conversation may recover only its own original requests. The trusted
+    // local operator can inspect project requests without impersonating their authors.
+    if (event.actor?.source !== 'local' && (origin.actor?.source !== event.actor?.source || origin.actor?.id !== event.actor?.id ||
+      origin.source?.channel !== event.source?.channel || origin.source?.chatId !== event.source?.chatId)) return null;
+    const status = assessmentStatus(this.#store, triggerId);
+    let reason = null;
+    if (!this.#recoveryOperatorAllowed(event) || !this.#assessmentOriginAllowed(triggerId)) reason = 'authority';
+    else if (this.isPaused() || this.#stopping) reason = 'paused';
+    else if (!this.#coordinator.current().assessor) reason = 'assessor-unavailable';
+    else if (!this.#policy().gate(trigger).admissible || !this.#botReviewGate(trigger).allowed) reason = 'admission';
+    else if (status.ticketId) reason = 'already-owned';
+    else if (['pending', 'evaluating', 'correcting'].includes(status.status)) reason = 'in-progress';
+    else if (status.status !== 'failed') reason = 'not-failed';
+    else if (!['format', 'transient', 'timeout'].includes(status.failureKind)) reason = 'inspection-required';
+    const allowed = reason === null;
+    const card = { ...status, text: trigger.text.slice(0, 1000), summary: origin.result?.summary?.slice(0, 600) ?? null, source: { channel: origin.source?.channel, ...(origin.source?.chatId ? { chatId: origin.source.chatId } : {}) },
+      recovery: { allowed, reason } };
+    const version = createHash('sha256').update(JSON.stringify({ card, policy: this.#policy().version,
+      assessor: this.#coordinator.current().version, origin: { actor: origin.actor, source: origin.source }, actor: event.actor })).digest('hex');
+    card.recovery.version = version;
+    return card;
+  }
+  #coordinationRequests(event) {
+    const ids = new Set(this.#store.listMeta('coordination:event:').flatMap(({ value }) => (value.receipts ?? [])
+      .filter(receipt => receipt.kind === 'request' && receipt.result?.triggerId).map(receipt => receipt.result.triggerId)));
+    return [...ids].map(id => this.#coordinationRequestCard(id, event)).filter(Boolean);
+  }
+  #retryRequest(action, event) {
+    // Called only within CoordinationInbox.complete's transaction, after snapshot
+    // verification. Never turn a repeat instruction into a replacement candidate.
+    const card = this.#coordinationRequestCard(action.triggerId, event);
+    if (!card || !this.#recoveryOperatorAllowed(event)) throw new Error('Request recovery is no longer authorized');
+    let status, message;
+    if (card.recovery.version !== action.expectedVersion) throw new Error('Coordination context or policy changed; reassessment required');
+    if (card.recovery.reason === 'already-owned') { status = 'already-owned'; message = `原请求已关联工单 ${(card.ownerTicketIds ?? [card.ticketId]).join('、')}，无需重复建单。`; }
+    else if (card.recovery.reason === 'in-progress') { status = 'in-progress'; message = '原请求已经在排队或评估中，无需重复启动。'; }
+    else if (!card.recovery.allowed) { status = 'blocked'; message = `暂时不能重新评估原请求（${card.recovery.reason}），需要先核对相关条件。`; }
+    else if (this.reevaluate(action.triggerId)) { status = 'queued'; message = '已将原请求重新排入评估；建单结果会回到原会话。'; }
+    else { status = 'in-progress'; message = '原请求状态已更新，未重复启动评估。'; }
+    const feishu = event.source?.channel === 'feishu' && this.#operatorFeishu();
+    this.#outbox.send({ id: action.id, kind: 'reply', ...(card.ticketId ? { ticketId: card.ticketId } : {}),
+      channel: feishu ? operatorReplyChannel(feishu, event.source.chatId, event.source.messageId) : { source: 'local', thread: event.id, address: {} }, text: message });
+    return { triggerId: action.triggerId, status, ticketId: card.ticketId ?? null, receiptId: action.id, reason: card.recovery.reason };
+  }
   #coordinationContext(event) {
     const records = this.#db().listMeta('ticket:').map(row => row.value);
     records.sort((a, b) => Number(b.id === event.ticketId) - Number(a.id === event.ticketId) || b.updatedAt.localeCompare(a.updatedAt));
@@ -855,7 +909,7 @@ export class ProjectRuntime {
       const row = { id: item.id, kind: item.kind, ticketId: item.ticketId ?? null, status: item.status,
         text: item.text.slice(0, 400), summary: item.result?.summary?.slice(0, 400) ?? null,
         requests: (item.receipts ?? []).filter(receipt => receipt.kind === 'request' && receipt.result?.triggerId).slice(0, 4)
-          .map(receipt => assessmentStatus(this.#store, receipt.result.triggerId)) };
+          .map(receipt => this.#coordinationRequestCard(receipt.result.triggerId, event)).filter(Boolean) };
       if (Buffer.byteLength(JSON.stringify([...recentEvents, row])) > 8000) break;
       recentEvents.push(row);
     }
@@ -905,6 +959,7 @@ export class ProjectRuntime {
     try {
       const snapshot = this.#coordinationContext(event);
       const reader = createCoordinationReader(this.#store, { ticketCard: (meta, domain) => this.#coordinationTicketCard(meta, domain),
+        requestCards: () => this.#coordinationRequests(event),
         maxReads: options.contextLimits?.maxReads ?? 3, maxBytes: options.contextLimits?.readBytes ?? 32000 });
       const sessionKey = `coordinator:session:${settings.version}${promptAssembly ? `:${promptAssembly.version}` : ''}`;
       const result = await assessor.handleEvent({ event, context: snapshot.context, projectRoot: this.projectRoot, runId,
@@ -919,7 +974,7 @@ export class ProjectRuntime {
       guard(owner => {
         if (!guardiansExited(owner)) throw new Error('Coordinator still owns live processes; inspect before retrying');
         reader.verify();
-        const context = { ...snapshot.context, tickets: [...new Map([...snapshot.context.tickets, ...reader.tickets()].map(ticket => [ticket.id, ticket])).values()] };
+        const context = { ...snapshot.context, tickets: [...new Map([...snapshot.context.tickets, ...reader.tickets()].map(ticket => [ticket.id, ticket])).values()], requests: reader.requests() };
         return inbox.complete(event.id, { expectedVersion: event.version, expectedGeneration: event.generation, policyVersion, contextVersion: snapshot.version,
         context, result, readSet: reader.records() }, {
         currentPolicyVersion: () => this.#policy().version,
@@ -930,6 +985,7 @@ export class ProjectRuntime {
             return action.kind === 'stop' && action.ticketId === event.ticketId && trigger?.actor.id === event.actor?.id && this.#githubStopAllowed(this.#meta(event.ticketId), trigger);
           }
           if (action.kind === 'reply') return event.kind === 'operator' && (event.source?.channel !== 'feishu' || !!this.#operatorFeishu());
+          if (action.kind === 'retryRequest') return this.#recoveryOperatorAllowed(event) && !!this.#coordinationRequestCard(action.triggerId, event);
           if (action.kind === 'request') return event.kind === 'operator' && !event.references?.stopTicketId && action.text === event.text;
           if (action.kind === 'notify') {
             if (event.kind === 'operator' || !this.#operatorFeishu()) return false;
@@ -943,6 +999,7 @@ export class ProjectRuntime {
           return action.kind !== 'stop' || event.kind === 'operator' && event.references?.stopTicketId === action.ticketId;
         },
         applyAction: action => {
+          if (action.kind === 'retryRequest') return this.#retryRequest(action, event);
           if (action.kind === 'reply') {
             const feishu = event.source?.channel === 'feishu' && this.#operatorFeishu();
             this.#outbox.send({ id: action.id, kind: 'reply', channel: feishu ? operatorReplyChannel(feishu, event.source.chatId, event.source.messageId)
@@ -1866,7 +1923,13 @@ export class ProjectRuntime {
   reevaluate(triggerId) { return this.#db().atomic(()=>{
     const trigger=this.#store.triggers.get(nonempty(triggerId,'triggerId'));
     if(trigger && !this.#botReviewGate(trigger).allowed)return false;
-    if (trigger && assessmentStatus(this.#store, triggerId).ticketId) return false;
+    if (trigger) {
+      // Conversational recovery cannot requeue already owned/pending work. Other
+      // sources retain their existing explicit admission/budget recovery semantics.
+      const conversation = !!this.#assessmentOrigin(triggerId);
+      const status = assessmentStatus(this.#store, triggerId, { includeOwners: conversation });
+      if (status.ticketId || conversation && ['pending', 'evaluating', 'correcting'].includes(status.status)) return false;
+    }
     if (trigger && !this.#assessmentOriginAllowed(triggerId)) throw new Error('Original operator authority is no longer configured');
     return this.#engine.reevaluate(triggerId);
   }); }

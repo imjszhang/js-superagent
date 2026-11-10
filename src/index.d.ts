@@ -896,8 +896,8 @@ export interface CoordinatorSettings {
   at: string | null;
 }
 export interface CoordinationRetrySettings {autoRetry:boolean;maxAttempts:number;initialDelayMs:number;timeoutMs:number}
-export interface CoordinationResult {summary:string;actions:Array<{kind:'note'|'requestStatus'|'reply'|'stop'|'request'|'manage'|'answer'|'notify';ticketId:string|null;text:string|null}>}
-export interface CoordinationReadRequest {resource:'tickets'|'threads'|'triggers'|'decisions';recordId?:string|null;query?:string|null;cursor?:string|null;offset?:number|null}
+export interface CoordinationResult {summary:string;actions:Array<{kind:'note'|'requestStatus'|'reply'|'stop'|'request'|'manage'|'answer'|'notify'|'retryRequest';ticketId:string|null;text:string|null;triggerId?:string|null;expectedVersion?:string|null}>}
+export interface CoordinationReadRequest {resource:'tickets'|'threads'|'triggers'|'decisions'|'requests';recordId?:string|null;query?:string|null;cursor?:string|null;offset?:number|null}
 export interface CoordinationInput extends Record<string,unknown> {
   timeoutMs?:number;readContext?(request:CoordinationReadRequest):unknown;
 }

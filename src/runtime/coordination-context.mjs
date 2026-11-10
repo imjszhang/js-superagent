@@ -1,14 +1,15 @@
 import { createHash } from 'node:crypto';
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const rowVersion = row => digest({ value: row.value, card: row.card });
-const RESOURCES = ['tickets', 'threads', 'triggers', 'decisions'];
+const RESOURCES = ['tickets', 'threads', 'triggers', 'decisions', 'requests'];
 const tables = { threads: 'domain_threads', triggers: 'domain_triggers', decisions: 'domain_decisions' };
 
 /** Project records only. Native transcripts, execution config and credentials never enter this reader. */
-export function createCoordinationReader(store, { ticketCard, maxReads = 3, maxBytes = 32000 } = {}) {
+export function createCoordinationReader(store, { ticketCard, requestCards = () => [], maxReads = 3, maxBytes = 32000 } = {}) {
   let reads = 0, bytes = 0;
-  const readSet = [], tickets = new Map();
+  const readSet = [], tickets = new Map(), requests = new Map();
   function rows(resource) {
+    if (resource === 'requests') return requestCards().map(card => ({ id: card.triggerId, value: card, request: card }));
     if (resource === 'tickets') return store.listMeta('ticket:').flatMap(({ value: meta }) => {
       const domain = store.tickets.get(meta.domainId); if (!domain) return [];
       const value = { id: meta.id, domainId: domain.id, title: domain.title, mandate: domain.mandate, origin: domain.origin,
@@ -32,7 +33,7 @@ export function createCoordinationReader(store, { ticketCard, maxReads = 3, maxB
       return { resource, id: row.id, version: rowVersion(row), offset,
         ...(includeText ? { text: full.slice(offset, offset + 4000) } : {}),
         nextOffset: offset + 4000 < full.length ? offset + 4000 : null, length: full.length,
-        ...(row.card ? { tickets: [row.card] } : {}) };
+        ...(row.card ? { tickets: [row.card] } : {}), ...(row.request ? { requests: [row.request] } : {}) };
     }
     const query = request.query ?? '';
     if (typeof query !== 'string' || query.length > 200 || Buffer.byteLength(query) > 300 || /[\u0000-\u001f\u007f]/.test(query) || request.offset != null) throw new Error('Invalid coordination search');
@@ -50,7 +51,8 @@ export function createCoordinationReader(store, { ticketCard, maxReads = 3, maxB
     return { resource, query: normalized, version, total: matches.length,
       items: selected.map(row => ({ id: row.id, version: rowVersion(row), ...(includeText ? { preview: JSON.stringify(row.value).slice(0, 350) } : {}) })),
       nextCursor: offset + 10 < matches.length ? Buffer.from(JSON.stringify({ resource, query: normalized, version, offset: offset + 10 })).toString('base64url') : null,
-      ...(resource === 'tickets' ? { tickets: selected.map(row => row.card) } : {}) };
+      ...(resource === 'tickets' ? { tickets: selected.map(row => row.card) } : {}),
+      ...(resource === 'requests' ? { requests: selected.map(row => row.request) } : {}) };
   }
   return {
     read(request) {
@@ -60,6 +62,7 @@ export function createCoordinationReader(store, { ticketCard, maxReads = 3, maxB
       if (bytes > maxBytes) throw new Error('Coordination context byte budget exhausted');
       readSet.push({ request: structuredClone(request), version: result.version });
       for (const card of result.tickets ?? []) tickets.set(card.id, card);
+      for (const card of result.requests ?? []) requests.set(card.triggerId, card);
       return structuredClone(result);
     },
     verify() {
@@ -67,6 +70,7 @@ export function createCoordinationReader(store, { ticketCard, maxReads = 3, maxB
       return true;
     },
     tickets() { return [...tickets.values()]; },
+    requests() { return [...requests.values()]; },
     records() { return structuredClone(readSet); },
   };
 }

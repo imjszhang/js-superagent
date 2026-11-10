@@ -1,5 +1,6 @@
+import { followupOwners } from '../../dist/core/index.js';
 /** Read-only projection of one original request; old databases resolve through decision eval IDs. */
-export function assessmentStatus(store, triggerId) {
+export function assessmentStatus(store, triggerId, { includeOwners = true } = {}) {
   const trigger = store.triggers.get(triggerId);
   if (!trigger) return { triggerId, status: 'missing', ticketId: null };
   const thread = store.threads.get(`${trigger.threads[0].source}:${trigger.threads[0].id}`);
@@ -12,13 +13,14 @@ export function assessmentStatus(store, triggerId) {
   const record = evalId ? store.getMeta(`assessment:${evalId}`) : null;
   const accepted = store.decisions.byThread(thread?.key ?? `${trigger.threads[0].source}:${trigger.threads[0].id}`)
     .find(item => item.kind === 'accept' && item.triggerIds.includes(triggerId));
-  const ticketId = accepted?.ticketId ?? (record?.result?.applied ? record.result.ticket?.id ?? record.result.decision?.ticketId : null);
-  const status = accepted ? 'accepted' : record?.result?.applied && record.result.kind === 'attach' ? 'attached' : evaluation ? (record?.phase === 'correcting' ? 'correcting' : 'evaluating')
+  const owners = includeOwners ? followupOwners(trigger, store) : [];
+  const ticketId = accepted?.ticketId ?? owners[0] ?? (record?.result?.applied ? record.result.ticket?.id ?? record.result.decision?.ticketId : null);
+  const status = accepted ? 'accepted' : owners.length || record?.result?.applied && record.result.kind === 'attach' ? 'attached' : evaluation ? (record?.phase === 'correcting' ? 'correcting' : 'evaluating')
     : thread?.pending.includes(triggerId) ? 'pending' : record?.status === 'failed' ? 'failed' : decision?.kind ?? record?.status ?? 'pending';
-  return { triggerId, evalId: evalId ?? null, status, ticketId: ticketId ? store.getMeta(`public:${ticketId}`) ?? ticketId : null,
-    ...(record?.status === 'failed' ? publicAssessmentFailure(record) : {}),
+  return { triggerId, evalId: evalId ?? null, status, ...(owners.length > 1 ? { ownerTicketIds: owners.map(id => store.getMeta(`public:${id}`) ?? id) } : {}), ticketId: ticketId ? store.getMeta(`public:${ticketId}`) ?? ticketId : null,
+    ...(status === 'failed' ? publicAssessmentFailure(record) : {}),
     ...(record?.attempts != null ? { attempts: record.attempts, corrections: record.corrections ?? 0, retries: record.retries ?? 0 } : {}),
-    ...(record?.status === 'failed' ? { message: assessmentFailureMessage(record) } : {}),
+    ...(status === 'failed' ? { message: assessmentFailureMessage(record) } : {}),
     ...(record?.status === 'finished' && typeof record.outcome?.reason === 'string' ? { reason: record.outcome.reason.slice(0, 600) } : {}) };
 }
 
