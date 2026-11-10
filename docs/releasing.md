@@ -46,3 +46,7 @@ For this release, removal of the automatically assigned `latest` tag was attempt
 ## 0.14.0-alpha.1 publication
 
 Published 2026-11-10 from clean commit `88adf7ea6b2288af9cd162a82eab08a07f7c1cd9` after CI and full release preparation passed. Registry integrity matched the prepared tarball. The annotated tag and GitHub prerelease include the tarball and source manifest. `alpha` points to alpha.1; `latest` remains alpha.0. Consumers should install `js-superagent@0.14.0-alpha.1` explicitly.
+
+## 0.14.0-alpha.2 publication
+
+Published 2026-11-10 from clean commit `923a1c09761b46f785ba4faf06877cf6cd2bfdde` after full checks and CI passed. Registry integrity matches the prepared artifact. `alpha` points to alpha.2; `latest` remains alpha.0. Tag `v0.14.0-alpha.2` identifies the tested source.
