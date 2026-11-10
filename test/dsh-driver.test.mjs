@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { executeDshTurn, validateDshOptions, createDshSdkDriver, probeDsh, parseDshReport } from '../src/drivers/dsh.mjs';
+import { createProjectAgent } from './helpers/runtime-fixture.mjs';
+import { Store } from '../src/store.mjs';
 
 const fixtureOwners = new WeakSet();
 function fixture(t, behavior = '', nativeVersion = '0.2.1-rc.5') {
@@ -13,7 +15,7 @@ function fixture(t, behavior = '', nativeVersion = '0.2.1-rc.5') {
   const executable = join(root, 'fake-dsh.mjs');
   writeFileSync(executable, `#!/usr/bin/env node
 import { createInterface } from 'node:readline';
-import { writeFileSync,readFileSync,existsSync } from 'node:fs';
+import { writeFileSync,readFileSync,existsSync,mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 if(process.argv.includes('--version')){console.log(${JSON.stringify(nativeVersion)});process.exit(0);}
 const send=v=>console.log(JSON.stringify(v)); let seq=0,sid;
@@ -48,6 +50,90 @@ for await(const line of createInterface({input:process.stdin})){
   return {root,options,sessions,pids,input:{projectRoot:root,runId:randomUUID(),signal:new AbortController().signal,prompt:'do bounded work',checkpoint:v=>sessions.push(v),registerProcess:pid=>pids.push(pid)}};
 }
 const alive = pid => {try{process.kill(pid,0);return true;}catch{return false;}};
+
+function runtimeFixture(t, f, execution = {}) {
+  const opened=[];
+  const open=()=>{
+    const runtime=createProjectAgent({projectRoot:f.root,execution:{driver:'dsh-sdk',...f.options,enableAgentTools:true,enableManagedJobs:true,...execution}}).init();
+    opened.push(runtime);return runtime;
+  };
+  t.after(async()=>{for(const runtime of opened.reverse()){await runtime.stop();runtime.close();}});
+  const stored=(id, update)=>{
+    const store=new Store(join(stateDir(f.root),'state.sqlite'));
+    try{const meta=store.getMeta(`ticket:${id}`);if(update){update(meta);store.setMeta(`ticket:${id}`,meta);}return meta;}finally{store.close();}
+  };
+  const binding=id=>JSON.parse(readFileSync(join(stateDir(f.root),'harness/dsh',id,'binding.json'),'utf8'));
+  return {open,stored,binding};
+}
+
+test('runtime narrows DSH managed tools per ticket without enabling project-disabled tools',async t=>{
+  for(const enableManagedJobs of [true,false]){
+    const f=fixture(t),{open,binding}=runtimeFixture(t,f,{enableManagedJobs}),runtime=open();
+    runtime.configureJobs({paths:['fake-dsh.mjs'],profiles:{check:{kind:'command',version:'1',command:process.execPath,args:['-e','process.exit(0)'],environment:'host',allowHostExecution:true,timeoutMs:1000}}},{expectedRevision:0});
+    for(const managedJobs of [false,true]){
+      const ticket=runtime.submit({text:'Verify a bounded task',managedJobs});
+      await runtime.runNext();
+      assert.equal(runtime.get(ticket.id).status,'completed');
+      const expected=enableManagedJobs&&managedJobs,session=runtime.getSession(ticket.id);
+      assert.equal(runtime.sessionStatus(ticket.id).execution.enableManagedJobs,expected);
+      assert.equal(binding(session.id).managedJobs,expected);
+      assert.equal(binding(session.id).agentTools,true,'Unrelated business tools remain available');
+      assert.equal(readFileSync(join(f.root,'input.txt'),'utf8').includes('js_superagent_job_*'),expected);
+      assert.equal(runtime.executorStatus().effective.enableManagedJobs,enableManagedJobs,'Ticket grants cannot mutate project settings');
+      assert.deepEqual(runtime.listJobs(ticket.id),[]);
+    }
+  }
+});
+
+test('runtime retries a legacy pre-session DSH failure using the ticket grant',async t=>{
+  const f=fixture(t),{open,stored,binding}=runtimeFixture(t,f),runtime=open();
+  // Reproduce the old persisted state: a globally enabled adapter, no jobs host,
+  // and a failure before any native session checkpoint. The old version saved
+  // this same executor/binding even when the ticket grant was false.
+  const ticket=runtime.submit({text:'Retry bounded work'});await runtime.runNext();
+  assert.equal(runtime.get(ticket.id).status,'failed');
+  assert.match(runtime.get(ticket.id).reports.at(-1).summary,/trusted runtime manager and profile catalog/);
+  assert.equal(runtime.getSession(ticket.id),null);
+  assert.ok(stored(ticket.id).harnessBinding);
+  stored(ticket.id,meta=>{meta.managedJobs=false;});
+  runtime.retry(ticket.id);await runtime.runNext();
+  assert.equal(runtime.get(ticket.id).status,'completed');
+  assert.equal(stored(ticket.id).executionConfig.enableManagedJobs,false);
+  assert.equal(binding(runtime.getSession(ticket.id).id).managedJobs,false);
+});
+
+test('DSH history inspection and native retry retain narrowed tools after runtime reopen',async t=>{
+  const f=fixture(t,`
+    if(r.method==='session/prompt'&&!existsSync(join(process.env.DSH_HOME,'failed-once'))){
+      writeFileSync(join(process.env.DSH_HOME,'failed-once'),'yes');
+      writeFileSync(join(process.env.DSH_HOME,'fake-session'),'durable');
+      const user={id:'failed-input',content:r.params.contentBlocks};
+      const terminal={reason:{kind:'error',error:{code:'RATE_LIMIT',message:'Retry after inspection'}}};
+      const history=join(process.env.DSH_HOME,'sessions','fixture',sid);mkdirSync(history,{recursive:true});
+      writeFileSync(join(history,'session.v4.jsonl'),[
+        {type:'session',version:4,id:sid,cwd:process.cwd(),isSeeded:false},
+        {seq:0,type:'user/message',data:user},{seq:1,type:'turn/end',data:terminal}
+      ].map(value=>JSON.stringify(value)).join('\\n')+'\\n');
+      answer({messageId:user.id});event('user/message',user);event('turn/end',terminal);continue;
+    }
+  `);
+  const {open,stored,binding}=runtimeFixture(t,f);
+  let runtime=open();const ticket=runtime.submit({text:'Inspect and resume bounded work',managedJobs:false});
+  await runtime.runNext();assert.equal(runtime.get(ticket.id).status,'failed');
+  const session=runtime.getSession(ticket.id),originalBinding=binding(session.id);
+  assert.equal(originalBinding.managedJobs,false);
+  runtime.close();runtime=open();runtime.retry(ticket.id);
+  assert.equal(stored(ticket.id).recovery.status,'inspect');
+  await runtime.runNext();
+  assert.equal(runtime.get(ticket.id).status,'completed');
+  assert.equal(stored(ticket.id).recovery.status,'completed');
+  assert.equal(stored(ticket.id).recovery.evidence.code,'HISTORY_VERIFIED');
+  assert.deepEqual(runtime.getSession(ticket.id),session);
+  assert.deepEqual(binding(session.id),originalBinding);
+  assert.equal(stored(ticket.id).executionConfig.enableManagedJobs,false);
+  assert.doesNotMatch(readFileSync(join(f.root,'input.txt'),'utf8'),/js_superagent_job_\*/);
+});
+
 test('DSH configuration rejects unsupported routes and undeclared abilities',()=>{
   const options={model:'m',backend:{auth:'api-key',provider:'deepseek-official',protocol:'anthropic-messages',baseURL:'https://example.com/anthropic',apiKeyEnv:'KEY'}};
   assert.equal(validateDshOptions(options).permission,'workspace-write');

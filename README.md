@@ -4,7 +4,7 @@
 
 支持通过注册表接入 Codex、DSH 和 Cursor 等执行端。状态保存在项目独立的 SQLite 数据库中；初始化不会自动启动执行或后台服务。
 
-当前版本为 **0.14.0-alpha.0**。本仓库从 x-pkm-research 的同名包独立导出；应用层的 longrun 业务系统不在本仓库。历史设计和验收文档记录各自当时的状态，不代表用户安装后的部署状态。
+当前源码候选版本为 **0.14.0-alpha.1**（尚未发布）；公开 npm 版本仍为 **0.14.0-alpha.0**。本仓库从 x-pkm-research 的同名包独立导出；应用层的 longrun 业务系统不在本仓库。历史设计和验收文档记录各自当时的状态，不代表用户安装后的部署状态。
 
 ```bash
 git clone https://github.com/imjszhang/js-superagent.git
@@ -156,7 +156,7 @@ Codex 与 DSH 都通过同一注册表创建适配器。扩展接口只接受现
 
 持续运行时由宿主调用 `agent.start()`，退出前 `await agent.stop()` 再 `agent.close()`。Webhook HTTP 接收器由宿主显式调用导出的 `listenGitHubWebhook(agent, options)`，退出时先关闭接收器。SDK 不注册全局信号处理器，不修改 `process.env` 或全局当前目录。
 
-本地业务任务可在提交时传 `operatorNotifications: false`，关闭该工单的操作者卡片及 Worker 完成／失败私信；默认仍为 true。`managedJobs: false` 禁止该工单获得受管子任务工具和配置，默认仍为 true。两者均为宿主提交时校验并持久化的布尔值，只缩小单工单能力，不修改项目设置，不授予其他执行权限。没有宿主快照文件时省略 `attentionSnapshotPaths`，不要传空数组。
+本地业务任务可在提交时传 `operatorNotifications: false`，关闭该工单的操作者卡片及 Worker 完成／失败私信；默认仍为 true。`managedJobs: false` 禁止该工单获得受管子任务工具和配置，默认仍为 true。两者均为宿主提交时校验并持久化的布尔值，只缩小单工单能力，不修改项目设置，不授予其他执行权限。`0.14.0-alpha.1` 修复了 DSH 项目启用受管子任务、单工单禁用时的配置衔接：执行与恢复使用相同的工单有效配置，禁用工单不会加载 jobs 工具或索取可信任务目录。没有宿主快照文件时省略 `attentionSnapshotPaths`，不要传空数组。
 
 ## 状态与授权边界
 

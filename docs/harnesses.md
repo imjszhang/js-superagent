@@ -56,6 +56,8 @@ DSH 的标准提问通过业务报告持久保存到工单；回复后恢复原�
 
 SDK Worker 可设置 `enableAgentTools:true`，启用受限上下文读取、确认、退回、订阅和报告工具。`enableManagedJobs:true` 还要求通过现有 `configureJobs()` 配好可信任务目录；模型只能选择这些命令/子任务配置，不能传入任意宿主命令。预览和子成果继续归现有宿主任务管理器所有。两个开关默认关闭，协调者拒绝开启。
 
+工单提交参数 `managedJobs:false` 会进一步把该工单的有效 `enableManagedJobs` 收为 false（从 `0.14.0-alpha.1` 起），不改变项目配置。原生执行与恢复使用同一份冻结配置；已有会话的权限绑定仍须核验，不能通过重试静默更换。
+
 包内 `dsh-tool-plugin.mjs` 是薄协议桥接插件，不是上游 dsh-superagent 插件。它在本轮受控 profile 中注册工具，经 loopback 的短期凭据调用宿主；没有自己的工单、数据库或收件循环。每次调用核对会话、运行代次、工具名和授权，重复调用复用同轮结果，结束后关闭入口。密钥及桥接凭据不写入插件配置。
 
 协调者通过 `configureCoordinator({assessor:{driver:'dsh-sdk',...},policy:...})` 配置，使用独立会话命名空间和只读角色，移除原生文件/命令工具。需要更多上下文时输出受限 read 请求，由宿主提供指定记录，再恢复同一协调会话。它不能自行启动 Worker 或扩大授权。`workflowMode:'continuous'` 可显式开启工作事件与项目消息处理；默认仍仅研判候选。具体操作见 [本轮交付与用法](workflow-alignment-delivery.md)。

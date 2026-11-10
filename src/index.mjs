@@ -2233,7 +2233,7 @@ export class ProjectRuntime {
   getDetailed(id) {
     const meta = this.#meta(id), domain = this.#store.tickets.get(meta.domainId);
     const detail = detailedTicketView({ domain, legacy: this.#view(meta), meta,
-      capabilities: this.#executionCapabilities(meta.executionConfig), execution: this.#executions().find(row => row.value.publicId === id)?.value });
+      capabilities: this.#executionCapabilities(meta.executionConfig, meta), execution: this.#executions().find(row => row.value.publicId === id)?.value });
     const decision = domain?.attention && this.#attentionDecision(domain.attention.id);
     const snapshotError = domain?.attention && this.#store.getMeta(`attention-snapshot-error:${domain.attention.id}`);
     if (detail.attention) detail.attention = { ...detail.attention, ...(decision ? { decision: structuredClone(decision.decision) } : {}),
@@ -2301,12 +2301,17 @@ export class ProjectRuntime {
     if (!workspace) return { workspace: null, changes: [] };
     return inspectProjectWorkspace({ projectRoot: this.projectRoot, workspace });
   }
-  #executionCapabilities(pinned) {
-    try { return driverCapabilities(this.#resolveDriver(pinned)); }
+  #ticketExecution(execution, meta) {
+    // Ticket grants can narrow a project executor, never enable its disabled tools.
+    return meta?.managedJobs === false && execution?.enableManagedJobs === true
+      ? { ...execution, enableManagedJobs: false } : execution;
+  }
+  #executionCapabilities(pinned, meta) {
+    try { return driverCapabilities(this.#resolveDriver(pinned, meta)); }
     catch { return undefined; } // Historical/retired adapters must remain inspectable.
   }
-  #resolveDriver(pinned) {
-    const execution = pinned ?? this.#config().execution;
+  #resolveDriver(pinned, meta) {
+    const execution = this.#ticketExecution(pinned ?? this.#config().execution, meta);
     if (!execution) throw new Error('No Harness configured; use executor set or register an adapter through the SDK');
     return this.#machine.driver(this.#harnessRegistry.createDriver(execution));
   }
@@ -3353,7 +3358,7 @@ export class ProjectRuntime {
       if (!['failed', 'interrupted', 'cancelled'].includes(view.status)) throw new Error(`Cannot retry ${view.status} ticket`);
       if (view.status !== 'cancelled' && this.#pendingDelivery(meta)) throw new Error(`A saved delivery is pending; use deliver ${id} to resume it without rerunning the Worker`);
       if (view.status !== 'cancelled' && meta.driverSession && meta.failure?.requiresInspection !== false &&
-          ['native-execution', 'interrupted'].includes(meta.failure?.origin) && typeof this.#resolveDriver(meta.executionConfig).inspectRecovery === 'function') {
+          ['native-execution', 'interrupted'].includes(meta.failure?.origin) && typeof this.#resolveDriver(meta.executionConfig, meta).inspectRecovery === 'function') {
         if (this.#executions().some(row => row.value.publicId === id)) throw new Error('Wait for the previous execution owner before recovery inspection');
         meta.recovery = { status: 'inspect', manual: true, runId: meta.failure.runId ?? meta.runId, session: meta.driverSession,
           attempt: 0, cycle: (meta.recovery?.cycle ?? 0) + 1, previous: meta.recovery ? { status: meta.recovery.status, attempt: meta.recovery.attempt, deadlineAt: meta.recovery.deadlineAt } : null,
@@ -3477,7 +3482,7 @@ export class ProjectRuntime {
       let evidence=plan.evidence;
       if(plan.status==='inspect'){
         let driver;
-        try { driver=this.#resolveDriver(snapshot.executionConfig); }
+        try { driver=this.#resolveDriver(snapshot.executionConfig, snapshot); }
         catch { reject('native-history-unavailable'); continue; }
         if(typeof driver.inspectRecovery!=='function'){reject('native-history-unavailable');continue;}
         let inspected;
@@ -4074,7 +4079,13 @@ export class ProjectRuntime {
         }
         await this.#beginUIEvidence(execution.publicId,this.#controller.signal);
         const runMeta = this.#meta(execution.publicId);
-        if(!runMeta.executionConfig)runMeta.executionConfig=structuredClone(config.execution);
+        const selectedExecution = runMeta.executionConfig ?? config.execution;
+        const ticketExecution = this.#ticketExecution(selectedExecution, runMeta);
+        // Older attempts may have pinned the project tools and failed before a native
+        // session existed. Rebind those attempts; existing sessions must still pass
+        // the original Harness/native binding checks or require explicit replacement.
+        if (ticketExecution !== selectedExecution && !runMeta.driverSession) delete runMeta.harnessBinding;
+        runMeta.executionConfig = structuredClone(ticketExecution);
         const currentAssembly=new PromptRegistry(this.#store).assemble({role:'worker',variables:{ticket:execution.publicId,assignment:execution.assignmentId}});
         const policy=resolveWorkerPolicy({executionPrompt:runMeta.executionConfig?.prompt,legacyAssembly:runMeta.promptAssembly,
           currentAssembly,hasSession:!!runMeta.driverSession,binding:runMeta.policyBinding});
