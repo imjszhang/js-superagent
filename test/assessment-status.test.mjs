@@ -26,8 +26,11 @@ test('assessment status distinguishes attach, stop and old failed records withou
   store.decisions.save({ id: 'decision', evalId: 'evaluation', threadKey: 'local:conversation', triggerIds: ['original'], kind: 'unavailable' });
   const oldRecord = { status: 'failed', error: 'Answer fields are only valid for an answer outcome; triggerId may also select attach, ignore or unavailable input' };
   store.setMeta('assessment:evaluation', oldRecord);
+  store.decisions.save({ id: 'decision', evalId: 'input-evaluation', threadKey: 'local:conversation', triggerIds: ['original'], kind: 'unavailable',
+    audit: { triggerDecision: { sourceEvalId: 'evaluation', triggerId: 'original' } } });
+  store.triggers.saveDisposition('original', { evalId: 'input-evaluation', decisionId: 'decision' });
   store.db.exec('PRAGMA query_only=ON');
   const failed = assessmentStatus(store, 'original');
-  assert.equal(failed.status, 'failed'); assert.equal(failed.failureKind, 'format'); assert.equal(failed.retryable, true);
+  assert.equal(failed.evalId, 'evaluation'); assert.equal(failed.status, 'failed'); assert.equal(failed.failureKind, 'format'); assert.equal(failed.retryable, true);
   assert.match(failed.message, /格式/); assert.deepEqual(store.getMeta('assessment:evaluation'), oldRecord);
 });

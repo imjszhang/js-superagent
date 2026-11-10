@@ -6,9 +6,10 @@ export function assessmentStatus(store, triggerId) {
   const disposition = store.triggers.disposition(triggerId);
   const pointer = store.getMeta(`assessment-trigger:${triggerId}`);
   const evaluation = thread?.evaluating?.triggerIds.includes(triggerId) ? thread.evaluating : null;
-  const evalId = evaluation?.id ?? pointer?.evalId ?? disposition?.evalId;
-  const record = evalId ? store.getMeta(`assessment:${evalId}`) : null;
   const decision = disposition?.decisionId ? store.decisions.get(disposition.decisionId) : null;
+  // decideTrigger creates a per-input decision/eval; the assessor run belongs to its source eval.
+  const evalId = evaluation?.id ?? pointer?.evalId ?? decision?.audit?.triggerDecision?.sourceEvalId ?? disposition?.evalId ?? decision?.evalId;
+  const record = evalId ? store.getMeta(`assessment:${evalId}`) : null;
   const accepted = store.decisions.byThread(thread?.key ?? `${trigger.threads[0].source}:${trigger.threads[0].id}`)
     .find(item => item.kind === 'accept' && item.triggerIds.includes(triggerId));
   const ticketId = accepted?.ticketId ?? (record?.result?.applied ? record.result.ticket?.id ?? record.result.decision?.ticketId : null);

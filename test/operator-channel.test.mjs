@@ -477,7 +477,7 @@ test('candidate assessment failures reach the original operator and remain recov
 
 test('legacy request receipts recover provenance and revoked operator authority cannot be retried', async t => {
   const { runtime, root } = project(t, { coordinator: input => ({ summary: 'Request', actions: [{ kind: 'request', ticketId: null, text: input.event.text }] }),
-    assess: async () => { throw new Error('Unavailable adapter'); } });
+    assess: async () => { throw new Error('Answer fields are only valid for an answer outcome; triggerId may also select attach, ignore or unavailable input'); } });
   await runtime.prepareExecution();
   runtime.receiveSourceEvent('feishu', dm('om_legacy', 'Inspect source records'));
   await runtime.runNext();
@@ -485,6 +485,21 @@ test('legacy request receipts recover provenance and revoked operator authority 
   const db = new DatabaseSync(join(stateDir(root), 'state.sqlite'));
   db.prepare('DELETE FROM kv WHERE key=?').run(`assessment-origin:${triggerId}`); db.close();
   await runtime.runNext();
+  // Recreate alpha.1 metadata around the real core-generated decideTrigger result.
+  const legacy = new DatabaseSync(join(stateDir(root), 'state.sqlite'));
+  const disposition = JSON.parse(legacy.prepare('SELECT data FROM domain_dispositions WHERE id=?').get(triggerId).data);
+  const decision = JSON.parse(legacy.prepare('SELECT data FROM domain_decisions WHERE id=?').get(disposition.decisionId).data);
+  const sourceEvalId = decision.audit.triggerDecision.sourceEvalId;
+  assert.notEqual(disposition.evalId, sourceEvalId, 'per-input decision IDs differ from the original assessment');
+  const stored = JSON.parse(legacy.prepare('SELECT data FROM kv WHERE key=?').get(`assessment:${sourceEvalId}`).data);
+  legacy.prepare('UPDATE kv SET data=? WHERE key=?').run(JSON.stringify({ runId: stored.runId, status: 'failed', error: stored.error, at: stored.at }), `assessment:${sourceEvalId}`);
+  legacy.prepare('DELETE FROM kv WHERE key=?').run(`assessment-trigger:${triggerId}`); legacy.close();
+  const diagnostic = runtime.eventDiagnostic(triggerId);
+  assert.equal(diagnostic.evaluation.status, 'failed');
+  assert.equal(diagnostic.evaluation.assessment.evalId, sourceEvalId);
+  assert.equal(diagnostic.evaluation.assessment.failureKind, 'format');
+  const origin = runtime.eventDiagnostics().items.find(item => item.source === 'feishu');
+  assert.equal(origin.requests[0].status, 'failed'); assert.equal(origin.requests[0].failureKind, 'format');
   await runtime.stop();
   runtime.configureV2({ feishu: { operator: { openId: 'ou_bob' } } });
   assert.throws(() => runtime.reevaluate(triggerId), /authority/);

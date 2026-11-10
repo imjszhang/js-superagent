@@ -126,7 +126,8 @@ function eventView(state, id) {
   const threadFacts=[...new Map([...keys.map(name=>state.threads.get(name)),...state.evalThreads.get(id)??[]].filter(Boolean).map(thread=>[thread.key,thread])).values()];
   const decisions=[...new Map((state.decisionsByEvent.get(id)??[]).map(decision=>[decision.id,decision])).values()].sort((a,b)=>String(b.at??'').localeCompare(String(a.at??'')));
   const evalThreads=threadFacts.map(thread=>({key:thread.key,status:list(thread.evaluating?.triggerIds).includes(id)?'evaluating':list(thread.pending).includes(id)?'pending':'none',evalId:list(thread.evaluating?.triggerIds).includes(id)?thread.evaluating.id:null}));
-  const assessmentRef = state.meta.get(`assessment-trigger:${id}`)?.evalId ?? disposition?.evalId;
+  const decided = disposition?.decisionId ? state.decisions.get(disposition.decisionId) : null;
+  const assessmentRef = state.meta.get(`assessment-trigger:${id}`)?.evalId ?? decided?.audit?.triggerDecision?.sourceEvalId ?? disposition?.evalId ?? decided?.evalId;
   const assessment = assessmentRef ? state.meta.get(`assessment:${assessmentRef}`) : null;
   const assessmentInfo = assessment ? { evalId: assessmentRef, status: assessment.status, ...(assessment.status==='failed'?publicAssessmentFailure(assessment):{failureKind:null,code:null,retryable:false}), attempts: assessment.attempts ?? null, corrections: assessment.corrections ?? 0, retries: assessment.retries ?? 0, message: assessment.status === 'failed' ? assessmentFailureMessage(assessment) : null } : null;
   const requests = [...state.meta.entries()].filter(([key, value]) => key.startsWith('coordination:event:') && value.references?.triggerId === id)
