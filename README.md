@@ -4,7 +4,7 @@
 
 支持通过注册表接入 Codex、DSH 和 Cursor 等执行端。状态保存在项目独立的 SQLite 数据库中；初始化不会自动启动执行或后台服务。
 
-当前源码候选版本为 **0.14.0-alpha.1**（尚未发布）；公开 npm 版本仍为 **0.14.0-alpha.0**。本仓库从 x-pkm-research 的同名包独立导出；应用层的 longrun 业务系统不在本仓库。历史设计和验收文档记录各自当时的状态，不代表用户安装后的部署状态。
+当前版本为 **0.14.0-alpha.1**，已于 2026-11-10 发布至 npm 的 `alpha` 渠道。本仓库从 x-pkm-research 的同名包独立导出；应用层的 longrun 业务系统不在本仓库。历史设计和验收文档记录各自当时的状态，不代表用户安装后的部署状态。
 
 ```bash
 git clone https://github.com/imjszhang/js-superagent.git

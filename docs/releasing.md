@@ -42,3 +42,7 @@ npm's [publish documentation](https://docs.npmjs.com/cli/v11/commands/npm-publis
 The first publish returned success before the version became publicly available. During processing, npm exposed a temporary `0.0.0-stage` placeholder and no manually approvable staged item. Wait for the exact version and integrity to appear; do not republish. npm also assigned `latest` to the first published prerelease, despite the explicit `alpha` tag. Inspect dist-tags after publication and remove `latest` for an alpha-only release (this can require another browser authentication).
 
 For this release, removal of the automatically assigned `latest` tag was attempted after browser authentication, but npm returned HTTP 400. Registry verification still showed both `alpha` and `latest` pointing to `0.14.0-alpha.0`. The version remains an alpha prerelease; use the exact version or explicit `alpha` tag. Do not describe this publication as alpha-only.
+
+## 0.14.0-alpha.1 publication
+
+Published 2026-11-10 from clean commit `88adf7ea6b2288af9cd162a82eab08a07f7c1cd9` after CI and full release preparation passed. Registry integrity matched the prepared tarball. The annotated tag and GitHub prerelease include the tarball and source manifest. `alpha` points to alpha.1; `latest` remains alpha.0. Consumers should install `js-superagent@0.14.0-alpha.1` explicitly.
