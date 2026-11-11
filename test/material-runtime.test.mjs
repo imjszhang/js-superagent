@@ -108,3 +108,13 @@ test('lost first application receipt blocks new work and remains recoverable aft
   const result=await f.runtime.recoverMaterialApplication(ticket.id,{operationId:'lost-receipt',mode:'rollback'});
   assert.equal(result.status,'rolled-back');assert.equal(f.runtime.materialApplicationStatus(ticket.id).length,1);
 });
+
+test('a multi-file application uses its journal baseline after its own first source write',async t=>{
+  const f=setup(t,async input=>{await readNotes(input);writeFileSync(join(input.projectRoot,'first.md'),'first result');writeFileSync(join(input.projectRoot,'second.md'),'second result');return ready('two verified artifacts');});
+  const ticket=f.runtime.submit({text:'Produce two results',materials:materials({access:'native',allowPreparation:true,allowApply:true,workspaceSourceId:'project'})});
+  await f.runtime.runNext();assert.equal(f.runtime.get(ticket.id).status,'completed');
+  const plan=f.runtime.previewMaterialApplication(ticket.id,{paths:['.']});assert.equal(plan.changes.length,2);
+  const result=await f.runtime.applyMaterialChanges(ticket.id,{plan,operationId:'two-files'});
+  assert.equal(result.status,'applied');assert.equal(readFileSync(join(f.root,'first.md'),'utf8'),'first result');assert.equal(readFileSync(join(f.root,'second.md'),'utf8'),'second result');
+  assert.deepEqual(await f.runtime.applyMaterialChanges(ticket.id,{plan,operationId:'two-files'}),result);
+});

@@ -12,11 +12,15 @@ Implementation of [the reviewed plan](project-materials-execution-plan.md), auth
 - Longrun's opt-in frozen-material contract validates capability before consuming a round, preserves snapshot and output contract hashes, waits through preparation, and checks workspace lineage before its sole-writer settlement.
 - The deployment skill recognizes exact package/schema combinations, keeps coordinator knowledge separate, and uses public SDK/CLI configuration for material grants.
 
-## Validation in progress
+## Validation
 
-Targeted tests currently cover current/uncommitted reads, fixed commit/snapshot reads, scoped cross-project reads, pagination and directory freshness, output authorization, same-Assignment preparation, preserved unresolved inputs, controlled application and explicit rollback after revocation. Separate processes are killed during local application and between workspace publication and activation to verify recovery from durable journals.
+Tests cover current/uncommitted reads, fixed commit/snapshot reads, scoped cross-project reads, pagination and directory freshness, output authorization, concrete channel identity changes, same-Assignment preparation, preserved unresolved inputs, controlled application and explicit rollback after revocation. Separate processes are killed during local application and between workspace publication and activation to verify recovery from durable journals. Application tests distinguish preflight freshness from the journal's per-file baseline so multiple writes and exact-operation replay do not invalidate themselves.
 
-The final release record must append the complete regression results, exact package/commit identities and real-provider acceptance evidence. A passing service health check is not business acceptance. No release or target-project switch is claimed by this document until those results are recorded.
+The first complete regression run passed 1,342 runtime tests, 153 core tests and the same 153 tests against SQLite, plus type checking and clean-package installation. Subsequent boundary fixes add focused regression cases and require the final CI run to pass before release. Longrun passed 89 tests plus the explicit candidate SDK integration; the skill passed its old-package suite and the new-package knowledge/material compatibility checks.
+
+Real DSH acceptance on the frozen package from commit `39b413eebf924647b70e89318ad65a1151a6f409` passed all five scenarios: current dirty reads, fixed commit/snapshot reads, same-Assignment workspace preparation, verified Worker-only local application, and explicitly authorized cross-project reads. The archive SHA-256 was `f73ceec053ed705f7db51b7a300fa2cc0fc3deb9db8d57ff1990e95df8073ae9`. These are candidate results, not evidence that the final package has already been published.
+
+The release procedure repeats this acceptance against the final frozen archive, records its source commit and integrity, checks the registry download, and retains private target-project/Feishu evidence in that project's deployment record. Public examples and tests use fictional fixtures. A passing service health check is not business acceptance; neither publication nor target-project switching is claimed by this source document.
 
 ## Compatibility and limits
 

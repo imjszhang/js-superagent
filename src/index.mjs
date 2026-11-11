@@ -2976,10 +2976,10 @@ export class ProjectRuntime {
   #assertNoPendingMaterialApplication() {
     if (this.#pendingMaterialApplications().length) throw Object.assign(new Error('An interrupted local material application owns the source. Inspect its journal and explicitly finish or roll back before continuing.'), {code:'MATERIAL_APPLY_RECOVERY_REQUIRED'});
   }
-  #assertMaterialApplication(id) {
+  #assertMaterialApplication(id, {fresh = true} = {}) {
     const meta = this.#meta(id), binding = meta.materialBinding;
     this.#validateTicketMaterials(meta);
-    this.#assertMaterialDisclosure(this.#materialSourceIds(meta),{source:'local',id:'operator'},{fresh:true});
+    this.#assertMaterialDisclosure(this.#materialSourceIds(meta),{source:'local',id:'operator'},{fresh});
     if (!binding?.allowApply || binding.owner?.kind === 'longrun' || binding.access === 'host-only') throw new Error('This ticket does not own a native local application grant');
     if (preparationPending(meta) || !meta.workspace || this.getDomainTicket(id).ended?.by === 'human' || !this.#policy().revalidate(this.getDomainTicket(id).mandate)) throw new Error('Material application is not authorized in the current ticket state');
     return true;
@@ -2994,9 +2994,18 @@ export class ProjectRuntime {
     try { return await work(); } finally { this.#store.atomic(() => { if (this.#store.getMeta(lock)?.token === token) this.#store.deleteMeta(lock); }); }
   }
   applyMaterialChanges(id, {plan, operationId} = {}) {
-    this.#assertMaterialApplication(id); this.#assertNoPendingMaterialApplication();
+    this.#assertMaterialApplication(id,{fresh:false}); this.#assertNoPendingMaterialApplication();
     return this.#withOwnedOperation(id, signal => applyLocalApplication({projectRoot:this.projectRoot,workspace:this.getWorkspace(id),plan,operationId,
-      authorize:()=>{ signal.throwIfAborted(); return this.#assertMaterialApplication(id); }, withLock:(key,work)=>this.#materialApplicationLock(key,work),
+      // The durable plan owns the baseline after the first source write.
+      // Per-file CAS detects external edits; authorization still checks grants.
+      authorize:()=>{ signal.throwIfAborted(); return this.#assertMaterialApplication(id,{fresh:false}); },
+      withLock:(key,work)=>this.#materialApplicationLock(key,()=>{
+        let previous; try { previous=this.materialApplicationStatus(id,operationId); } catch(error) { if(error.code!=='ENOENT')throw error; }
+        // Check current observations inside the fence for new operations. A
+        // replay must reach the journal's exact-plan check, not reject its own writes.
+        if(!previous)this.#assertMaterialApplication(id);
+        return work();
+      }),
       persist:value=>this.#store.atomic(()=>{const meta=this.#meta(id);meta.materialApplications??={};meta.materialApplications[value.id]=value;this.#save(meta);})}));
   }
   materialApplicationStatus(id, operationId) {
@@ -3011,7 +3020,7 @@ export class ProjectRuntime {
     const authorize = () => {
       const meta=this.#meta(id),binding=meta.materialBinding;
       if (!binding?.allowApply || binding.owner?.kind === 'longrun' || binding.access === 'host-only') throw new Error('This ticket does not own a native local application grant');
-      if (mode !== 'rollback') return this.#assertMaterialApplication(id);
+      if (mode !== 'rollback') return this.#assertMaterialApplication(id,{fresh:false});
       // This public operator command can undo only the journal's own unchanged
       // writes after cancellation. It cannot resume execution or gain new paths.
       const workspaces=[meta.workspace,...(meta.sessionHistory??[]).map(item=>item.workspace)].filter(Boolean);
