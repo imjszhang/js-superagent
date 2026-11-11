@@ -22,7 +22,7 @@ import { CoordinationInbox, normalizeWorkRetry, coordinationFailure } from './ru
 import { normalizeUIEvidence, uiTree, uiEvidenceRequired, captureUIEvidence, validateUIEvidence, readUIEvidencePNG } from './runtime/ui-evidence.mjs';
 import { managementRevision, normalizeManagementIntent, managementCommand } from './runtime/operator-management.mjs';
 import { assessmentFailure } from './runtime/assessment.mjs';
-import { assessmentStatus, assessmentFailureMessage } from './runtime/assessment-status.mjs';
+import { assessmentStatus, assessmentFailureMessage, assessmentTicketReceiptProof, verifyAssessmentTicketReceipt } from './runtime/assessment-status.mjs';
 import { createCoordinationReader } from './runtime/coordination-context.mjs';
 import { feedbackDisposition } from './runtime/feedback.mjs';
 import { projectStateDirectory } from './state-paths.mjs';
@@ -1096,6 +1096,8 @@ export class ProjectRuntime {
       }
       const materialSources = this.#materialDisclosureIds(meta);
       const proof = this.#store.getMeta(`material-message:${message.id}`);
+      if (proof?.hostReceipt && !verifyAssessmentTicketReceipt(message, proof.hostReceipt, this.#store.getMeta(`assessment:${proof.hostReceipt.evalId}`), id => this.#store.getMeta(`public:${id}`) ?? id))
+        throw materialError('MATERIAL_RECEIPT_INVALID', 'Material host receipt no longer matches its fixed assessment result');
       if ((proof || materialSources.length) && !this.#materialProofRouteAllowed(proof, this.#materialRoute(message.channel))) throw materialError('MATERIAL_ROUTE_CHANGED', 'Material reply identity is no longer authorized');
       if (proof) {
         if (proof.revision !== this.getMaterialSettings().revision || JSON.stringify(proof.destination) !== JSON.stringify(materialDestination(message.channel))) throw new Error('Material reply authorization changed');
@@ -1656,7 +1658,7 @@ export class ProjectRuntime {
       const status = assessmentStatus(this.#store, trigger.id);
       if (record.status !== 'failed' && !['accepted', 'attached', 'ignore', 'unavailable', 'stop'].includes(status.status)) continue;
       const feishu = event.source?.channel === 'feishu' && this.#operatorFeishu();
-      this.#outbox.send({ id: `assessment-result:${candidate.evalId}:${trigger.id}`, kind: 'reply',
+      const message = { id: `assessment-result:${candidate.evalId}:${trigger.id}`, kind: 'reply',
         ...(status.ticketId ? { ticketId: status.ticketId } : {}),
         channel: feishu ? operatorReplyChannel(feishu, event.source.chatId, event.source.messageId)
           : { source: 'local', thread: event.id, address: {} },
@@ -1664,7 +1666,20 @@ export class ProjectRuntime {
           : status.status === 'attached' ? `请求已关联到现有工单 ${status.ticketId}。`
           : record.status === 'failed' ? assessmentFailureMessage(record)
           : status.status === 'unavailable' ? '本次请求评估未能建立工单，需要补充信息或核对相关条件。请求记录已保留。'
-          : status.status === 'stop' ? '本次请求已按授权处理停止操作。' : '本次请求评估已结束，未创建新工单。请求记录已保留。' });
+          : status.status === 'stop' ? '本次请求已按授权处理停止操作。' : '本次请求评估已结束，未创建新工单。请求记录已保留。' };
+      if (this.#outbox.status(message.id) === undefined && !this.#store.getMeta(`material-message:${message.id}`)) {
+        const hostReceipt = assessmentTicketReceiptProof(message, { evalId: candidate.evalId, triggerId: trigger.id, status: status.status });
+        if (verifyAssessmentTicketReceipt(message, hostReceipt, record, id => this.#store.getMeta(`public:${id}`) ?? id)) {
+          const provenance = this.#materialProvenance(this.#materialTicketProvenance(status.ticketId && this.#store.getMeta(`ticket:${status.ticketId}`)),
+            this.#store.getMeta(`material-event:${event.id}`), { projectionVersion: record.materialProjectionVersion,
+              ticketIds: record.materialSources ?? [], freshTicketIds: record.materialFreshSources, metadataTicketIds: record.materialMetadataSources ?? [], contentVersions: record.materialContentVersions });
+          const sources = [...new Set([...provenance.ticketIds, ...provenance.metadataTicketIds])].sort();
+          if (sources.length) this.#store.setMeta(`material-message:${message.id}`, { revision: this.getMaterialSettings().revision,
+            destination: materialDestination(message.channel), route: this.#materialRoute(message.channel), hostReceipt,
+            ...this.#persistMaterialProvenance({ projectionVersion: 1, ticketIds: [], metadataTicketIds: sources, contentVersions: [] }) });
+        }
+      }
+      this.#outbox.send(message);
     }
   }
   #processAssessments() {

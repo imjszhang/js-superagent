@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { boundedCandidate } from '../context.mjs';
 import { candidateReferences, runBoundedAssessment } from '../context-requests.mjs';
-import { workEventPrompt, workEventTurnSchema, runBoundedWorkEvent } from './coordination.mjs';
+import { workEventPrompt, workEventTurnSchema, runBoundedWorkEvent, WorkEventOutputError } from './coordination.mjs';
 import { continuationSchema, continuationPrompt, validateContinuationDecision } from './continuation-assessment.mjs';
 import { candidateAssessmentSchema, validateAssessmentTurn, AssessmentFormatError, assessmentFailure } from './assessment.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -21,9 +21,20 @@ export function createTurnAssessor({ config, runTurn, assessmentPrompt }) {
       let session = input.session;
       return runBoundedWorkEvent(input, { timeoutMs: Math.min(config.timeoutMs, input.timeoutMs ?? config.timeoutMs),
         maxReads: config.contextLimits?.maxReads ?? 3, maxBytes: config.contextLimits?.readBytes ?? 32000,
-        call: async ({ turn, facts, context, remainingMs }) => runTurn({ kind: 'event', prompt: workEventPrompt({ ...input, context, facts }, config.prompt),
-          schema: workEventTurnSchema, session, runId: turn ? `${runId}-read-${turn}` : runId, timeoutMs: remainingMs,
-          checkpoint: value => { session = value; input.checkpoint?.(value); }, registerProcess: input.registerProcess, input }),
+        call: async ({ turn, facts, context, remainingMs, correction, corrections }) => {
+          const basePrompt = workEventPrompt({ ...input, context, facts }, config.prompt);
+          const prompt = correction ? `The previous coordination output was rejected before any action was applied. Correct its output contract: ${correction}. Preserve the operator intent and supplied authority; do not change targets or request new work to bypass the rejection. Return a complete corrected result, including accurate reply wording.\n\n${basePrompt}` : basePrompt;
+          try {
+            return await runTurn({ kind: 'event', prompt, schema: workEventTurnSchema, session,
+              runId: `${turn ? `${runId}-read-${turn}` : runId}${correction ? `-correction-${corrections}` : ''}`, timeoutMs: remainingMs,
+              checkpoint: value => { session = value; input.checkpoint?.(value); }, registerProcess: input.registerProcess, input });
+          } catch (error) {
+            // Only the adapter's model-JSON parser emits this type. Transport,
+            // host checkpoint and live authority failures must not be repaired.
+            if (error instanceof AssessmentFormatError) throw new WorkEventOutputError(error.message);
+            throw error;
+          }
+        },
       });
     },
     async assess(input = {}) {

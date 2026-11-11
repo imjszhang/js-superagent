@@ -28,6 +28,14 @@ The wider deployment acceptance uncovered a directory case absent from the initi
 
 The `0.15.0-alpha.1` correction pages the child references with the body, measures the complete escaped response, and keeps source-version and shared-budget checks intact. Large-directory, escaped-text, continuation and restored-provider tests exercise the real tool bridge. The real-provider current-input fixture now also requires traversal of a large directory. Earlier candidate results remain historical evidence; deployment acceptance must be rerun with the corrected package. Schema 15, existing grants, fixed snapshots, workspaces and historical receipts remain unchanged.
 
+## Alpha.3 receipt and conversation corrections
+
+Deployment acceptance found that a fixed assessment receipt could be withdrawn when its new ticket acquired a run identity. Fixed acceptance and attachment receipts now retain their complete disclosure and destination checks while using a host-verified status template, rather than a material-body observation stamp. Edited or forged receipts receive no exemption; reports still require their original material versions.
+
+A correction or status explanation about an ended ticket must use an operator reply. Proposals to append a note, request execution status, answer or stop that ended ticket are rejected against the supplied context before commit. Model output-contract errors can be corrected at most twice within the same deadline and read allowance. Changed authority, context versions and host-read failures are not converted into correction retries; actions still commit together after live authorization checks.
+
+DSH now records initial context delivery after both the prompt receipt and matching native user-message event, before an in-turn business report may answer that message. Startup without confirmed delivery does not mark input consumed, and repeated events do not duplicate its delivery receipt. Final-report validation and business-report agreement remain unchanged.
+
 ## Compatibility and limits
 
 The `0.15.0-alpha.2` follow-up separates authorization to disclose material-derived information from the freshness required to reuse its body. An authorized but stale ticket remains discoverable through a host-generated metadata projection; its old scope, report, attention and raw history do not enter a new coordinator context. The same projection applies to bounded record reads, recent events and request cards. Freshness transitions also change the native session identity so an earlier body cannot re-enter through resumed conversation history.

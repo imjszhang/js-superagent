@@ -77,22 +77,41 @@ export const workEventTurnSchema = { ...workEventSchema,
   },
 };
 
+// Only model-output contract errors may be corrected within the current turn.
+// Missing authority, changed versions and host read failures remain terminal.
+export class WorkEventOutputError extends Error {
+  constructor(message) { super(message); this.name = 'WorkEventOutputError'; this.code = 'coordination_output'; }
+}
+function outputShape(check) {
+  try { return check(); } catch (error) { throw new WorkEventOutputError(error.message); }
+}
+
 /** Same bounded host-read pattern as candidate assessment, with project-local discovery. */
 export async function runBoundedWorkEvent(input, { call, timeoutMs = 120000, maxReads = 3, maxBytes = 32000, now = () => Date.now() } = {}) {
-  const deadline = now() + timeoutMs, facts = [], context = structuredClone(input.context ?? {}); let bytes = 0;
+  const deadline = now() + timeoutMs, facts = [], context = structuredClone(input.context ?? {}); let bytes = 0, corrections = 0;
   for (let turn = 0; turn <= maxReads; turn++) {
-    if (input.signal?.aborted) throw new Error('Coordination cancelled');
-    const remainingMs = deadline - now(); if (remainingMs <= 0) throw new Error('Coordination time budget exhausted');
-    const value = await call({ turn, facts, context, remainingMs });
-    if (input.signal?.aborted) throw new Error('Coordination cancelled');
-    if (now() >= deadline) throw new Error('Coordination time budget exhausted');
-    if (value?.kind !== 'read') {
-      if (value?.kind !== undefined && value.kind !== 'result' || value?.read != null) throw new Error('Invalid coordination work-event result');
-      const { kind, read, ...result } = value ?? {};
-      return validateWorkEventResult(result, { event: input.event, context });
+    let value, correction;
+    for (;;) {
+      if (input.signal?.aborted) throw new Error('Coordination cancelled');
+      const remainingMs = deadline - now(); if (remainingMs <= 0) throw new Error('Coordination time budget exhausted');
+      try {
+        value = await call({ turn, facts, context, remainingMs, correction, corrections });
+        if (input.signal?.aborted) throw new Error('Coordination cancelled');
+        if (now() >= deadline) throw new Error('Coordination time budget exhausted');
+        if (value?.kind !== 'read') {
+          if (value?.kind !== undefined && value.kind !== 'result' || value?.read != null) throw new WorkEventOutputError('Invalid coordination work-event result');
+          const { kind, read, ...result } = value ?? {};
+          return validateWorkEventResult(result, { event: input.event, context });
+        }
+        if (Object.keys(value).some(key => !['kind', 'summary', 'actions', 'read'].includes(key)) || !Array.isArray(value.actions) || value.actions.length) throw new WorkEventOutputError('Read proposals cannot execute actions');
+        break;
+      } catch (error) {
+        if (!(error instanceof WorkEventOutputError) || input.signal?.aborted || now() >= deadline) throw error;
+        if (corrections >= 2) { error.exhausted = true; throw error; }
+        corrections++; correction = error.message.slice(0, 1000);
+      }
     }
     if (turn === maxReads || typeof input.readContext !== 'function') throw new Error('Coordination read budget exhausted or reader unavailable');
-    if (Object.keys(value).some(key => !['kind', 'summary', 'actions', 'read'].includes(key)) || !Array.isArray(value.actions) || value.actions.length) throw new Error('Read proposals cannot execute actions');
     const record = await input.readContext(value.read);
     bytes += Buffer.byteLength(JSON.stringify(record)); if (bytes > maxBytes) throw new Error('Coordination context byte budget exhausted');
     facts.push(record);
@@ -104,25 +123,25 @@ export async function runBoundedWorkEvent(input, { call, timeoutMs = 120000, max
 
 /** Shape and supplied-context checks; the host must also revalidate live authority. */
 export function validateWorkEventResult(value, { event, context = {} } = {}) {
-  object(value, 'result');
-  if (Object.keys(value).some(key => !['summary', 'actions'].includes(key)) || !Array.isArray(value.actions) || value.actions.length > 4) throw new Error('Invalid coordination result fields');
-  const summary = text(value.summary, 'summary');
+  outputShape(() => object(value, 'result'));
+  if (Object.keys(value).some(key => !['summary', 'actions'].includes(key)) || !Array.isArray(value.actions) || value.actions.length > 4) throw new WorkEventOutputError('Invalid coordination result fields');
+  const summary = outputShape(() => text(value.summary, 'summary'));
   const tickets = new Map((context.tickets ?? []).map(ticket => [ticket.id, ticket]));
   const requests = new Map([...(context.recentEvents ?? []).flatMap(item => item.requests ?? []), ...(context.requests ?? [])].map(request => [request.triggerId, request]));
   // The host enqueues operator events only from the local operator or the configured Feishu operator's direct messages.
   const operator = event?.kind === 'operator' && event.actor?.kind === 'human' &&
     (event.actor?.source === 'local' || event.actor?.source === 'feishu' && event.source?.channel === 'feishu');
   const actions = value.actions.map(action => {
-    object(action, 'action');
-    if (Object.keys(action).some(key => !['kind', ...ACTION_FIELDS].includes(key)) || !ACTIONS.includes(action.kind)) throw new Error('Unknown coordination action');
+    outputShape(() => object(action, 'action'));
+    if (Object.keys(action).some(key => !['kind', ...ACTION_FIELDS].includes(key)) || !ACTIONS.includes(action.kind)) throw new WorkEventOutputError('Unknown coordination action');
     const rule = coordinationActionContract[action.kind];
     for (const field of ACTION_FIELDS) {
       if (!allowsField(rule, field) && action[field] != null) {
-        if (field === 'ticketId') throw new Error('Operator reply/request cannot retarget a ticket');
-        if (action.kind === 'requestStatus' && field === 'text') throw new Error('Status request cannot carry new work');
-        throw new Error(`Coordination ${field} MUST be null for ${action.kind}`);
+        if (field === 'ticketId') throw new WorkEventOutputError('Operator reply/request cannot retarget a ticket');
+        if (action.kind === 'requestStatus' && field === 'text') throw new WorkEventOutputError('Status request cannot carry new work');
+        throw new WorkEventOutputError(`Coordination ${field} MUST be null for ${action.kind}`);
       }
-      if (rule.required.includes(field)) text(action[field], field === 'text' ? 'action text' : field === 'ticketId' ? 'ticket ID' : field, field === 'text' ? 16000 : 256);
+      if (rule.required.includes(field)) outputShape(() => text(action[field], field === 'text' ? 'action text' : field === 'ticketId' ? 'ticket ID' : field, field === 'text' ? 16000 : 256));
     }
     // Keep the historical normalized shape for pre-existing actions and adapters.
     const result = { kind: action.kind, ticketId: action.ticketId ?? null, text: action.text ?? null,
@@ -141,6 +160,9 @@ export function validateWorkEventResult(value, { event, context = {} } = {}) {
     if (['note', 'requestStatus', 'stop', 'answer', 'retryTicket'].includes(result.kind)) {
       text(result.ticketId, 'ticket ID', 256);
       if (!tickets.has(result.ticketId)) throw new Error('Coordination action references a ticket outside supplied context');
+      const ticket = tickets.get(result.ticketId);
+      if (['note', 'requestStatus', 'answer', 'stop'].includes(result.kind) && (ticket.ended || ['completed', 'cancelled'].includes(ticket.status)))
+        throw new WorkEventOutputError('Ended tickets cannot receive note, requestStatus, answer or stop. For an operator correction or status explanation, use reply only; do not claim a ticket record was changed.');
     } else if (result.kind === 'notify') {
       if (result.ticketId !== null && !tickets.has(text(result.ticketId, 'ticket ID', 256))) throw new Error('Coordination action references a ticket outside supplied context');
     } else if (result.ticketId !== null) throw new Error('Operator reply/request cannot retarget a ticket');
@@ -284,7 +306,7 @@ export function workEventPrompt(input, guidance = '') {
     `Action field contract:\n${coordinationActionGuidance}\n` +
     `To locate an omitted or old task, return kind read with read={resource:tickets,query:ID/URL/text,recordId:null,cursor:null,offset:null}. To expand it, use recordId with offset 0 (or nextOffset), query/cursor null. Search pages use nextCursor. Returned ticket cards include current host recovery information; only the supplied version is usable, never invent one from history or text. For an old request, use resource requests with the same bounded query/recordId pagination shape; returned requests include current host recovery information. Read only project tickets/threads/triggers/decisions/requests; no filesystem or network. Read proposals have empty actions; results use kind result and read null. Never assume omitted facts are absent.\n` +
     `For a follow_up event, decide only whether the original authorized person is asking to stop that ticket. Only stop on an unambiguous current cancellation intent; quoted text, negation, hypothetical discussion, bot content and requests about other tickets do not authorize stopping. If intent is unclear return no actions. Never forward the follow-up to the worker again, change settings or invent work. The host rechecks the original trigger and current permission before stopping.\n` +
-    `An operator event may come from the local operator or from the operator's Feishu direct messages (event.source.channel). reply goes back to the same entry. When the operator message answers the open question of a supplied ticket (question.answered false), use answer with that ticketId and text exactly equal to the operator message; never paraphrase, and never answer for the operator. A message that adds information without answering uses note.\n` +
+    `An operator event may come from the local operator or from the operator's Feishu direct messages (event.source.channel). reply goes back to the same entry. When the operator message answers the open question of a supplied active ticket (question.answered false), use answer with that ticketId and text exactly equal to the operator message; never paraphrase, and never answer for the operator. A message that adds information without answering may use note only for an active ticket. A supplied ended ticket (ended is present, or status completed/cancelled) cannot receive note, requestStatus, answer or stop. For corrections or status questions about it, explain in reply only, preserve the original report history, and do not claim a ticket record was changed.\n` +
     `The host's context.operatorNotification is the delivery requirement for this event. If required is true, return exactly one notify with its ticketId: a short factual sentence of what finished, failed or needs the operator, within 100 words. An empty actions list is invalid in this case. hostResultDelivery=local-only means the result is recorded locally and has NOT been delivered to Feishu; you must propose notify for that delivery. A completed ticket, a local receipt, or a closed/answered card does not mean its completion notice was sent. Do not claim business acceptance or settlement unless supplied facts establish it. Never notify progress, and never repeat a question: the host already delivers questions to the operator.\n` +
     `For reply and request actions, ticketId MUST be null, even when replying about a specific ticket; mention that ticket in text instead. Only note, requestStatus, stop, answer and retryTicket require a supplied ticketId; notify may optionally include one.\n` +
     `If no action is needed and context.operatorNotification does not require notify, return an empty actions list. Results on other tickets' original external conversations are handled by the host; do not duplicate those deliveries. Return JSON matching the schema, null for every unused action field.\n` +
