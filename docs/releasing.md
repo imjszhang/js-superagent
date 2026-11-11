@@ -54,3 +54,7 @@ Published 2026-11-10 from clean commit `923a1c09761b46f785ba4faf06877cf6cd2bfdde
 ## 0.14.0-alpha.3 publication
 
 Published 2026-11-11 (Asia/Shanghai) from clean commit `4108e81e817479c6c6276ab60b7e902ca74ffb3b`. Full checks (1,561 tests), CI, isolated live-model routing and registry clean-consumer verification passed. Registry integrity matches the tested artifact. Tag and GitHub prerelease `v0.14.0-alpha.3` include the package and manifest; alpha points to alpha.3, latest remains alpha.0.
+
+## 0.14.0-alpha.4 publication
+
+Published 2026-11-11 (Asia/Shanghai) from clean commit `50a70419904e9ea8c6fa8bd1141fd637e9594743`. Full checks (1,586 tests), CI, native-process acceptance and isolated live-model recovery passed. The real-model recovery used an explicitly injected missing report and verified the same session, consumed inputs and no repeated file read. Registry integrity matches the tested artifact; an independent registry consumer verified CLI, SDK and persistent history. Registry metadata appeared before an earlier cached tarball 404 expired, so the consumer fetched the official tarball with a fresh query and verified it through npm's content-addressed cache. Tag and GitHub prerelease `v0.14.0-alpha.4` include the package and manifest; alpha points to alpha.4, latest remains alpha.0.
