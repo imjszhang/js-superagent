@@ -280,6 +280,8 @@ export interface DriverRunInput {
     verifyHostTool?(query:HostToolVerification):boolean;
     /** Only a verified recovery proof may supply this; supported DSH rc.5/alpha.2 releases refuse pending-queue adoption. */
     adoption?:NativeInputAdoption;
+    /** Verified settled DSH completion: continue the saved session without replaying its original task. */
+    recoveryContinuation?:{sourceRunId:string;finalReportFailure:'missing-final-report'|'invalid-final-report'};
 }
 export type WorkspaceMode = 'in-place' | 'auto' | 'worktree' | 'copy';
 export interface WorkspaceConfig { mode: WorkspaceMode; baseRef?: string; exclude?: string[] }
@@ -849,6 +851,8 @@ export interface RecoveryEvidence {
   version:1;kind:'transient'|'interrupted';safeToResume:true;toolsSettled:true;session:DriverSession;
   checkpoint:{runId:string;eventSequence:number};code:'RATE_LIMIT'|'SERVER'|'TIMEOUT'|'HISTORY_VERIFIED';
   outcome?:'resume'|'completed'|'adopt-pending';report?:DriverReportV2;readInputIds?:string[];contextRecords?:ContextRecordReference[];adoption?:NativeInputAdoption;
+  /** Settled native completion requires a bounded same-session final-report continuation. */
+  finalReportFailure?:'missing-final-report'|'invalid-final-report';
 }
 /** Only not-sent permits same-run retry. Unknown delivery remains held for reconciliation. */
 export type InputDeliveryError = Error & {deliveryState?:'not-sent'|'unknown'|'rejected'};
@@ -879,7 +883,7 @@ export interface TicketDetails {
   reviewActions?:PRReviewRequestRecord[];botReviews?:BotReviewBudgetRecord[];uiEvidence?:UIEvidenceRecord|null;
   cancellation?:{source:'github';triggerId:string;actor:string;reason:string;at:string;policyVersion:string}|null;
   liveInputs?:Array<Record<string,unknown>>;
-  failure?:{origin:string;requiresInspection:boolean;runId:string;at:string}|null;
+  failure?:{origin:string;requiresInspection:boolean;runId:string;at:string;code?:string}|null;
   heldFeedback?:Array<{id:string;at:string;reason:string}>;
   recovery?:(Record<string,unknown>&{jobInspections?:Array<{jobId:string;reason:string}>})|null;
   nativeFacts?:(Record<string,unknown>&{policy?:WorkerPolicyObservation;nativeHandoffSupported?:boolean})|null;
@@ -896,7 +900,7 @@ export interface CoordinatorSettings {
   at: string | null;
 }
 export interface CoordinationRetrySettings {autoRetry:boolean;maxAttempts:number;initialDelayMs:number;timeoutMs:number}
-export interface CoordinationResult {summary:string;actions:Array<{kind:'note'|'requestStatus'|'reply'|'stop'|'request'|'manage'|'answer'|'notify'|'retryRequest';ticketId:string|null;text:string|null;triggerId?:string|null;expectedVersion?:string|null}>}
+export interface CoordinationResult {summary:string;actions:Array<{kind:'note'|'requestStatus'|'reply'|'stop'|'request'|'manage'|'answer'|'notify'|'retryRequest'|'retryTicket';ticketId:string|null;text:string|null;triggerId?:string|null;expectedVersion?:string|null}>}
 export interface CoordinationReadRequest {resource:'tickets'|'threads'|'triggers'|'decisions'|'requests';recordId?:string|null;query?:string|null;cursor?:string|null;offset?:number|null}
 export interface CoordinationInput extends Record<string,unknown> {
   timeoutMs?:number;readContext?(request:CoordinationReadRequest):unknown;

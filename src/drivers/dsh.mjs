@@ -16,10 +16,17 @@ import { workerPolicyGuidance, workerPolicyObservation } from '../runtime/worker
 import { createDshExecutionObserver } from './dsh-observation.mjs';
 import { DSH_VERSIONS, isSupportedDshVersion } from './dsh-versions.mjs';
 import { ensureProjectStateDirectory } from '../state-paths.mjs';
+import { parseDshReport as report } from './dsh-report.mjs';
+export { parseDshReport } from './dsh-report.mjs';
+
+function nativeResultError(code, message) { return Object.assign(new Error(message), { code }); }
+function requireFinalResponse(terminal, text) {
+  if (terminal?.kind !== 'completed') throw nativeResultError('DSH_TURN_INCOMPLETE', 'DSH ended without a completed turn');
+  if (!text.trim()) throw nativeResultError('DSH_MISSING_FINAL_REPORT', 'DSH completed the turn without a final response');
+}
 
 const exec = promisify(execFile);
 const ID = /^[A-Za-z0-9_-]{1,120}$/;
-const STATES = ['ready', 'waiting', 'blocked', 'failed', 'dropped'];
 function object(value, name, keys) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new Error(`${name} must be an object`);
   for (const key of Object.keys(value)) if (!keys.includes(key)) throw new Error(`Unsupported ${name} field: ${key}`);
@@ -444,7 +451,7 @@ export async function executeDshTurn(value, input) {
       }
       const consumedSeq = consumed.get(initialMessageId);
       if (consumedSeq === undefined || assistantSeq <= consumedSeq || terminalSeq <= assistantSeq || terminalTurn !== assistantTurn) throw new Error('DSH result does not follow the submitted input in model history');
-      if (terminal?.kind !== 'completed' || !finalText.trim()) throw new Error('DSH ended without a completed turn and final response');
+      requireFinalResponse(terminal, finalText);
       if (role === 'worker' && lastNativeSettledSequence > assistantSeq) {
         let parsed; try { parsed = report(finalText); } catch { /* Existing final validation handles malformed reports. */ }
         if (parsed?.state === 'ready' && [...nativeSettlements].some(([id,seq])=>seq>assistantSeq&&!bridge?.isRegisteredPreview(id))) throw new Error('DSH ready report predates native job completion; inspect collected job evidence before retrying');
@@ -456,12 +463,13 @@ export async function executeDshTurn(value, input) {
       await rpc('shutdown');
     }
     await transport.closed;
-    if (terminal?.kind !== 'completed' || !finalText.trim()) throw new Error('DSH ended without a completed native result');
+    requireFinalResponse(terminal, finalText);
     successful = true;
     return { text: redact(finalText), sessionId, version: version.version };
   } catch (error) {
     transport.abort(error); try { await transport.closed; } catch { /* Original failure retained after ownership cleanup. */ }
     const failure = new Error(redact(String(error.message ?? error)));
+    if (['DSH_MISSING_FINAL_REPORT', 'DSH_TURN_INCOMPLETE'].includes(error.code)) failure.code = error.code;
     // Preserve typed native failures for the read-only coordinator retry policy.
     // Neither provider prose nor transport errors are classified by text.
     if (terminal?.kind === 'error' && ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'AUTH', 'BAD_REQUEST'].includes(terminal.error?.code)) {
@@ -485,36 +493,13 @@ export async function executeDshTurn(value, input) {
   ownershipClosed.finally(() => { held = false; }).catch(() => {});
   return runCurrent();
 }
-// DeepSeek models sometimes put a sentence before the required JSON. Only a report that ends the
-// message (optionally fenced) is accepted; it then passes the same validation as a bare report.
-function trailingReport(text) {
-  const body = text.trim().replace(/\n?```\s*$/, '');
-  for (let index = body.lastIndexOf('{'), attempts = 0; index >= 0 && attempts < 200; index = body.lastIndexOf('{', index - 1), attempts++) {
-    try {
-      const value = JSON.parse(body.slice(index).trim());
-      if (value && typeof value === 'object' && !Array.isArray(value) && value.version === 2) return value;
-    } catch { /* keep scanning outward */ }
-  }
-  throw new Error('DSH final response is not a JSON report');
-}
-export function parseDshReport(text) { return report(text); }
-function report(text) {
-  let value; try { value = JSON.parse(text); } catch { value = trailingReport(text); }
-  object(value, 'DSH report', ['version', 'state', 'summary', 'artifacts', 'attention', 'answers']);
-  if (value.version !== 2 || !STATES.includes(value.state) || typeof value.summary !== 'string' || !value.summary.trim() || value.summary.length > 32000 || !Array.isArray(value.artifacts) || value.artifacts.some(item => typeof item !== 'string')) throw new Error('Invalid DSH business report');
-  if (value.attention != null) { object(value.attention, 'DSH attention', ['question', 'triggerId', 'decision']); if (value.state !== 'waiting' || typeof value.attention.question !== 'string' || !value.attention.question.trim()) throw new Error('Invalid DSH question'); }
-  if (value.answers == null) delete value.answers;
-  return value;
-}
 export function createDshSdkDriver(value, context = {}) {
   const role = context.role ?? 'worker';
   const options = validateDshOptions(value, { driver: 'dsh-sdk', role }), active = new Map();
   const nativeBackgroundOwnership = role === 'worker' && options.permission !== 'read-only';
   return { reportVersion: 2, capabilities: Object.freeze({ reportVersion: 2, sessionResume: true, boundedContextVersion: 1, structuredProgress: !!options.enableAgentTools, realtimeInput: true, inputAcknowledgements: true, backgroundTasks: !!options.enableManagedJobs, subagents: !!options.enableManagedJobs, agentTools: !!options.enableAgentTools, nativeBackgroundOwnership }),
     async inspectRecovery(input) {
-      const inspected = inspectDshRecovery(options, input);
-      if (inspected?.report) { try { inspected.report = report(JSON.stringify(inspected.report)); normalizeDriverReport(inspected.report, { version: 2 }); } catch { return null; } }
-      return inspected;
+      return inspectDshRecovery(options, input);
     },
     async sendInput({ runId, ...message } = {}) {
       const control = active.get(runId);
@@ -546,7 +531,12 @@ export function createDshSdkDriver(value, context = {}) {
       const nativeEvidence = handoffResults.length ? JSON.stringify(handoffResults.map(({id,originRunId,session,results}) => ({id,originRunId,session,results}))) : '';
       if (Buffer.byteLength(nativeEvidence) > 280000) throw new Error('Native handoff results exceed the bounded context budget');
       if (input.policySnapshot && !input.adoption) input.checkpointNative?.({ policy: workerPolicyObservation(input.policySnapshot, 'selected', { driver: 'dsh-sdk', runId: input.runId }) });
-      const prompt = `Execute this authorized js-superagent task. Make requested changes and run relevant checks within this workspace. Do not publish, commit, push, merge, send messages, modify .js-superagent, start daemons, or spawn subagents.\n` +
+      const continuation = input.recoveryContinuation;
+      if (continuation && (!input.session || !ID.test(continuation.sourceRunId ?? '') || !['missing-final-report', 'invalid-final-report'].includes(continuation.finalReportFailure))) throw new Error('Invalid DSH final-report continuation');
+      const opening = continuation
+        ? `Continue this same saved native session after ${continuation.finalReportFailure} in run ${continuation.sourceRunId}. Use the existing tool results and inspect already completed work. Do not replay the original request or repeat completed actions. Finish only the remaining authorized work, then provide the required final JSON report. This grants no new scope. `
+        : `Execute this authorized js-superagent task. Make requested changes and run relevant checks within this workspace. `;
+      const prompt = opening + `Do not publish, commit, push, merge, send messages, modify .js-superagent, start daemons, or spawn subagents.\n` +
         `When a decision is missing, return waiting with attention.question. Do not wait for interactive input. After interruption inspect existing changes before acting. The host owns verification, delivery and task completion.\n` +
         `Return ONLY a JSON object: {"version":2,"state":"ready|waiting|blocked|failed|dropped","summary":"actual result and check evidence","artifacts":["relative/file"],"attention":null,"answers":null}. For a question set attention to {"question":"one concrete question"}. When a specific authorized message already delivered to this ticket raised it, add that message's triggerId as attention.triggerId so the host asks where that person wrote. Never choose an arbitrary recipient or a context-only observation.\n` +
         `${DECISION_PROMPT}\n` +
@@ -560,7 +550,9 @@ export function createDshSdkDriver(value, context = {}) {
       const contextRecords = context.pack.messages.filter(record => !record.truncated).map(({ resource, id, version }) => ({ resource, id, version }));
       const prepared = { ...input, prompt, contextRecords, onLiveControl: control => { if (control) active.set(input.runId, control); else active.delete(input.runId); } };
       const result = input.nativeHandoff?.current ? await input.nativeHandoff.current.control.resume(prepared) : await executeDshTurn(options, prepared);
-      const parsed = report(result.text);
+      let parsed;
+      try { parsed = report(result.text); normalizeDriverReport(parsed, { version: 2 }); }
+      catch (error) { throw nativeResultError('DSH_INVALID_FINAL_REPORT', `DSH completed the turn with an invalid final report: ${error.message}`); }
       const staged=input.agentTools?.terminalReport?.();
       if(options.enableAgentTools&&staged){
         if(!sameBusinessReport(staged,parsed))throw new Error('DSH final report disagrees with its business tool report');

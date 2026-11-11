@@ -32,6 +32,10 @@ export function recoveryEvidence(value, { session, runId, kind = 'transient' } =
     result.adoption={sourceRunId:adoption.sourceRunId,sessionId:adoption.sessionId,eventSequence:adoption.eventSequence,
       pending:adoption.pending.map(({inputId,messageId,nativeDigest,sourceRunId})=>({inputId,messageId,nativeDigest,sourceRunId}))};
   }
+  if(value.finalReportFailure!==undefined){
+    if(kind!=='interrupted'||value.outcome!=='resume'||!['missing-final-report','invalid-final-report'].includes(value.finalReportFailure))return null;
+    result.finalReportFailure=value.finalReportFailure;
+  }
   if(value.readInputIds!==undefined){if(!Array.isArray(value.readInputIds)||value.readInputIds.length>1000||value.readInputIds.some(id=>typeof id!=='string'||!id||id.length>256))return null;result.readInputIds=[...new Set(value.readInputIds)];}
   if(value.contextRecords!==undefined){if(!Array.isArray(value.contextRecords)||value.contextRecords.length>1000||value.contextRecords.some(ref=>!ref||['resource','id','version'].some(key=>typeof ref[key]!=='string'||ref[key].length>512)))return null;result.contextRecords=value.contextRecords.map(ref=>({resource:ref.resource,id:ref.id,version:ref.version}));}
   return result;

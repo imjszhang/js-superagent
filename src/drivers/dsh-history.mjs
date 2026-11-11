@@ -6,6 +6,8 @@ import { createHash } from 'node:crypto';
 import { hostToolSettled, nativeJsonResult, recoveryInspection } from './native-recovery.mjs';
 import { isSupportedDshVersion } from './dsh-versions.mjs';
 import { projectStateDirectory } from '../state-paths.mjs';
+import { parseDshReport } from './dsh-report.mjs';
+import { normalizeDriverReport } from '../runtime/reports.mjs';
 
 export const dshDigest = value => createHash('sha256').update(value).digest('hex');
 export const dshHostCallId = (sessionId, runId, nativeCallId) => `dsh-${createHash('sha256').update(JSON.stringify([sessionId, runId, nativeCallId])).digest('hex').slice(0, 40)}`;
@@ -170,8 +172,19 @@ export function inspectDshRecovery(options, input) {
     const end = history.terminal, answer = history.assistant;
     const requiredSequence = Math.max(start, ...Object.values(checked.reconciled).filter(item => item.runId === input.runId || anchor.adoption?.pending?.some(pending => pending.inputId === item.evidence?.inputId)).map(item => item.evidence?.eventSequence ?? -1));
     if (end?.seq > requiredSequence && end.data.reason?.kind === 'completed' && answer?.seq > requiredSequence && answer.seq < end.seq && answer.data.turn === end.data.turn && !answer.data.interrupted) {
-      const report = JSON.parse((answer.data.message?.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('\n'));
-      if (report.version !== 2 || !['ready','waiting','blocked','failed','dropped'].includes(report.state) || typeof report.summary !== 'string' || !report.summary.trim()) return null;
+      const content = answer.data.message?.content ?? [];
+      const text = content.filter(block => block.type === 'text').map(block => block.text).join('\n');
+      // A durable, settled completed turn can still lack its business result.
+      // Preserve the distinction from unreadable history and continue the same
+      // session under the host's bounded repair policy; never replay its tools.
+      const repair = finalReportFailure => {
+        if (content.some(block => block.type === 'tool-call') || history.rows.some(event => event.seq > answer.seq && ['tool/result', 'job/settled'].includes(event.type))) return reject('native-result-predates-tool-completion');
+        return { ...result, finalReportFailure };
+      };
+      if (!text.trim()) return repair('missing-final-report');
+      let report;
+      try { report = parseDshReport(text); normalizeDriverReport(report, { version: 2 }); }
+      catch { return repair('invalid-final-report'); }
       return { ...result, outcome: 'completed', report };
     }
     if (end?.seq > start && !(end.data.reason?.kind === 'error' && ['RATE_LIMIT','SERVER','TIMEOUT'].includes(end.data.reason.error?.code))) return reject('native-terminal-does-not-allow-resume');

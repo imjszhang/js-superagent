@@ -285,3 +285,80 @@ test('a DSH report that ends the message is accepted after a leading sentence', 
   assert.throws(() => parseDshReport(`Note ${JSON.stringify({ ...bare, version: 1 })}`), /not a JSON report/);
   assert.throws(() => parseDshReport(`Note ${JSON.stringify({ ...bare, state: 'invented' })}`), /Invalid DSH business report/);
 });
+
+test('SDK distinguishes completed reasoning-only output from incomplete native turns', async t => {
+  for (const [final, reason, code] of [
+    [[{ type: 'reasoning', text: 'synthetic placeholder' }], { kind: 'completed' }, 'DSH_MISSING_FINAL_REPORT'],
+    [[{ type: 'text', text: ' \n\t' }], { kind: 'completed' }, 'DSH_MISSING_FINAL_REPORT'],
+    [[{ type: 'text', text: 'an interrupted response' }], { kind: 'max-tokens' }, 'DSH_TURN_INCOMPLETE'],
+  ]) {
+    const f = fixture(t, `if(r.method==='session/prompt'){
+      answer({messageId:'original'});event('user/message',{id:'original'});
+      event('assistant/message',{turn:1,message:{content:[{type:'text',text:report}]}});
+      event('tool/call',{turn:1,callId:'read',name:'bash'});
+      event('tool/result',{turn:1,message:{toolCallId:'read',isError:false}});
+      event('assistant/message',{turn:1,message:{content:${JSON.stringify(final)}}});
+      event('turn/end',{turn:1,reason:${JSON.stringify(reason)}});continue;
+    }`, '0.2.2-alpha.2');
+    await assert.rejects(executeDshTurn(f.options, f.input), error => error.code === code);
+    assert.ok(f.pids.every(pid => !alive(pid)));
+  }
+});
+
+test('SDK invalid report is typed separately and report continuation keeps the same native session', async t => {
+  const f = fixture(t, `if(r.method==='session/prompt'&&!existsSync(join(process.env.DSH_HOME,'invalid-once'))){
+    writeFileSync(join(process.env.DSH_HOME,'invalid-once'),'yes');writeFileSync(join(process.env.DSH_HOME,'fake-session'),'durable');
+    answer({messageId:'original'});event('user/message',{id:'original'});
+    event('assistant/message',{turn:1,message:{content:[{type:'text',text:'Completed without the requested JSON report.'}]}});
+    event('turn/end',{turn:1,reason:{kind:'completed'}});continue;
+  }`, '0.2.2-alpha.2');
+  const driver = createDshSdkDriver(f.options), input = { ...f.input, ticket: { id: 'ticket', text: 'Inspect existing material', scope: 'Read-only' } };
+  await assert.rejects(driver.run(input), error => error.code === 'DSH_INVALID_FINAL_REPORT');
+  const session = f.sessions[0];
+  const result = await driver.run({ ...input, runId: randomUUID(), session, recoveryContinuation: { sourceRunId: input.runId, finalReportFailure: 'invalid-final-report' } });
+  assert.equal(result.state, 'ready'); assert.deepEqual(f.sessions.at(-1), session);
+  const prompt = readFileSync(join(f.root, 'input.txt'), 'utf8');
+  assert.match(prompt, /Continue this same saved native session/);
+  assert.match(prompt, /Do not replay the original request or repeat completed actions/);
+  assert.ok(f.pids.every(pid => !alive(pid)));
+});
+
+test('runtime repairs a settled DSH reasoning-only turn in the original session without replaying tools', async t => {
+  const f = fixture(t, `if(r.method==='session/prompt'){
+    const folder=join(process.env.DSH_HOME,'sessions','fixture',sid);mkdirSync(folder,{recursive:true});
+    const path=join(folder,'session.v4.jsonl'), existed=existsSync(path);
+    const rows=existed?readFileSync(path,'utf8').trim().split('\\n').map(JSON.parse).slice(1):[];
+    const record=(type,data)=>{
+      const value={seq:rows.length,type,data};rows.push(value);
+      writeFileSync(path,[{type:'session',version:4,id:sid,cwd:process.cwd(),isSeeded:false},...rows].map(v=>JSON.stringify(v)).join('\\n')+'\\n');
+      send({jsonrpc:'2.0',method:'session.event',params:{sessionId:sid,event:value}});
+    };
+    writeFileSync(join(process.env.DSH_HOME,'fake-session'),'durable');
+    const id=existed?'continued-input':'original-input',turn=existed?2:1;
+    writeFileSync(join(process.cwd(),existed?'continuation-prompt.txt':'original-prompt.txt'),r.params.contentBlocks[0].text);
+    answer({messageId:id});record('user/message',{id,content:r.params.contentBlocks,source:{kind:'user'}});
+    if(!existed){
+      record('tool/call',{turn,callId:'settled-read',name:'bash',arguments:'{"command":"read-existing-record"}'});
+      record('tool/result',{turn,message:{toolCallId:'settled-read',isError:false,content:[{type:'text',text:'existing evidence'}]}});
+      writeFileSync(join(process.cwd(),'tool-count.txt'),'1');
+      record('assistant/message',{turn,message:{content:[{type:'reasoning',text:'synthetic placeholder'}]}});
+    }else record('assistant/message',{turn,message:{content:[{type:'text',text:report}]}});
+    record('turn/end',{turn,reason:{kind:'completed'}});continue;
+  }`, '0.2.2-alpha.2');
+  const { open, stored } = runtimeFixture(t, f, { enableAgentTools: false, enableManagedJobs: false });
+  const runtime = open(), ticket = runtime.submit({ text: 'Inspect existing material once.', managedJobs: false });
+  await runtime.runNext();
+  assert.equal(runtime.get(ticket.id).status, 'failed');
+  assert.match(runtime.get(ticket.id).reports.at(-1).summary, /completed the turn without a final response/);
+  const session = runtime.getSession(ticket.id);
+  runtime.retry(ticket.id); await runtime.runNext();
+  assert.equal(runtime.get(ticket.id).status, 'completed');
+  assert.deepEqual(runtime.getSession(ticket.id), session);
+  assert.equal(stored(ticket.id).recovery.evidence.finalReportFailure, 'missing-final-report');
+  assert.equal(readFileSync(join(f.root, 'tool-count.txt'), 'utf8'), '1');
+  const continued = readFileSync(join(f.root, 'continuation-prompt.txt'), 'utf8');
+  assert.match(continued, /Continue this same saved native session/);
+  assert.match(continued, /Do not replay the original request or repeat completed actions/);
+  assert.doesNotMatch(continued, /^Execute this authorized js-superagent task/);
+  assert.ok(f.pids.every(pid => !alive(pid)));
+});

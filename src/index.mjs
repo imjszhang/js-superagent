@@ -831,12 +831,13 @@ export class ProjectRuntime {
     this.#advanceSchema(9);
     return inbox.retry(id);
   }
-  #coordinationTicketCard(meta, domain) {
+  #coordinationTicketCard(meta, domain, event) {
     const report = latestAssignment(domain)?.report;
     return { id: meta.id, scope: domain.mandate.scope.slice(0, 600), status: this.#view(meta).status,
       reportState: report?.state ?? null, summary: report?.summary?.slice(0, 400) ?? null,
       attention: domain.attention?.question?.slice(0, 400) ?? null, ended: domain.ended ?? null,
       operatorTicket: isOperatorTicket(meta, domain),
+      recovery: this.#ticketRecoveryCard(meta, domain, event),
       ...(domain.attention ? { question: { answered: !!this.#attentionAnswer(domain.attention.id), choices: !!this.#attentionDecision(domain.attention.id) } } : {}),
       stateVersion: createHash('sha256').update(JSON.stringify({ domain, failure: meta.failure, interrupted: meta.interrupted })).digest('hex') };
   }
@@ -846,6 +847,92 @@ export class ProjectRuntime {
     const feishu = this.#operatorFeishu(), source = this.#store.triggers.get(event.references?.triggerId);
     return !!feishu && event.actor.source === 'feishu' && event.source?.channel === 'feishu' &&
       event.actor.id === feishu.operator.openId && source?.meta?.tenantKey === feishu.tenantKey;
+  }
+  #ticketRecoveryAuthority(meta, domain, event) {
+    if (!domain || !this.#recoveryOperatorAllowed(event)) return false;
+    if (event.actor.source === 'local') return true;
+    if (!isOperatorTicket(meta, domain)) return false;
+    const origin = this.#assessmentOrigin(domain.origin?.triggerId);
+    if (!origin) return false; // A remote conversation cannot adopt an unrelated local task.
+    return origin.actor?.source === event.actor.source && origin.actor?.id === event.actor.id &&
+      origin.source?.channel === event.source.channel && origin.source?.chatId === event.source.chatId &&
+      this.#assessmentOriginAllowed(domain.origin.triggerId);
+  }
+  #ticketRecoveryCard(meta, domain, event) {
+    const view = this.#view(meta), recovery = meta.recovery;
+    let reason = null;
+    if (!this.#ticketRecoveryAuthority(meta, domain, event)) reason = 'authority';
+    else if (view.status === 'completed') reason = 'already-completed';
+    else if (domain.ended || !this.#policy().revalidate(domain.mandate)) reason = 'authorization-ended';
+    else if (this.isPaused() || this.#stopping) reason = 'paused';
+    else if (this.#executions().some(row => row.value.publicId === meta.id) || ['queued','running'].includes(view.status) ||
+      ['pending','inspect','resuming'].includes(recovery?.status)) reason = 'in-progress';
+    else if (!['failed','interrupted'].includes(view.status)) reason = 'not-failed';
+    else if (this.#pendingDelivery(meta)) reason = 'reconcile-delivery-without-worker';
+    else if (meta.heldFeedback?.length) reason = 'new-human-feedback-needs-inspection';
+    else if (hostRecoveryBlockReason(this.#store, meta.id)) reason = hostRecoveryBlockReason(this.#store, meta.id);
+    if (!reason && meta.failure?.requiresInspection !== false) {
+      if (!['native-execution','interrupted'].includes(meta.failure?.origin) || !meta.driverSession) reason = 'inspection-required';
+      else { try { if (typeof this.#resolveDriver(meta.executionConfig,meta).inspectRecovery !== 'function') reason = 'inspection-required'; }
+        catch { reason = 'native-history-unavailable'; } }
+    }
+    const card = { allowed: reason === null, reason, state: recovery?.status ?? null,
+      ...(recovery?.reason ? { lastReason: recovery.reason } : {}) };
+    card.version = createHash('sha256').update(JSON.stringify({ ticketId: meta.id, domain,
+      failure: meta.failure, recovery, session: meta.driverSession, execution: meta.executionConfig,
+      delivery: meta.deliveryAttempt, heldFeedback: meta.heldFeedback, jobs: this.listJobs(meta.id),
+      policy: this.#policy().version, card, actor: event?.actor, source: event?.source })).digest('hex');
+    return card;
+  }
+  #recoveryReply(event, id, ticketId, text) {
+    const feishu = event.source?.channel === 'feishu' && this.#operatorFeishu();
+    this.#outbox.send({ id, kind: 'reply', ticketId,
+      channel: feishu ? operatorReplyChannel(feishu, event.source.chatId, event.source.messageId)
+        : { source: 'local', thread: event.id, address: {} }, text });
+  }
+  #ticketRecoveryOutcome(meta, status, reason) {
+    const request = meta.recovery?.requestedBy;
+    if (!request) return;
+    const event = this.#coordinationInbox().get(request.eventId);
+    const domain = this.#store.tickets.get(meta.domainId);
+    if (!event || !this.#ticketRecoveryAuthority(meta, domain, event)) return;
+    const explanations = {
+      'missing-final-report': '上次执行未生成最终报告', 'invalid-final-report': '上次最终报告格式不符合要求',
+      'native-tools-or-jobs-unsettled': '仍有工具或后台任务尚未确认结束',
+      'native-history-unavailable': '暂时无法读取原会话历史',
+      'native-history-binding-mismatch': '原会话与当前执行设置不匹配',
+      'native-terminal-does-not-allow-resume': '原会话的结束状态不支持安全续跑',
+      'final-report-recovery-exhausted': '一次报告补救后仍未得到有效报告',
+      'reconcile-delivery-without-worker': '已有待交付结果，需要先核对交付',
+      'managed-job-needs-inspection': '后台任务的执行结果尚需核对',
+      'recovery-deadline': '本次恢复检查已超过执行期限',
+    };
+    const text = status === 'resuming' ? `工单 ${meta.id} 已通过恢复检查，将沿用原会话继续执行；最终结果会回到原会话。`
+      : `工单 ${meta.id} 暂未恢复执行：${explanations[reason] ?? `需要先核对恢复条件（${reason}）`}。原工单和执行记录已保留，未新建替代工单。`;
+    const receiptId = `${request.receiptId}:${status}:${meta.recovery.runId}`;
+    this.#recoveryReply(event, receiptId, meta.id, text);
+    meta.recovery.outcome = { status, reason: reason ?? null, receiptId, at: this.#now() };
+  }
+  #retryTicket(action, event) {
+    const meta = this.#meta(action.ticketId), domain = this.#store.tickets.get(meta.domainId);
+    if (!this.#ticketRecoveryAuthority(meta, domain, event)) throw new Error('Ticket recovery is no longer authorized');
+    const card = this.#ticketRecoveryCard(meta, domain, event);
+    if (card.version !== action.expectedVersion) throw new Error('Coordination context or policy changed; reassessment required');
+    let status, message;
+    if (card.reason === 'in-progress') { status = 'in-progress'; message = `工单 ${meta.id} 已在执行或恢复队列中，无需重复启动。`; }
+    else if (card.reason === 'already-completed') { status = 'already-completed'; message = `工单 ${meta.id} 已完成，无需重新执行。`; }
+    else if (!card.allowed) { status = 'blocked'; message = `暂时不能恢复工单 ${meta.id}（${card.reason}），需要先核对相关条件。`; }
+    else {
+      this.retry(meta.id);
+      const current = this.#meta(meta.id);
+      if (current.recovery?.status === 'inspect') {
+        current.recovery.requestedBy = { eventId: event.id, receiptId: action.id };
+        this.#save(current); status = 'checking';
+        message = `已收到工单 ${meta.id} 的恢复请求，正在核对原会话和已执行操作；确认可恢复后才会继续执行。`;
+      } else { status = 'queued'; message = `已将原工单 ${meta.id} 重新排入执行队列，未新建工单；结果会回到原会话。`; }
+    }
+    this.#recoveryReply(event, action.id, meta.id, message);
+    return { ticketId: meta.id, status, receiptId: action.id, reason: card.reason };
   }
   #coordinationRequestCard(triggerId, event) {
     const origin = this.#assessmentOrigin(triggerId), trigger = this.#store.triggers.get(triggerId);
@@ -900,7 +987,7 @@ export class ProjectRuntime {
     const tickets = [];
     for (const meta of records.slice(0, 100)) {
       const domain = this.#store.tickets.get(meta.domainId); if (!domain) continue;
-      const row = this.#coordinationTicketCard(meta, domain);
+      const row = this.#coordinationTicketCard(meta, domain, event);
       if (Buffer.byteLength(JSON.stringify([...tickets, row])) > 16000) break;
       tickets.push(row);
     }
@@ -958,7 +1045,7 @@ export class ProjectRuntime {
     });
     try {
       const snapshot = this.#coordinationContext(event);
-      const reader = createCoordinationReader(this.#store, { ticketCard: (meta, domain) => this.#coordinationTicketCard(meta, domain),
+      const reader = createCoordinationReader(this.#store, { ticketCard: (meta, domain) => this.#coordinationTicketCard(meta, domain, event),
         requestCards: () => this.#coordinationRequests(event),
         maxReads: options.contextLimits?.maxReads ?? 3, maxBytes: options.contextLimits?.readBytes ?? 32000 });
       const sessionKey = `coordinator:session:${settings.version}${promptAssembly ? `:${promptAssembly.version}` : ''}`;
@@ -985,6 +1072,7 @@ export class ProjectRuntime {
             return action.kind === 'stop' && action.ticketId === event.ticketId && trigger?.actor.id === event.actor?.id && this.#githubStopAllowed(this.#meta(event.ticketId), trigger);
           }
           if (action.kind === 'reply') return event.kind === 'operator' && (event.source?.channel !== 'feishu' || !!this.#operatorFeishu());
+          if (action.kind === 'retryTicket') { const meta = this.#meta(action.ticketId); return this.#ticketRecoveryAuthority(meta, this.#store.tickets.get(meta.domainId), event); }
           if (action.kind === 'retryRequest') return this.#recoveryOperatorAllowed(event) && !!this.#coordinationRequestCard(action.triggerId, event);
           if (action.kind === 'request') return event.kind === 'operator' && !event.references?.stopTicketId && action.text === event.text;
           if (action.kind === 'notify') {
@@ -999,6 +1087,7 @@ export class ProjectRuntime {
           return action.kind !== 'stop' || event.kind === 'operator' && event.references?.stopTicketId === action.ticketId;
         },
         applyAction: action => {
+          if (action.kind === 'retryTicket') return this.#retryTicket(action, event);
           if (action.kind === 'retryRequest') return this.#retryRequest(action, event);
           if (action.kind === 'reply') {
             const feishu = event.source?.channel === 'feishu' && this.#operatorFeishu();
@@ -3475,6 +3564,7 @@ export class ProjectRuntime {
   }
   retry(id) {
     const before = this.#meta(id), view = this.#view(before);
+    if (['pending','inspect','resuming'].includes(before.recovery?.status) && before.failure?.runId === before.recovery.runId) return view;
     if (!['failed', 'interrupted', 'cancelled'].includes(view.status)) throw new Error(`Cannot retry ${view.status} ticket`);
     if (view.status !== 'cancelled' && this.#pendingDelivery(before)) throw new Error(`A saved delivery is pending; use deliver ${id} to resume it without rerunning the Worker`);
     this.#advanceSchema(9);
@@ -3486,7 +3576,7 @@ export class ProjectRuntime {
           ['native-execution', 'interrupted'].includes(meta.failure?.origin) && typeof this.#resolveDriver(meta.executionConfig, meta).inspectRecovery === 'function') {
         if (this.#executions().some(row => row.value.publicId === id)) throw new Error('Wait for the previous execution owner before recovery inspection');
         meta.recovery = { status: 'inspect', manual: true, runId: meta.failure.runId ?? meta.runId, session: meta.driverSession,
-          attempt: 0, cycle: (meta.recovery?.cycle ?? 0) + 1, previous: meta.recovery ? { status: meta.recovery.status, attempt: meta.recovery.attempt, deadlineAt: meta.recovery.deadlineAt } : null,
+          attempt: 0, finalReportRepairAttempts: 0, cycle: (meta.recovery?.cycle ?? 0) + 1, previous: meta.recovery ? { status: meta.recovery.status, attempt: meta.recovery.attempt, deadlineAt: meta.recovery.deadlineAt } : null,
           createdAt: this.#now(), nextAt: this.#now(), deadlineAt: new Date(Date.now() + (meta.executionConfig?.timeoutMs ?? 600000)).toISOString() };
         this.#save(meta);
         return this.#view(meta);
@@ -3529,6 +3619,8 @@ export class ProjectRuntime {
       meta.interrupted = true;
       meta.failure = { origin: 'interrupted', requiresInspection: true, runId: execution.runId, at: this.#now() };
       if(this.getRecoverySettings().autoResume && !this.#stopping) meta.recovery={status:'inspect',attempt:meta.recovery?.attempt??0,
+        finalReportRepairAttempts:meta.recovery?.status==='resuming'?(meta.recovery.finalReportRepairAttempts??0):0,
+        ...(meta.recovery?.status==='resuming'&&meta.recovery.requestedBy?{requestedBy:meta.recovery.requestedBy}:{}),
         runId:execution.runId,session:meta.driverSession??null,createdAt:this.#now(),nextAt:this.#now(),
         ...(Number(this.#store.db.prepare('PRAGMA user_version').get().user_version)>=6?{deadlineAt:meta.recovery?.deadlineAt??new Date(Date.parse(execution.startedAt??this.#now())+(meta.executionConfig?.timeoutMs??600000)).toISOString()}: {})};
       else this.#invalidateRecovery(meta,'explicit-stop-or-manual-recovery');
@@ -3561,7 +3653,8 @@ export class ProjectRuntime {
     if (plan || inspect) {
       const deadlineAt = prior?.status === 'resuming' && prior.deadlineAt || new Date(Date.parse(execution.startedAt ?? this.#now()) + (meta.executionConfig?.timeoutMs ?? 600000)).toISOString();
       const next = plan || {status:'inspect',attempt:prior?.status==='resuming'?prior.attempt:0,runId,session:meta.driverSession,createdAt:this.#now(),nextAt:this.#now()};
-      meta.recovery = {...next,deadlineAt,settingsRevision:settings.revision,trigger:inspect?'native-transport-or-process-failure':'native-transient-proof'};
+      meta.recovery = {...next,deadlineAt,finalReportRepairAttempts:prior?.status==='resuming'?(prior.finalReportRepairAttempts??0):0,
+        ...(prior?.status==='resuming'&&prior.requestedBy?{requestedBy:prior.requestedBy}:{}),settingsRevision:settings.revision,trigger:inspect?'native-transport-or-process-failure':'native-transient-proof'};
       // An elapsed deadline forbids a new execution, but still permits one completed-result inspection.
     } else if (prior?.status === 'resuming') meta.recovery = {...prior,status:failure?'inspection':'completed',updatedAt:this.#now()};
   }
@@ -3575,9 +3668,10 @@ export class ProjectRuntime {
     for(const snapshot of candidates){
       const plan=snapshot.recovery,domain=this.#store.tickets.get(snapshot.domainId);
       const reject=(reason,details)=>this.#store.atomic(()=>{const meta=this.#meta(snapshot.id);if(meta.recovery?.runId===plan.runId){meta.recovery={...meta.recovery,status:'inspection',reason,
-        ...(details?.pendingInputs?{pendingInputs:structuredClone(details.pendingInputs)}:{}),updatedAt:this.#now()};this.#save(meta);}});
+        ...(details?.pendingInputs?{pendingInputs:structuredClone(details.pendingInputs)}:{}),updatedAt:this.#now()};this.#ticketRecoveryOutcome(meta,'blocked',reason);this.#save(meta);}});
       if(!domain||domain.ended||!this.#policy().revalidate(domain.mandate)){reject('authorization-ended');continue;}
-      if(snapshot.heldFeedback?.length&&!plan.manual){reject('new-human-feedback-needs-inspection');continue;}
+      if(plan.requestedBy && !this.#ticketRecoveryAuthority(snapshot,domain,this.#coordinationInbox().get(plan.requestedBy.eventId))){reject('authority');continue;}
+      if(snapshot.heldFeedback?.length&&(!plan.manual||plan.requestedBy)){reject('new-human-feedback-needs-inspection');continue;}
       if(this.#pendingDelivery(snapshot)){reject('reconcile-delivery-without-worker');continue;}
       if(this.#executions().some(row=>row.value.publicId===snapshot.id))continue;
       const hostBlocked=hostRecoveryBlockReason(this.#store,snapshot.id);
@@ -3619,13 +3713,18 @@ export class ProjectRuntime {
         if(!evidence){reject(inspected?.reason??'native-history-not-safe',inspected);continue;}
       }
       if(!evidence){reject('missing-native-recovery-evidence');continue;}
+      if(evidence.finalReportFailure && (plan.finalReportRepairAttempts??0)>=1){reject('final-report-recovery-exhausted');continue;}
       if(evidence.outcome!=='completed'&&plan.deadlineAt&&Date.parse(plan.deadlineAt)-Date.now()<1000){reject('recovery-deadline');continue;}
       if(this.#stopping||this.isPaused())return;
       this.#store.atomic(()=>{
         const meta=this.#meta(snapshot.id),current=this.#store.tickets.get(meta.domainId);
-        if(JSON.stringify(meta.recovery)!==JSON.stringify(plan)||meta.failure?.runId!==plan.runId||meta.heldFeedback?.length&&!plan.manual||current.ended||
+        if(JSON.stringify(meta.recovery)!==JSON.stringify(plan)||meta.failure?.runId!==plan.runId||!current||current.ended||
             JSON.stringify(current.inputs)!==JSON.stringify(domain.inputs)||!this.#policy().revalidate(current.mandate)||this.isPaused()||this.#stopping||this.#executions().some(row=>row.value.publicId===meta.id))return;
-        if(evidence.outcome!=='completed'&&plan.attempt>=settings.maxAttempts){meta.recovery={...plan,status:'exhausted'};this.#save(meta);return;}
+        if(plan.requestedBy && !this.#ticketRecoveryAuthority(meta,current,this.#coordinationInbox().get(plan.requestedBy.eventId))){reject('authority');return;}
+        if(meta.heldFeedback?.length&&(!plan.manual||plan.requestedBy)){reject('new-human-feedback-needs-inspection');return;}
+        const currentHostBlock=hostRecoveryBlockReason(this.#store,meta.id);
+        if(this.#pendingDelivery(meta)||currentHostBlock){reject(this.#pendingDelivery(meta)?'reconcile-delivery-without-worker':currentHostBlock);return;}
+        if(evidence.outcome!=='completed'&&plan.attempt>=settings.maxAttempts){meta.recovery={...plan,status:'exhausted'};this.#ticketRecoveryOutcome(meta,'blocked','recovery-attempts-exhausted');this.#save(meta);return;}
         for(const inputId of evidence.readInputIds??[]){
           const sourceRun = meta.inputAdoption?.pending.find(item => item.inputId === inputId)?.sourceRunId ?? plan.runId;
           const key=`live-input:${sourceRun}:${inputId}`,sent=this.#store.getMeta(key);
@@ -3641,12 +3740,20 @@ export class ProjectRuntime {
           })){reject('pending-input-no-longer-authorized');return;}
           meta.inputAdoption={...evidence.adoption,status:'prepared',preparedAt:this.#now()};
         }
+        if (evidence.finalReportFailure && evidence.contextRecords?.length) {
+          const refs = new Map(evidence.contextRecords.map(ref => [`${ref.resource}:${ref.id}`,ref]));
+          const resources = this.#workerResources(meta.id,plan.runId,latestAssignment(current)?.id,current.inputs.map(item=>item.id)).resources;
+          const consumed = contextConsumption(resources.filter(item=>refs.get(`${item.resource}:${item.id}`)?.version===contextVersion(item.value)));
+          this.#engine.inputsRead(current.id,current.inputs.filter(item=>item.kind==='trigger'?consumed.triggerIds.has(item.triggerId):consumed.inputIds.has(item.id)).map(item=>item.id));
+        }
         this.#engine.retryTicket(current.id);
         if(evidence.outcome==='completed')meta.recoveredNative={runId:plan.runId,report:evidence.report,contextRecords:evidence.contextRecords??[],session:meta.driverSession};
-        else if(evidence.outcome!=='adopt-pending') this.#engine.note(current.id,`Automatic recovery of ${plan.runId}: resume the saved native session after verified ${evidence.code}. Inspect existing changes and delivery records first; do not repeat completed external actions or replay the original request. This grants no new work.`);
+        else if(evidence.outcome!=='adopt-pending') this.#engine.note(current.id,
+          evidence.finalReportFailure ? `Recover the missing or invalid final report from ${plan.runId} in the same saved session. Use the existing tool results, continue only unfinished authorized work, and return the required final JSON report. Do not repeat completed external actions or replay the original request. This grants no new work.`
+            : `Automatic recovery of ${plan.runId}: resume the saved native session after verified ${evidence.code}. Inspect existing changes and delivery records first; do not repeat completed external actions or replay the original request. This grants no new work.`);
         if (plan.manual && evidence.outcome !== 'completed' && evidence.outcome !== 'adopt-pending') this.#releaseHeldFeedback(meta);
-        meta.recovery={...plan,evidence,attempt:plan.attempt+1,status:'resuming',deadlineAt:plan.deadlineAt??new Date(Date.now()+(meta.executionConfig?.timeoutMs??600000)).toISOString(),updatedAt:this.#now()};
-        meta.interrupted=false;delete meta.failure;this.#save(meta);
+        meta.recovery={...plan,evidence,attempt:plan.attempt+1,finalReportRepairAttempts:(plan.finalReportRepairAttempts??0)+(evidence.finalReportFailure?1:0),status:'resuming',deadlineAt:plan.deadlineAt??new Date(Date.now()+(meta.executionConfig?.timeoutMs??600000)).toISOString(),updatedAt:this.#now()};
+        meta.interrupted=false;delete meta.failure;this.#ticketRecoveryOutcome(meta,'resuming');this.#save(meta);
       });
       return; // A later scheduler pass may resume the next ticket; human feedback keeps priority.
     }
@@ -4316,6 +4423,7 @@ export class ProjectRuntime {
           assignmentId: execution.assignmentId, domainTicket: this.#store.tickets.get(execution.ticketId), signal: recoveryRemaining===null?this.#controller.signal:AbortSignal.any([this.#controller.signal,AbortSignal.timeout(Math.floor(recoveryRemaining))]),
           redactedEnvironmentKeys: [config.github?.app?.privateKeyEnv, config.github?.webhook?.secretEnv].filter(Boolean),
           session: this.getSession(execution.publicId) ?? undefined, checkpoint, registerProcess, progress, inputRead,agentTools,
+          ...(runMeta.recovery?.status==='resuming'&&runMeta.recovery.evidence?.finalReportFailure?{recoveryContinuation:{sourceRunId:runMeta.recovery.runId,finalReportFailure:runMeta.recovery.evidence.finalReportFailure}}:{}),
           policySnapshot,
           verifyHostTool:this.#hostToolVerifier(this.#meta(execution.publicId)),
           recordHostTool:query=>withExecution(()=>recordHostToolResult(this.#store,{ticketId:execution.publicId,assignmentId:execution.assignmentId,runId:execution.runId,sessionId:this.getSession(execution.publicId)?.id},query,this.#now())),
@@ -4408,6 +4516,7 @@ export class ProjectRuntime {
         }
       } catch (error) {
         failure = { origin: failurePhase, requiresInspection: true,
+          ...(['DSH_MISSING_FINAL_REPORT','DSH_INVALID_FINAL_REPORT','DSH_TURN_INCOMPLETE'].includes(error?.code)?{code:error.code}:{}),
           ...(failurePhase==='native-execution'?{recoveryEvidence:recoveryEvidence(error.recoveryEvidence,{session:this.getSession(execution.publicId),runId:execution.runId})}:{}) };
         report = { status: 'failed', summary: String(error?.message ?? error) };
         normalizedReport = { version: 2, sourceVersion: 2, state: 'failed', summary: report.summary, artifacts: [], attention: null };

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.0-alpha.4 — Unreleased
+
+- Distinguish a completed DSH turn with no final report from an incomplete turn or an invalid report, preserving the original native evidence.
+- Recover settled native sessions without replaying consumed inputs or completed tools; keep final-report repair bounded by the existing recovery policy.
+- Let authenticated operator conversations request recovery of an existing failed ticket, with current-state validation and durable outcome receipts.
+- Cover missing reports after tool execution, recovery limits, stale state, duplicate instructions and conversation-based ticket recovery.
+
 ## 0.14.0-alpha.3 — Released 2026-11-11
 
 - Let authenticated operator conversations recover original failed requests through a scoped retryRequest action.
