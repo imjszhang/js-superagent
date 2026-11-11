@@ -1,4 +1,27 @@
 import { followupOwners } from '../../dist/core/index.js';
+import { createHash } from 'node:crypto';
+
+const receiptDigest = message => createHash('sha256').update(JSON.stringify(message)).digest('hex');
+const RECEIPT_TEMPLATE = 'assessment-ticket-status-v1';
+
+/** Only these fixed host facts can be disclosed without a material body. */
+export function assessmentTicketReceiptProof(message, { evalId, triggerId, status }) {
+  return { version: 1, template: RECEIPT_TEMPLATE, evalId, triggerId, status, ticketId: message.ticketId, messageDigest: receiptDigest(message) };
+}
+
+export function verifyAssessmentTicketReceipt(message, proof, record, publicId = id => id) {
+  if (proof?.version !== 1 || proof.template !== RECEIPT_TEMPLATE || !['accepted', 'attached'].includes(proof.status) ||
+      !record || typeof proof.evalId !== 'string' || typeof proof.triggerId !== 'string' ||
+      record.evalId !== proof.evalId || record.status !== 'finished' || !record.triggerIds?.includes(proof.triggerId) ||
+      !record.result?.applied || !proof.ticketId || message.ticketId !== proof.ticketId || message.kind !== 'reply' ||
+      Object.keys(message).some(key => !['id', 'kind', 'ticketId', 'channel', 'text'].includes(key)) ||
+      message.id !== `assessment-result:${proof.evalId}:${proof.triggerId}` || proof.messageDigest !== receiptDigest(message)) return false;
+  const result = record.result;
+  if (proof.status === 'accepted' && (result.kind !== 'accept' || publicId(result.decision?.ticketId) !== proof.ticketId || !result.decision.triggerIds?.includes(proof.triggerId))) return false;
+  if (proof.status === 'attached' && (result.kind !== 'attach' || publicId(result.ticket?.id) !== proof.ticketId || result.triggerId !== proof.triggerId)) return false;
+  return message.text === (proof.status === 'accepted' ? `已建立工单 ${proof.ticketId}，将按授权范围执行。` : `请求已关联到现有工单 ${proof.ticketId}。`);
+}
+
 /** Read-only projection of one original request; old databases resolve through decision eval IDs. */
 export function assessmentStatus(store, triggerId, { includeOwners = true } = {}) {
   const trigger = store.triggers.get(triggerId);

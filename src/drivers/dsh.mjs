@@ -169,9 +169,16 @@ export async function executeDshTurn(value, input) {
   const env = { ...environment(), HOME: home, USERPROFILE: home, DSH_HOME: home, AGENTS_HOME: home, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, XDG_DATA_HOME: home, XDG_STATE_HOME: home, JS_SUPERAGENT_DSH_API_KEY: key, GIT_CEILING_DIRECTORIES: cwd };
   let transport, finalText = '', terminal, eventSequence = -1, responseId = 0, consumed = new Map();
   let collecting = false, assistantSeq = -1, terminalSeq = -1, assistantTurn, terminalTurn, initialMessageId, sawToolCall = false;
-  let successful = false, policyApplied = false, handoffResultsConsumed = false;
+  let successful = false, policyApplied = false, handoffResultsConsumed = false, initialContextDelivered = false;
   let observation = createDshExecutionObserver({ driver: namespace, runId: input.runId, sessionId: () => sessionId, emit: input.observeExecutionState });
   const applyPolicy = () => {
+    // The prompt enqueue receipt and matching native user-message event jointly
+    // prove delivery. Register its complete context before in-turn business
+    // reports can answer it, regardless of which receipt arrives first.
+    if (!input.adoption && !initialContextDelivered && initialMessageId && consumed.has(initialMessageId) && Array.isArray(input.contextRecords)) {
+      initialContextDelivered = true;
+      input.contextDelivered?.({ records: structuredClone(input.contextRecords) });
+    }
     if (!handoffResultsConsumed && initialMessageId && consumed.has(initialMessageId) && input.nativeHandoffResults?.length) {
       handoffResultsConsumed = true; input.checkpointNative?.({ nativeHandoffConsumed: input.nativeHandoffResults.map(record => record.id),
         nativeHandoffConsumedJobs: nativeHandoffEvidenceReceipts(input.nativeHandoffResults) });
@@ -325,7 +332,7 @@ export async function executeDshTurn(value, input) {
     async resume(next) {
       if (!held || currentTurn || closing || Date.now() >= deadline || next.session?.id !== sessionId || realpathSync(next.projectRoot) !== cwd ||
           next.nativeHandoff?.current?.record.id !== ownership.current?.id) throw new Error('Native handoff is not resumable');
-      held = false; resumed = true; input = next; successful = false; policyApplied = false; handoffResultsConsumed = false;
+      held = false; resumed = true; input = next; successful = false; policyApplied = false; handoffResultsConsumed = false; initialContextDelivered = false;
       if(ownership.current?.previews?.length){deadline=Math.min(Date.now()+options.timeoutMs,...ownership.current.previews.map(value=>Date.parse(value.expiresAt)));transport.setDeadline(deadline);}
       bridge.rebind(input); transport.setSignal(input.signal); initializeRun();
       observation = createDshExecutionObserver({ driver: namespace, runId: input.runId, sessionId: () => sessionId, emit: input.observeExecutionState });
@@ -577,7 +584,6 @@ export function createDshSdkDriver(value, context = {}) {
       }
       normalizeDriverReport(parsed, { version: 2 });
       if(options.enableManagedJobs&&parsed.state==='ready'&&input.jobs.list().some(job=>['pending','running'].includes(job.status)&&job.previewLease?.status!=='active'))throw new Error('DSH reported ready while ordinary managed jobs were active');
-      if (!input.adoption) input.contextDelivered?.({ records: context.pack.messages.filter(record => !record.truncated).map(({ resource, id, version }) => ({ resource, id, version })) });
       return parsed;
     } };
 }
