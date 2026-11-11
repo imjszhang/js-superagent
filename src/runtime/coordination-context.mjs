@@ -5,7 +5,7 @@ const RESOURCES = ['tickets', 'threads', 'triggers', 'decisions', 'requests'];
 const tables = { threads: 'domain_threads', triggers: 'domain_triggers', decisions: 'domain_decisions' };
 
 /** Project records only. Native transcripts, execution config and credentials never enter this reader. */
-export function createCoordinationReader(store, { ticketCard, allowTicket = () => true, allowSharedRecords = true, requestCards = () => [], maxReads = 3, maxBytes = 32000 } = {}) {
+export function createCoordinationReader(store, { ticketCard, ticketValue = (_meta, _domain, value) => value, allowTicket = () => true, allowSharedRecords = true, requestCards = () => [], maxReads = 3, maxBytes = 32000 } = {}) {
   let reads = 0, bytes = 0;
   const readSet = [], tickets = new Map(), requests = new Map();
   function rows(resource) {
@@ -16,7 +16,7 @@ export function createCoordinationReader(store, { ticketCard, allowTicket = () =
         inputs: domain.inputs, assignments: domain.assignments, attention: domain.attention ?? null, ended: domain.ended ?? null,
         threads: domain.threads, follows: domain.follows, failure: meta.failure ?? null,
         messages: (meta.messages ?? []).map(({ text, at, triggerId, superseded, feedback }) => ({ text, at, triggerId, superseded, feedback })) };
-      return [{ id: meta.id, value, card: ticketCard(meta, domain) }];
+      return [{ id: meta.id, value: ticketValue(meta, domain, value), card: ticketCard(meta, domain) }];
     });
     if (!allowSharedRecords) return [];
     return store.db.prepare(`SELECT id,data FROM ${tables[resource]} ORDER BY id`).all().map(row => ({ id: row.id, value: JSON.parse(row.data) }));

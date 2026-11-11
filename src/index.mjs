@@ -891,24 +891,116 @@ export class ProjectRuntime {
   #bindMaterialMessage(message) {
     if (message.id.startsWith('material-notice:') || this.#store.getMeta(`material-message:${message.id}`)) return;
     const id = message.ticketId && (this.#store.getMeta(`public:${message.ticketId}`) ?? message.ticketId);
-    const ticketIds = this.#materialSourceIds(id && this.#store.getMeta(`ticket:${id}`));
-    if (ticketIds.length) this.#store.setMeta(`material-message:${message.id}`, { revision: this.getMaterialSettings().revision,
-      destination: materialDestination(message.channel), route: this.#materialRoute(message.channel), ticketIds });
+    const provenance = this.#materialTicketProvenance(id && this.#store.getMeta(`ticket:${id}`));
+    if (provenance.ticketIds.length || provenance.metadataTicketIds.length) this.#store.setMeta(`material-message:${message.id}`, { revision: this.getMaterialSettings().revision,
+      destination: materialDestination(message.channel), route: this.#materialRoute(message.channel), ...this.#persistMaterialProvenance(provenance) });
   }
   #bindMaterialEvent(event) {
-    const ticketIds = this.#materialSourceIds(event.ticketId && this.#store.getMeta(`ticket:${event.ticketId}`));
-    if (this.getMaterialSettings().revision || ticketIds.length) this.#store.setMeta(`material-event:${event.id}`, { ticketIds, route: this.#materialEventRoute(event) });
+    const provenance = this.#materialTicketProvenance(event.ticketId && this.#store.getMeta(`ticket:${event.ticketId}`));
+    if (this.getMaterialSettings().revision || provenance.ticketIds.length || provenance.metadataTicketIds.length) this.#store.setMeta(`material-event:${event.id}`, { ...this.#persistMaterialProvenance(provenance), route: this.#materialEventRoute(event) });
   }
   #materialContextAllowed(meta, event) {
     try {
-      const sources = this.#materialSourceIds(meta);
+      const sources = this.#materialDisclosureIds(meta);
       if (sources.length && !this.#materialEventRoute(event)) return false;
       this.#assertMaterialDisclosure(sources, materialDestination(this.#materialEventChannel(event))); return true;
     }
     catch { return false; }
   }
   #materialSourceIds(meta) {
-    return [...new Set([...(meta?.materialBinding ? [meta.id] : []), ...(meta?.materialContextSources ?? [])])].sort();
+    const sources=meta?.materialContextSources??[],fresh=meta?.materialContextFreshSources;
+    const body=meta?.materialContextProjectionVersion===1 && Array.isArray(fresh) && fresh.every(id=>sources.includes(id)) ? fresh : sources;
+    return [...new Set([...(meta?.materialBinding ? [meta.id] : []), ...body])].sort();
+  }
+  #materialMetadataSourceIds(meta) { const body=this.#materialSourceIds(meta);return [...new Set(meta?.materialContextSources??[])].filter(id=>!body.includes(id)).sort(); }
+  #materialDisclosureIds(meta) { return [...new Set([...this.#materialSourceIds(meta), ...this.#materialMetadataSourceIds(meta)])].sort(); }
+  #materialProvenance(...values) {
+    const decode=value=>{
+      const all=value?.ticketIds??[];
+      if(value?.projectionVersion===1 && Array.isArray(value.freshTicketIds) && value.freshTicketIds.every(id=>all.includes(id)))
+        return {body:value.freshTicketIds,metadata:all.filter(id=>!value.freshTicketIds.includes(id)),versions:value.contentVersions};
+      return {body:all,metadata:value?.projectionVersion===1 ? value.metadataTicketIds??[] : [],versions:value?.contentVersions};
+    };
+    const decoded=values.map(decode),ticketIds = [...new Set(decoded.flatMap(value=>value.body))].sort();
+    const metadataTicketIds = [...new Set(decoded.flatMap(value=>value.metadata))].filter(id => !ticketIds.includes(id)).sort();
+    const contentVersions=ticketIds.map(id=>{const stamps=decoded.filter(value=>value.body.includes(id)).map(value=>value.versions?.find(record=>record[0]===id)?.[1]??null);
+      return [id,stamps.every(stamp=>typeof stamp==='string'&&stamp===stamps[0])?stamps[0]:null];});
+    return { projectionVersion: 1, ticketIds, metadataTicketIds,contentVersions };
+  }
+  #persistMaterialProvenance(value) {
+    const provenance=this.#materialProvenance(value);
+    // Older schema-15 writers only understand ticketIds. Keep every disclosure
+    // dependency there so a downgrade fails conservatively rather than skipping
+    // authorization for metadata-derived content.
+    return {...provenance,ticketIds:[...new Set([...provenance.ticketIds,...provenance.metadataTicketIds])].sort(),freshTicketIds:provenance.ticketIds};
+  }
+  #retainMaterialContext(meta, value) {
+    const existing=this.#materialTicketProvenance(meta),provenance=this.#materialProvenance(existing,value);
+    meta.materialContextSources=[...new Set([...provenance.ticketIds,...provenance.metadataTicketIds])].filter(id=>id!==meta.id).sort();
+    meta.materialContextProjectionVersion=1;meta.materialContextFreshSources=provenance.ticketIds.filter(id=>id!==meta.id);
+    meta.materialContextContentVersions=provenance.contentVersions.filter(([id])=>id!==meta.id);
+  }
+  #materialTicketProvenance(meta) {
+    const own=meta?.materialBinding?[meta.id]:[],inherited=this.#materialSourceIds(meta).filter(id=>!own.includes(id));
+    return this.#materialProvenance({projectionVersion:1,ticketIds:own,contentVersions:this.#materialContentVersions(own)},
+      {projectionVersion:1,ticketIds:inherited,contentVersions:meta?.materialContextContentVersions,metadataTicketIds:this.#materialMetadataSourceIds(meta)});
+  }
+  #materialCardProvenance(card) {
+    return this.#materialProvenance({projectionVersion:1,ticketIds:card.materialSources??[],metadataTicketIds:card.materialMetadataSources??[],contentVersions:card.materialContentVersions});
+  }
+  #materialContentFresh(ticketIds) {
+    try { return ticketIds.every(id => { const meta=this.#store.getMeta(`ticket:${id}`);
+      return !!meta?.materialBinding && (!meta.materialObservations?.length || this.#materialReads(meta).checkFreshness().fresh); }); }
+    catch { return false; }
+  }
+  #materialContentVersions(ticketIds) {
+    return [...new Set(ticketIds)].sort().map(id=>{const meta=this.#store.getMeta(`ticket:${id}`);
+      return [id,materialDigest({binding:meta?.materialBinding??null,runId:meta?.runId??null,
+        observations:(meta?.materialObservations??[]).map(record=>[record.id,record.valueVersion])})];});
+  }
+  #materialContentVersionMatches(proof, ticketIds) {
+    return Array.isArray(proof?.contentVersions) && JSON.stringify(proof.contentVersions)===JSON.stringify(this.#materialContentVersions(ticketIds));
+  }
+  #materialProjection(provenance) {
+    const value=this.#materialProvenance(provenance);
+    return this.#materialContentVersionMatches(value,value.ticketIds) && this.#materialContentFresh(value.ticketIds) ? { ...value, stale:false }
+      : {projectionVersion:1,ticketIds:[],contentVersions:[],metadataTicketIds:[...new Set([...value.ticketIds,...value.metadataTicketIds])].sort(),stale:true};
+  }
+  #materialCardFields(provenance) {
+    return { ...(provenance.ticketIds.length ? {materialSources:provenance.ticketIds,materialContentVersions:provenance.contentVersions} : {}),
+      ...(provenance.metadataTicketIds.length ? {materialMetadataSources:provenance.metadataTicketIds} : {}) };
+  }
+  #materialTicketProjection(meta, domain, event) {
+    let projection=this.#materialProjection(this.#materialTicketProvenance(meta));
+    const report=latestAssignment(domain)?.report,current=meta.reportsV2?.at(-1);
+    // A new run can have fresh observations while the domain still retains its
+    // previous report. Only a report recorded for this run may expose its body.
+    if(!projection.stale && projection.ticketIds.length && report &&
+        (current?.runId!==meta.runId || current?.state!==report.state || current?.summary!==report.summary))
+      projection={projectionVersion:1,ticketIds:[],contentVersions:[],metadataTicketIds:[...new Set([...projection.ticketIds,...projection.metadataTicketIds])].sort(),stale:true};
+    if (!projection.stale) return null;
+    const value={id:meta.id,domainId:domain.id,status:this.#view(meta).status,reportState:latestAssignment(domain)?.report?.state??null,
+      materialProjectionVersion:1,materialState:'stale',materialNotice:'Earlier material content is no longer current. Only host status is available; request a new investigation for current project facts.',
+      operatorTicket:isOperatorTicket(meta,domain),...this.#materialCardFields(projection)};
+    if(event){const {allowed,reason,state,version}=this.#ticketRecoveryCard(meta,domain,event);value.recovery={allowed,reason,state,version};}
+    return {...value,stateVersion:materialDigest(value)};
+  }
+  #materialTicketValue(meta, domain, value, event) {
+    // A fresh latest observation does not attest every older assignment/message.
+    // Material readers receive the current card, never an unversioned history
+    // whose old prose could silently become current again after a reread.
+    return this.#materialDisclosureIds(meta).length ? {...this.#coordinationTicketCard(meta,domain,event),domainId:domain.id} : value;
+  }
+  #materialEventProvenance(event) {
+    return this.#materialProvenance(this.#store.getMeta(`material-event:${event.id}`),
+      this.#materialTicketProvenance(event.ticketId&&this.#store.getMeta(`ticket:${event.ticketId}`)));
+  }
+  #materialEventProjection(event) {
+    const projection=this.#materialProjection(this.#materialEventProvenance(event));
+    if(projection.stale || !projection.ticketIds.length)return projection;
+    const proof=this.#store.getMeta(`material-event:${event.id}`);
+    if(this.#materialContentVersionMatches(proof,projection.ticketIds))return projection;
+    return {projectionVersion:1,ticketIds:[],contentVersions:[],metadataTicketIds:[...new Set([...projection.ticketIds,...projection.metadataTicketIds])].sort(),stale:true};
   }
   #materialAudience(destination) {
     if (destination.source === 'local') return { source: 'local', id: 'operator' };
@@ -947,18 +1039,27 @@ export class ProjectRuntime {
     }
   }
   #materialSessionScope(events) {
-    const settings = this.getMaterialSettings(), records = this.#store.listMeta('ticket:').map(row => row.value).filter(meta => this.#materialSourceIds(meta).length);
+    const settings = this.getMaterialSettings(), records = this.#store.listMeta('ticket:').map(row => row.value).filter(meta => this.#materialDisclosureIds(meta).length);
     if (!settings.revision && !records.length) return '';
     const destinations = events.map(event => ({ destination: materialDestination(this.#materialEventChannel(event)), route: this.#materialEventRoute(event) }));
-    const grants = records.map(meta => [meta.id, this.#materialSourceIds(meta), meta.materialBinding ? materialDigest(meta.materialBinding) : null,
-      events.every(event => this.#materialContextAllowed(meta, event))]).sort((a,b) => a[0].localeCompare(b[0]));
-    return `:materials:${settings.revision}:${materialDigest({ destinations, grants })}`;
+    const grants = records.map(meta => [meta.id, this.#materialTicketProvenance(meta), meta.materialBinding ? materialDigest(meta.materialBinding) : null,
+      events.every(event => this.#materialContextAllowed(meta, event)), this.#materialContentFresh(this.#materialSourceIds(meta)),
+      (meta.materialObservations??[]).map(record=>[record.id,record.valueVersion])]).sort((a,b) => a[0].localeCompare(b[0]));
+    return `:materials-projection-1:${settings.revision}:${materialDigest({ destinations, grants })}`;
   }
   #assertMaterialInputTarget(ticketIds, meta, domain = this.#store.tickets.get(meta.domainId)) {
+    this.#assertMaterialInheritedCurrent(meta);
     if (!ticketIds.length) return;
     const channels = [...(domain?.channels ?? [])];
     if (this.#operatorFeishu() && isOperatorTicket(meta, domain)) channels.push(operatorDirectChannel(this.#operatorFeishu()));
     for (const channel of channels) this.#assertMaterialDisclosure(ticketIds, materialDestination(channel));
+  }
+  #assertMaterialInheritedCurrent(meta) {
+    const ticketIds=this.#materialSourceIds(meta).filter(id=>id!==meta.id);
+    if(!ticketIds.length)return;
+    const proof={contentVersions:meta.materialContextContentVersions};
+    if(!this.#materialContentVersionMatches(proof,ticketIds) || !this.#materialContentFresh(ticketIds))
+      throw materialError('MATERIAL_CHANGED','Inherited material content belongs to an earlier observation or run');
   }
   #materialNoticeRoute(message, ticketIds) {
     const ids=[...new Set([...(message.ticketId?[this.#store.getMeta(`public:${message.ticketId}`)??message.ticketId]:[]),...ticketIds])];
@@ -993,19 +1094,29 @@ export class ProjectRuntime {
         if(!route || JSON.stringify(route)!==JSON.stringify(noticeProof.route))throw materialError('MATERIAL_NOTICE_INVALID','Material host notice no longer matches its original route');
         return;
       }
-      const materialSources = this.#materialSourceIds(meta);
-      this.#assertMaterialDisclosure(materialSources, materialDestination(message.channel), { fresh:true });
+      const materialSources = this.#materialDisclosureIds(meta);
       const proof = this.#store.getMeta(`material-message:${message.id}`);
       if ((proof || materialSources.length) && !this.#materialProofRouteAllowed(proof, this.#materialRoute(message.channel))) throw materialError('MATERIAL_ROUTE_CHANGED', 'Material reply identity is no longer authorized');
       if (proof) {
         if (proof.revision !== this.getMaterialSettings().revision || JSON.stringify(proof.destination) !== JSON.stringify(materialDestination(message.channel))) throw new Error('Material reply authorization changed');
-        this.#assertMaterialDisclosure(proof.ticketIds, proof.destination, {fresh:true});
+        const provenance=this.#materialProvenance(proof), covered=new Set([...provenance.ticketIds,...provenance.metadataTicketIds]);
+        // Only host-created projection proofs may classify a covered ticket as
+        // metadata. Legacy/partial proofs retain the original strict contract.
+        this.#assertMaterialDisclosure([...covered],proof.destination);
+        if(provenance.ticketIds.length && !this.#materialContentVersionMatches(proof,provenance.ticketIds))throw materialError('MATERIAL_CHANGED','Material output belongs to an earlier observation or run');
+        this.#assertMaterialDisclosure(provenance.ticketIds,proof.destination,{fresh:true});
+        this.#assertMaterialDisclosure(materialSources.filter(id=>!covered.has(id)),proof.destination,{fresh:true});
+      } else {
+        this.#assertMaterialDisclosure(materialSources,materialDestination(message.channel));
+        if(this.#materialSourceIds(meta).length)throw materialError('MATERIAL_CHANGED','Material output has no retained observation identity');
+        this.#assertMaterialDisclosure(this.#materialSourceIds(meta),materialDestination(message.channel),{fresh:true});
       }
     } catch (error) {
       this.#store.setMeta(`receipt:terminal:${message.id}`, { status: 'withdrawn', reason: error.code ?? 'material-authorization-changed' });
       this.#outbox.withdraw(message.id);
       if(!noticeProof && !message.id.startsWith('material-notice:'))this.#store.atomic(()=>{
-        const ticketIds=[...new Set([...this.#materialSourceIds(meta),...(this.#store.getMeta(`material-message:${message.id}`)?.ticketIds??[])])];
+        const provenance=this.#materialProvenance(this.#store.getMeta(`material-message:${message.id}`));
+        const ticketIds=[...new Set([...this.#materialDisclosureIds(meta),...provenance.ticketIds,...provenance.metadataTicketIds])];
         const originalProof=this.#store.getMeta(`material-message:${message.id}`);
         const route=this.#materialProofRouteAllowed(originalProof,this.#materialRoute(message.channel)) ? this.#materialNoticeRoute(message,ticketIds) : null;
         if(route){const notice=materialWithdrawalNotice(message,ticketIds,route);if(this.#outbox.status(notice.message.id)===undefined){this.#store.setMeta(`material-host-notice:${notice.message.id}`,notice.proof);this.#outbox.send(notice.message);}}
@@ -1014,13 +1125,18 @@ export class ProjectRuntime {
     }
   }
   #coordinationTicketCard(meta, domain, event) {
+    const projected=this.#materialTicketProjection(meta,domain,event); if(projected)return projected;
     const report = latestAssignment(domain)?.report;
+    const material=this.#materialDisclosureIds(meta).length>0,recovery=this.#ticketRecoveryCard(meta,domain,event);
+    if(material)delete recovery.lastReason;
     return { id: meta.id, scope: domain.mandate.scope.slice(0, 600), status: this.#view(meta).status,
       reportState: report?.state ?? null, summary: report?.summary?.slice(0, 400) ?? null,
-      attention: domain.attention?.question?.slice(0, 400) ?? null, ended: domain.ended ?? null,
+      attention: !material || report?.attention?.question===domain.attention?.question ? domain.attention?.question?.slice(0,400)??null : null,
+      ended: material && domain.ended ? {by:domain.ended.by,at:domain.ended.at} : domain.ended??null,
       operatorTicket: isOperatorTicket(meta, domain),
-      recovery: this.#ticketRecoveryCard(meta, domain, event),
+      recovery,...(material?{materialProjectionVersion:1}:{}),
       ...(domain.attention ? { question: { answered: !!this.#attentionAnswer(domain.attention.id), choices: !!this.#attentionDecision(domain.attention.id) } } : {}),
+      ...this.#materialCardFields(this.#materialTicketProvenance(meta)),
       stateVersion: createHash('sha256').update(JSON.stringify({ domain, failure: meta.failure, interrupted: meta.interrupted })).digest('hex') };
   }
   #recoveryOperatorAllowed(event) {
@@ -1126,10 +1242,12 @@ export class ProjectRuntime {
     const status = assessmentStatus(this.#store, triggerId);
     const originProof = this.#store.getMeta(`material-event:${origin.id}`);
     const assessment = status.evalId ? this.#store.getMeta(`assessment:${status.evalId}`) : null;
-    const materialSources = [...new Set([...(originProof?.ticketIds??[]),...(assessment?.materialSources??[])])].sort();
+    const provenance=this.#materialProvenance(originProof,{projectionVersion:assessment?.materialProjectionVersion,
+      ticketIds:assessment?.materialSources??[],freshTicketIds:assessment?.materialFreshSources,metadataTicketIds:assessment?.materialMetadataSources??[],contentVersions:assessment?.materialContentVersions});
+    const materialSources=[...provenance.ticketIds,...provenance.metadataTicketIds];
     const route = this.#materialEventRoute(event);
     if (originProof && !this.#materialProofRouteAllowed(originProof, route) || materialSources.length && (!this.#materialProofRouteAllowed(originProof, route) ||
-        assessment?.materialSources?.length && !(assessment.materialRoutes ?? (route?.source === 'local' ? [route] : [])).some(value => JSON.stringify(value) === JSON.stringify(route)))) return null;
+        (assessment?.materialSources?.length || assessment?.materialMetadataSources?.length) && !(assessment.materialRoutes ?? (route?.source === 'local' ? [route] : [])).some(value => JSON.stringify(value) === JSON.stringify(route)))) return null;
     try { this.#assertMaterialDisclosure(materialSources,materialDestination(this.#materialEventChannel(event))); }
     catch { return null; }
     let reason = null;
@@ -1142,8 +1260,18 @@ export class ProjectRuntime {
     else if (status.status !== 'failed') reason = 'not-failed';
     else if (!['format', 'transient', 'timeout'].includes(status.failureKind)) reason = 'inspection-required';
     const allowed = reason === null;
-    const card = { ...status, text: trigger.text.slice(0, 1000), summary: this.getMaterialSettings().revision && !originProof ? null : origin.result?.summary?.slice(0, 600) ?? null, source: { channel: origin.source?.channel, ...(origin.source?.chatId ? { chatId: origin.source.chatId } : {}) },
-      recovery: { allowed, reason }, ...(materialSources.length ? {materialSources} : {}) };
+    const assessmentProvenance=this.#materialProvenance({projectionVersion:assessment?.materialProjectionVersion,
+      ticketIds:assessment?.materialSources??[],freshTicketIds:assessment?.materialFreshSources,metadataTicketIds:assessment?.materialMetadataSources??[],contentVersions:assessment?.materialContentVersions});
+    const versionsCurrent=!this.#materialEventProjection(origin).stale && (!assessmentProvenance.ticketIds.length ||
+      this.#materialContentVersionMatches({contentVersions:assessment?.materialContentVersions},assessmentProvenance.ticketIds));
+    const projection=versionsCurrent ? this.#materialProjection(provenance) : {projectionVersion:1,ticketIds:[],contentVersions:[],
+      metadataTicketIds:[...new Set(materialSources)].sort(),stale:true};
+    const card = projection.stale
+      ? {triggerId,status:status.status,evalId:status.evalId??null,ticketId:status.ticketId??null,ownerTicketIds:status.ownerTicketIds??[],
+        materialState:'stale',materialNotice:'Earlier request context is no longer current; request a new investigation for current project facts.',
+        recovery:{allowed:false,reason:'inspection-required'},...this.#materialCardFields(projection)}
+      : { ...status, text: trigger.text.slice(0, 1000), summary: this.getMaterialSettings().revision && !originProof ? null : origin.result?.summary?.slice(0, 600) ?? null, source: { channel: origin.source?.channel, ...(origin.source?.chatId ? { chatId: origin.source.chatId } : {}) },
+        recovery: { allowed, reason }, ...this.#materialCardFields(projection) };
     const version = createHash('sha256').update(JSON.stringify({ card, policy: this.#policy().version,
       assessor: this.#coordinator.current().version, origin: { actor: origin.actor, source: origin.source }, actor: event.actor })).digest('hex');
     card.recovery.version = version;
@@ -1183,33 +1311,35 @@ export class ProjectRuntime {
       tickets.push(row);
     }
     const recentEvents = [];
-    const materialSources = new Set(tickets.flatMap(card => this.#materialSourceIds(this.#store.getMeta(`ticket:${card.id}`))));
+    const provenances = tickets.map(card => this.#materialCardProvenance(card));
     for (const item of this.#coordinationInbox().list({ limit: 20 }).reverse()) {
       if (item.ticketId && !this.#materialContextAllowed(this.#store.getMeta(`ticket:${item.ticketId}`), event)) continue;
       const proof = this.#store.getMeta(`material-event:${item.id}`);
       if (materialScope && ((proof || this.#materialEventChannel(item).source !== 'local') && !this.#materialProofRouteAllowed(proof, this.#materialEventRoute(event)) ||
           item.source?.channel === 'feishu' && !this.#materialEventRoute(item))) continue;
-      if (materialScope && item.ticketId && this.#materialSourceIds(this.#store.getMeta(`ticket:${item.ticketId}`)).length &&
+      const provenance=this.#materialEventProvenance(item);
+      if (materialScope && (provenance.ticketIds.length || provenance.metadataTicketIds.length) &&
           !this.#materialProofRouteAllowed(proof, this.#materialEventRoute(event))) continue;
-      try { this.#assertMaterialDisclosure(proof?.ticketIds ?? [], destination); } catch { continue; }
+      try { this.#assertMaterialDisclosure([...provenance.ticketIds,...provenance.metadataTicketIds], destination); } catch { continue; }
       const itemDestination = materialDestination(this.#materialEventChannel(item)), eventDestination = materialDestination(this.#materialEventChannel(event));
       if (materialScope && JSON.stringify(itemDestination) !== JSON.stringify(eventDestination)) continue;
+      const projection=this.#materialEventProjection(item);
       const row = { id: item.id, kind: item.kind, ticketId: item.ticketId ?? null, status: item.status,
-        text: item.text.slice(0, 400), summary: materialScope && (!proof || !this.#materialProofRouteAllowed(proof, this.#materialEventRoute(event))) ? null : item.result?.summary?.slice(0, 400) ?? null,
+        ...(projection.stale ? {materialState:'stale',materialNotice:'Earlier material content is no longer current; only event status is available.'}
+          : {text:item.text.slice(0,400),summary:materialScope && (!proof || !this.#materialProofRouteAllowed(proof,this.#materialEventRoute(event))) ? null : item.result?.summary?.slice(0,400)??null}),
         requests: (item.receipts ?? []).filter(receipt => receipt.kind === 'request' && receipt.result?.triggerId).slice(0, 4)
           .map(receipt => this.#coordinationRequestCard(receipt.result.triggerId, event)).filter(Boolean) };
       if (Buffer.byteLength(JSON.stringify([...recentEvents, row])) > 8000) break;
-      recentEvents.push(row);
-      for (const id of proof?.ticketIds ?? []) materialSources.add(id);
-      for (const request of row.requests) for (const id of request.materialSources??[]) materialSources.add(id);
+      recentEvents.push(row);provenances.push(projection,...row.requests.map(card=>this.#materialCardProvenance(card)));
     }
+    const provenance=this.#materialProvenance(...provenances);
     const target = tickets.find(ticket => ticket.id === event.ticketId);
     // The normal result receipt for a locally submitted ticket goes to local. It is
     // not an operator DM; only this event's notify action queues that delivery.
     const needsOperatorNotification = !!this.#operatorFeishu() && target?.operatorTicket && event.requiresCoordination &&
       (event.kind === 'result' || event.kind === 'report' && ['blocked', 'failed'].includes(event.references?.reportState));
     const context = { tickets, recentEvents: recentEvents.reverse(), omittedTickets: Math.max(0, records.length - tickets.length),
-      ...(materialScope ? { materialSources: [...materialSources].sort() } : {}),
+      ...(materialScope ? { materialSources: provenance.ticketIds, materialMetadataSources:provenance.metadataTicketIds,materialContentVersions:provenance.contentVersions } : {}),
       ...(needsOperatorNotification ? { operatorNotification: { required: true, eventId: event.id, ticketId: event.ticketId,
         channel: 'feishu', hostResultDelivery: 'local-only' } } : {}) };
     return { context, version: createHash('sha256').update(JSON.stringify(context)).digest('hex') };
@@ -1242,35 +1372,48 @@ export class ProjectRuntime {
       if (!claimed) return true;
     } catch (error) { if (error instanceof Later) return false; throw error; }
     this.#assessmentAbort = new AbortController();
+    let materialSession;
     const guard = fn => this.#store.atomic(() => {
       const owner = this.#store.getMeta('coordinator:owner');
       if (owner?.token !== token || inbox.get(event.id)?.generation !== event.generation || this.#stopping || this.isPaused() || this.#assessmentAbort.signal.aborted || this.#policy().version !== policyVersion) throw new Error('Stale coordinator callback');
+      if(materialSession !== undefined && this.#materialSessionScope([event]) !== materialSession)throw new Error('Coordination context or policy changed; reassessment required');
       return fn(owner);
     });
     try {
       const eventProof = this.#store.getMeta(`material-event:${event.id}`), eventRoute = this.#materialEventRoute(event);
       if (eventProof && !this.#materialProofRouteAllowed(eventProof, eventRoute)) throw materialError('MATERIAL_ROUTE_CHANGED', 'This event belongs to a previous coordination identity');
       if (event.ticketId && !this.#materialContextAllowed(this.#store.getMeta(`ticket:${event.ticketId}`), event)) throw materialError('MATERIAL_DESTINATION_DENIED', 'This event contains material that cannot be disclosed to its coordination destination');
-      if (event.ticketId && this.#materialSourceIds(this.#store.getMeta(`ticket:${event.ticketId}`)).length &&
+      if (event.ticketId && this.#materialDisclosureIds(this.#store.getMeta(`ticket:${event.ticketId}`)).length &&
           !this.#materialProofRouteAllowed(eventProof, eventRoute)) throw materialError('MATERIAL_ROUTE_CHANGED', 'Material event destination identity has not been verified');
+      materialSession=this.#materialSessionScope([event]);
+      const inputProvenance=this.#materialEventProvenance(event);
+      this.#assertMaterialDisclosure([...inputProvenance.ticketIds,...inputProvenance.metadataTicketIds],materialDestination(this.#materialEventChannel(event)));
+      const inputProjection=this.#materialEventProjection(event);
+      // Only host-derived report/result events are rewritten. User input never
+      // acquires a metadata exemption merely because it mentions an old report.
+      if(inputProjection.stale && !['report','result'].includes(event.kind))
+        throw materialError('MATERIAL_CHANGED','Earlier event context is no longer current; a new investigation is required');
+      const modelEvent=inputProjection.stale ? {id:event.id,kind:event.kind,ticketId:event.ticketId,status:event.status,
+        requiresCoordination:event.requiresCoordination,materialState:'stale',text:'Earlier material content is no longer current. Report only the supplied host status and request a new investigation for current project facts.',
+        references:{reportState:event.references?.reportState}} : event;
       const snapshot = this.#coordinationContext(event);
       const reader = createCoordinationReader(this.#store, { allowTicket: meta => this.#materialContextAllowed(meta, event),
         allowSharedRecords: !this.#materialSessionScope([event]), ticketCard: (meta, domain) => this.#coordinationTicketCard(meta, domain, event),
-        requestCards: () => this.#coordinationRequests(event),
+        ticketValue:(meta,domain,value)=>this.#materialTicketValue(meta,domain,value,event),requestCards: () => this.#coordinationRequests(event),
         maxReads: options.contextLimits?.maxReads ?? 3, maxBytes: options.contextLimits?.readBytes ?? 32000 });
       const materialsSettings = this.getMaterialSettings();
-      const materialSession = this.#materialSessionScope([event]);
       const sessionKey = `coordinator:session:${settings.version}${promptAssembly ? `:${promptAssembly.version}` : ''}${materialSession}`;
       const rememberMaterials = () => {
-        if (!materialSession) return;
-        const ticketIds = [...new Set([...(snapshot.context.materialSources ?? []), ...reader.tickets().flatMap(card => this.#materialSourceIds(this.#store.getMeta(`ticket:${card.id}`))),
-          ...reader.requests().flatMap(card=>card.materialSources??[]),
-          ...(this.#store.getMeta(`material-session:${sessionKey}`)?.ticketIds ?? [])])].sort();
-        this.#assertMaterialDisclosure(ticketIds, materialDestination(this.#materialEventChannel(event)));
-        this.#store.setMeta(`material-session:${sessionKey}`, {ticketIds});
+        if (!materialSession) return this.#materialProvenance();
+        const provenance=this.#materialProvenance(inputProjection,
+          {projectionVersion:1,ticketIds:snapshot.context.materialSources,metadataTicketIds:snapshot.context.materialMetadataSources,contentVersions:snapshot.context.materialContentVersions},
+          ...reader.tickets().map(card=>this.#materialCardProvenance(card)),...reader.requests().map(card=>this.#materialCardProvenance(card)),
+          this.#store.getMeta(`material-session:${sessionKey}`));
+        this.#assertMaterialDisclosure([...provenance.ticketIds,...provenance.metadataTicketIds],materialDestination(this.#materialEventChannel(event)));
+        this.#store.setMeta(`material-session:${sessionKey}`,this.#persistMaterialProvenance(provenance));return provenance;
       };
       guard(() => rememberMaterials());
-      const result = await assessor.handleEvent({ event, context: snapshot.context, projectRoot: this.projectRoot, runId,
+      const result = await assessor.handleEvent({ event:modelEvent, context: snapshot.context, projectRoot: this.projectRoot, runId,
         timeoutMs: Math.max(1, Date.parse(event.deadlineAt) - Date.parse(this.#now())),
         readContext: request => guard(() => { const record = reader.read(request); rememberMaterials(); return record; }),
         signal: this.#assessmentAbort.signal, session: this.#store.getMeta(sessionKey),
@@ -1284,16 +1427,10 @@ export class ProjectRuntime {
         if (this.#materialSessionScope([event]) !== materialSession) throw new Error('Coordination context or policy changed; reassessment required');
         reader.verify();
         const context = { ...snapshot.context, tickets: [...new Map([...snapshot.context.tickets, ...reader.tickets()].map(ticket => [ticket.id, ticket])).values()], requests: reader.requests() };
-        const materialSources = [...new Set([...(snapshot.context.materialSources ?? []), ...context.tickets.flatMap(card => this.#materialSourceIds(this.#store.getMeta(`ticket:${card.id}`))),
-          ...reader.requests().flatMap(card=>card.materialSources??[]),
-          ...(this.#store.getMeta(`material-session:${sessionKey}`)?.ticketIds ?? [])])].sort();
-        this.#assertMaterialDisclosure(materialSources, materialDestination(this.#materialEventChannel(event)));
-        if (materialSession) {
-          this.#store.setMeta(`material-session:${sessionKey}`, {ticketIds:materialSources});
-          this.#store.setMeta(`material-event:${event.id}`, {ticketIds:materialSources,route:eventRoute});
-        }
+        const provenance=rememberMaterials(),materialSources=provenance.ticketIds,metadataSources=provenance.metadataTicketIds;
+        if (materialSession) this.#store.setMeta(`material-event:${event.id}`, {...this.#persistMaterialProvenance(provenance),route:eventRoute});
         const saveProof = (id, channel) => {
-          if (materialSession) this.#store.setMeta(`material-message:${id}`, {revision:materialsSettings.revision,destination:materialDestination(channel),route:this.#materialRoute(channel),ticketIds:materialSources});
+          if (materialSession) this.#store.setMeta(`material-message:${id}`, {revision:materialsSettings.revision,destination:materialDestination(channel),route:this.#materialRoute(channel),...this.#persistMaterialProvenance(provenance)});
         };
         return inbox.complete(event.id, { expectedVersion: event.version, expectedGeneration: event.generation, policyVersion, contextVersion: snapshot.version,
         context, result, readSet: reader.records() }, {
@@ -1315,7 +1452,7 @@ export class ProjectRuntime {
             return isOperatorTicket(meta, this.#store.tickets.get(meta.domainId));
           }
           const meta = this.#meta(action.ticketId), domain = this.#store.tickets.get(meta.domainId);
-          if (['note','answer'].includes(action.kind)) this.#assertMaterialInputTarget(materialSources,meta,domain);
+          if (['note','answer'].includes(action.kind)) this.#assertMaterialInputTarget([...materialSources,...metadataSources],meta,domain);
           if (domain.ended || !this.#policy().revalidate(domain.mandate)) return false;
           if (action.kind === 'answer') return event.kind === 'operator' && action.text === event.text && !!domain.attention && !this.#attentionAnswer(domain.attention.id);
           return action.kind !== 'stop' || event.kind === 'operator' && event.references?.stopTicketId === action.ticketId;
@@ -1346,7 +1483,7 @@ export class ProjectRuntime {
             return result;
           }
           if (action.kind === 'note') {
-            if (materialSources.length) { const target=this.#meta(action.ticketId); target.materialContextSources=[...new Set([...(target.materialContextSources??[]),...materialSources])].sort(); this.#save(target); }
+            if (materialSources.length || metadataSources.length) { const target=this.#meta(action.ticketId); this.#retainMaterialContext(target,provenance); this.#save(target); }
             this.note(action.ticketId, action.text); return { ticketId: action.ticketId };
           }
           if (action.kind === 'requestStatus') { this.requestStatus(action.ticketId); return { ticketId: action.ticketId }; }
@@ -1562,9 +1699,11 @@ export class ProjectRuntime {
       for (const trigger of candidate.triggers) this.#store.setMeta(`assessment-trigger:${trigger.id}`, { evalId: candidate.evalId });
     });
     this.#assessmentAbort = new AbortController();
+    let materialSession,materialEvents;
     const guard = fn => this.#store.atomic(() => {
       const owner = this.#store.getMeta('coordinator:owner');
       if (owner?.token !== token || this.#assessmentAbort.signal.aborted || this.#policy().version !== candidate.policyVersion) throw new Error('Stale coordinator callback');
+      if(materialSession!==undefined && this.#materialSessionScope(materialEvents)!==materialSession)throw new Error('Coordination context or policy changed; reassessment required');
       return fn(owner);
     });
     let outcome, progress = {};
@@ -1576,32 +1715,42 @@ export class ProjectRuntime {
         throw Object.assign(new Error('Original operator authority is no longer configured'), { failureKind: 'authority', code: 'assessment_authority', retryable: false });
       this.#engine.candidateDelivered(candidate.evalId);
       const links = createCandidateLinks({ store:this.#store, policy:()=>this.#policy(), candidate, repository:this.#config().github?.repository });
-      const materialEvents = candidate.triggers.map(trigger => this.#assessmentOrigin(trigger.id) ?? {references:{triggerId:trigger.id}});
+      materialEvents = candidate.triggers.map(trigger => this.#assessmentOrigin(trigger.id) ?? {references:{triggerId:trigger.id}});
       for (const event of materialEvents) {
         const proof = event.id && this.#store.getMeta(`material-event:${event.id}`);
         if (proof && !this.#materialProofRouteAllowed(proof, this.#materialEventRoute(event)))
           throw Object.assign(new Error('Original material request belongs to a previous coordination identity'), { failureKind: 'authority', code: 'assessment_authority', retryable: false });
       }
-      const materialSession = this.#materialSessionScope(materialEvents);
+      materialSession = this.#materialSessionScope(materialEvents);
+      const inputProvenance=this.#materialProvenance(...materialEvents.map(event=>this.#materialEventProvenance(event)));
+      for(const event of materialEvents)this.#assertMaterialDisclosure([...inputProvenance.ticketIds,...inputProvenance.metadataTicketIds],materialDestination(this.#materialEventChannel(event)),{fresh:false});
+      if(materialEvents.some(event=>this.#materialEventProjection(event).stale))throw materialError('MATERIAL_CHANGED','Earlier request context is no longer current; inspect it before reassessment');
       const materialAllowed = meta => materialEvents.every(event => this.#materialContextAllowed(meta, event));
-      const allowedTickets = links.candidate.tickets.filter(ticket => materialAllowed(this.#store.getMeta(`ticket:${this.#store.getMeta(`public:${ticket.id}`) ?? ticket.id}`)));
-      const assessmentCandidate = { ...links.candidate, tickets:allowedTickets,
-        ...(links.candidate.ticketReferences ? {ticketReferences:links.candidate.ticketReferences.filter(reference => allowedTickets.some(ticket => ticket.id === reference.ticketId))} : {}) };
+      const ticketMeta=ticket=>this.#store.getMeta(`ticket:${this.#store.getMeta(`public:${ticket.id}`)??ticket.id}`);
+      const allowedTickets = links.candidate.tickets.filter(ticket => materialAllowed(ticketMeta(ticket)));
+      const modelTickets=allowedTickets.map(ticket=>({...this.#materialTicketValue(ticketMeta(ticket),ticket,ticket,materialEvents[0]),id:ticket.id}));
+      const assessmentCandidate = { ...links.candidate, tickets:modelTickets,
+        ...(materialSession?{thread:{key:links.candidate.thread.key,ref:links.candidate.thread.ref}}:{}),
+        ...(links.candidate.ticketReferences ? {ticketReferences:links.candidate.ticketReferences.filter(reference => modelTickets.some(ticket => ticket.id === reference.ticketId && ticket.materialState!=='stale'))} : {}) };
       const assertAssessment = () => guard(() => { if (this.isPaused()) throw new Later('Assessment is paused'); links.verify(); });
       const sourceContext=createCandidateSourceContext({candidate:assessmentCandidate,projectRoot:this.projectRoot,github:this.#config().github,
         request:this.#repositoryRequest,
         assertActive:assertAssessment,signal:this.#assessmentAbort.signal});
       const contextReads = [];
       const materialReader = materialSession && createCoordinationReader(this.#store, {allowTicket:materialAllowed,allowSharedRecords:false,
-        ticketCard:(meta,domain)=>this.#coordinationTicketCard(meta,domain,materialEvents[0]),maxReads:64,maxBytes:320000});
+        ticketCard:(meta,domain)=>this.#coordinationTicketCard(meta,domain,materialEvents[0]),
+        ticketValue:(meta,domain,value)=>this.#materialTicketValue(meta,domain,value,materialEvents[0]),maxReads:64,maxBytes:320000});
       const sessionKey=`coordinator:session:${settings.version}${promptAssembly?`:${promptAssembly.version}`:''}${materialSession ? `:candidate${materialSession}` : ''}`;
       const rememberMaterials = () => {
-        if (!materialSession) return [];
-        const ticketIds = [...new Set([...allowedTickets.flatMap(ticket=>this.#materialSourceIds(this.#store.getMeta(`ticket:${this.#store.getMeta(`public:${ticket.id}`)??ticket.id}`))),
-          ...(materialReader.tickets()).flatMap(card=>this.#materialSourceIds(this.#store.getMeta(`ticket:${card.id}`))),
-          ...(this.#store.getMeta(`material-session:${sessionKey}`)?.ticketIds??[])])].sort();
-        for (const event of materialEvents) this.#assertMaterialDisclosure(ticketIds,materialDestination(this.#materialEventChannel(event)));
-        this.#store.setMeta(`material-session:${sessionKey}`,{ticketIds});recordBase.materialSources=ticketIds;recordBase.materialRoutes=materialEvents.map(event=>this.#materialEventRoute(event));return ticketIds;
+        if (!materialSession) return this.#materialProvenance();
+        const provenance=this.#materialProvenance(inputProvenance,
+          ...allowedTickets.map(ticket=>this.#materialCardProvenance(this.#coordinationTicketCard(ticketMeta(ticket),ticket,materialEvents[0]))),
+          ...materialReader.tickets().map(card=>this.#materialCardProvenance(card)),this.#store.getMeta(`material-session:${sessionKey}`));
+        for(const event of materialEvents)this.#assertMaterialDisclosure([...provenance.ticketIds,...provenance.metadataTicketIds],materialDestination(this.#materialEventChannel(event)));
+        this.#store.setMeta(`material-session:${sessionKey}`,this.#persistMaterialProvenance(provenance));recordBase.materialSources=this.#persistMaterialProvenance(provenance).ticketIds;recordBase.materialFreshSources=provenance.ticketIds;
+        recordBase.materialProjectionVersion=1;recordBase.materialMetadataSources=provenance.metadataTicketIds;
+        recordBase.materialContentVersions=provenance.contentVersions;
+        recordBase.materialRoutes=materialEvents.map(event=>this.#materialEventRoute(event));return provenance;
       };
       guard(()=>rememberMaterials());
       outcome = await assessor.assess({ candidate:assessmentCandidate, projectRoot: this.projectRoot, runId,
@@ -1643,7 +1792,7 @@ export class ProjectRuntime {
         links.verify();
         if(this.#materialSessionScope(materialEvents)!==materialSession)throw new Error('Coordination context or policy changed; reassessment required');
         if(materialReader)materialReader.verify();
-        const materialSources=rememberMaterials();
+        const provenance=rememberMaterials(),materialSources=provenance.ticketIds,metadataSources=provenance.metadataTicketIds;
         if (candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id)))
           throw Object.assign(new Error('Original operator authority changed during assessment'), { failureKind: 'authority', code: 'assessment_authority', retryable: false });
         if (outcome.kind === 'attach') links.verify(outcome.ticketId, outcome.triggerId ?? candidate.triggers[0].id);
@@ -1662,17 +1811,17 @@ export class ProjectRuntime {
             return recordCompletion({ applied: false, reason: 'pull-link-required', triggerId });
           }
         }
-        const applied=applyAssessment({ engine: this.#engine, store: this.#store, candidate:assessmentCandidate, outcome, policy: this.#policy(),
+        const applied=applyAssessment({ engine: this.#engine, store: this.#store, candidate:{...assessmentCandidate,tickets:allowedTickets}, outcome, policy: this.#policy(),
           onAccepted: (domain, decision, input) => {
             this.#recordAccepted(domain, decision, input);
-            if(materialSources.length){const meta=this.#meta(domain.id);this.#assertMaterialInputTarget(materialSources,meta,domain);meta.materialContextSources=materialSources;this.#save(meta);}
+            if(materialSources.length||metadataSources.length){const meta=this.#meta(domain.id);this.#assertMaterialInputTarget([...materialSources,...metadataSources],meta,domain);this.#retainMaterialContext(meta,provenance);this.#save(meta);}
           },
           onAnswer: (answer, input) => {
             const reply=this.#answerCandidate(answer,input),trigger=input.triggers.find(item=>item.id===answer.triggerId);
-            if(materialSession)this.#store.setMeta(`material-message:${reply.id}`,{revision:this.getMaterialSettings().revision,destination:materialDestination(trigger.channel),route:this.#materialRoute(trigger.channel),ticketIds:materialSources});
+            if(materialSession)this.#store.setMeta(`material-message:${reply.id}`,{revision:this.getMaterialSettings().revision,destination:materialDestination(trigger.channel),route:this.#materialRoute(trigger.channel),...this.#persistMaterialProvenance(provenance)});
             return reply;
           } });
-        if(applied.applied&&applied.kind==='attach'&&materialSources.length){const meta=this.#meta(this.#store.getMeta(`public:${applied.ticket.id}`)??applied.ticket.id);this.#assertMaterialInputTarget(materialSources,meta,applied.ticket);meta.materialContextSources=[...new Set([...(meta.materialContextSources??[]),...materialSources])].sort();this.#save(meta);}
+        if(applied.applied&&applied.kind==='attach'&&(materialSources.length||metadataSources.length)){const meta=this.#meta(this.#store.getMeta(`public:${applied.ticket.id}`)??applied.ticket.id);this.#assertMaterialInputTarget([...materialSources,...metadataSources],meta,applied.ticket);this.#retainMaterialContext(meta,provenance);this.#save(meta);}
         if(applied.applied&&applied.kind==='attach')for(const input of candidate.triggers.filter(input=>input.id===applied.triggerId)){
           const budget=this.#botReviewGate(input,{ticketId:this.#store.getMeta(`public:${applied.ticket.id}`)??applied.ticket.id,reserve:true});
           if(!budget.allowed)throw new Error(`Routing includes unavailable bot review work (${budget.reason}); inspect and split the candidate`);
@@ -2533,6 +2682,8 @@ export class ProjectRuntime {
   }
   #verify(id, profile, signal) {
     const meta = this.#meta(id); this.#validateTicketMaterials(meta); this.#assertNoPendingMaterialApplication();
+    this.#assertMaterialInheritedCurrent(meta);
+    this.#assertMaterialDisclosure(this.#materialDisclosureIds(meta),{source:'local',id:'operator'});
     if (preparationPending(meta) || meta.materialBinding?.access === 'host-only') throw new Error('Verification requires a prepared native workspace grant');
     return runVerification({ projectRoot: this.projectRoot, workspace: this.getWorkspace(id), profile, signal,
       persist: value => this.#store.atomic(() => {
@@ -2599,8 +2750,11 @@ export class ProjectRuntime {
   }
   async #deliver(id, settings, signal, finalReport) {
     const materialMeta = this.#meta(id); this.#validateTicketMaterials(materialMeta);
+    this.#assertMaterialInheritedCurrent(materialMeta);
     const materialSources = this.#materialSourceIds(materialMeta);
-    if (materialSources.length && settings.mode === 'draft-pr') throw materialError('MATERIAL_DESTINATION_DENIED', 'Material-derived work needs an explicitly known authorized destination; automatic draft PR creation is not supported');
+    const disclosureSources = this.#materialDisclosureIds(materialMeta);
+    if (disclosureSources.length && settings.mode === 'draft-pr') throw materialError('MATERIAL_DESTINATION_DENIED', 'Material-derived work needs an explicitly known authorized destination; automatic draft PR creation is not supported');
+    this.#assertMaterialDisclosure(disclosureSources,{source:'local',id:'operator'});
     this.#assertMaterialDisclosure(materialSources,{source:'local',id:'operator'},{fresh:true});
     if (preparationPending(materialMeta) || materialMeta.materialBinding?.access === 'host-only') throw new Error('Delivery requires a prepared native workspace grant');
     if (materialMeta.materialBinding) this.#assertMaterialFreshness(id);
@@ -2626,7 +2780,7 @@ export class ProjectRuntime {
     try {
       const result = await this.#deliveryService(settings).deliver({ ...settings, workspace: meta.workspace, verification: meta.verification,
         runId: meta.runId, ...attempt.description, signal,
-        authorize: () => (this.#machine.assert(),this.#machine.claim(),this.#assertMaterialDisclosure(this.#materialSourceIds(this.#meta(id)),{source:'local',id:'operator'},{fresh:true}),true) && !this.isPaused() && !this.#stopping && this.#policy().revalidate(this.getDomainTicket(id).mandate) && this.getDomainTicket(id).ended?.by !== 'human'
+        authorize: () => (this.#machine.assert(),this.#machine.claim(),this.#assertMaterialInheritedCurrent(this.#meta(id)),this.#assertMaterialDisclosure(this.#materialDisclosureIds(this.#meta(id)),{source:'local',id:'operator'}),this.#assertMaterialDisclosure(this.#materialSourceIds(this.#meta(id)),{source:'local',id:'operator'},{fresh:true}),true) && !this.isPaused() && !this.#stopping && this.#policy().revalidate(this.getDomainTicket(id).mandate) && this.getDomainTicket(id).ended?.by !== 'human'
           && !this.#githubWorkBlocked(this.#meta(id), this.getDomainTicket(id)) });
       if (result.pullRequest) {
         const pull = normalizePullRequest(await this.#channel().getPullRequest(result.pullRequest.number), settings.repository, result.pullRequest.number);
@@ -2979,6 +3133,8 @@ export class ProjectRuntime {
   #assertMaterialApplication(id, {fresh = true} = {}) {
     const meta = this.#meta(id), binding = meta.materialBinding;
     this.#validateTicketMaterials(meta);
+    this.#assertMaterialInheritedCurrent(meta);
+    this.#assertMaterialDisclosure(this.#materialDisclosureIds(meta),{source:'local',id:'operator'});
     this.#assertMaterialDisclosure(this.#materialSourceIds(meta),{source:'local',id:'operator'},{fresh});
     if (!binding?.allowApply || binding.owner?.kind === 'longrun' || binding.access === 'host-only') throw new Error('This ticket does not own a native local application grant');
     if (preparationPending(meta) || !meta.workspace || this.getDomainTicket(id).ended?.by === 'human' || !this.#policy().revalidate(this.getDomainTicket(id).mandate)) throw new Error('Material application is not authorized in the current ticket state');
@@ -4823,7 +4979,7 @@ export class ProjectRuntime {
         const config = this.#config();
         const materialMeta = this.#meta(execution.publicId);
         this.#validateTicketMaterials(materialMeta);
-        this.#assertMaterialInputTarget(this.#materialSourceIds(materialMeta),materialMeta,this.getDomainTicket(execution.publicId));
+        this.#assertMaterialInputTarget(this.#materialDisclosureIds(materialMeta),materialMeta,this.getDomainTicket(execution.publicId));
         const hostOnlyMaterials = materialMeta.materialBinding?.access === 'host-only';
         // Before any prepare hook, prove that this executor can enforce the grant.
         if (hostOnlyMaterials && this.#executionCapabilities(materialMeta.executionConfig ?? config.execution, materialMeta)?.boundedMaterialReadsVersion !== 1) throw new Error('Executor does not support bounded host-only materials');
