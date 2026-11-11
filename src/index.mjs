@@ -178,7 +178,7 @@ export class ProjectRuntime {
       if(savedIdentity && identity.initialized && (savedIdentity.instanceId!==identity.instanceId || savedIdentity.stateId!==identity.stateId)) {readOnly=true;this.#store.readOnly=true;}
       this.#effects = new Effects(this.#store);
       this.#coordinator = new CoordinatorRegistry(this.#store, { validateAssessor: value => this.#harnessRegistry.validateExecution(value, { role: 'coordinator' }) });
-      this.#outbox = new Outbox(this.#store, this.#effects, { authorize: message => this.#authorizeMaterialMessage(message), deliver: async message => {
+      this.#outbox = new Outbox(this.#store, this.#effects, { onEnqueue: message => this.#bindMaterialMessage(message), authorize: message => this.#authorizeMaterialMessage(message), deliver: async message => {
         this.#authorizeMaterialMessage(message);
         if (message.channel.source !== 'github') {
           if (message.channel.source === 'feishu' && this.#config().feishu?.enabled !== false && !this.#feishuSourceId) throw new Later('Feishu connection is not ready');
@@ -752,7 +752,7 @@ export class ProjectRuntime {
     return policy;
   }
   coordinatorStatus() { this.#db(); return { settings: this.#coordinator.current(), active: !!this.#assessing, history: this.#coordinator.history() }; }
-  #coordinationInbox() { return new CoordinationInbox(this.#db(), { now: () => this.#now() }); }
+  #coordinationInbox() { return new CoordinationInbox(this.#db(), { now: () => this.#now(), onEnqueue: event => this.#bindMaterialEvent(event) }); }
   coordinationStatus() {
     const inbox = this.#coordinationInbox();
     return { mode: this.#coordinator.current().workflowMode ?? 'candidates', active: !!this.#assessing,
@@ -850,25 +850,106 @@ export class ProjectRuntime {
     const trigger = triggerId ? this.#store.triggers.get(triggerId) : undefined;
     return trigger?.channel ?? { source: 'local', thread: event?.id ?? 'materials', address: {} };
   }
+  #materialRoute(channel) {
+    const source = channel?.source ?? 'local', address = channel?.address ?? {};
+    if (source === 'local') return { source, id: 'operator' };
+    if (source === 'feishu') {
+      const config = this.#config().feishu;
+      if (!config || config.enabled === false || address.tenantKey !== config.tenantKey) return null;
+      if (address.operator === 'true') {
+        const openId = config.operator?.openId, chatId = this.#store.getMeta(OPERATOR_CHAT_KEY)?.chatId ?? null;
+        if (!openId || address.openId && address.openId !== openId || address.chatId && address.chatId !== chatId) return null;
+        return { source, appId: config.appId, tenantKey: config.tenantKey, openId, chatId: address.chatId ?? null };
+      }
+      const chatId = address.chatId ?? address.chat_id;
+      return config.chats?.some(chat => chat.chatId === chatId) ? { source, appId: config.appId, tenantKey: config.tenantKey, chatId } : null;
+    }
+    if (source === 'github') {
+      const config = this.#config().github;
+      if (!config || address.repository !== config.repository) return null;
+      return { source, host: 'github.com', repository: config.repository, id: materialDestination(channel).id };
+    }
+    return { source, id: materialDestination(channel).id };
+  }
+  #materialEventRoute(event) {
+    const channel = this.#materialEventChannel(event);
+    const value = this.#materialRoute(channel), route = value?.source === 'feishu' && value.openId
+      ? { ...value, chatId: this.#store.getMeta(OPERATOR_CHAT_KEY)?.chatId ?? null } : value;
+    if (event?.source?.channel === 'feishu' && event.actor?.source === 'feishu') {
+      const config = this.#operatorFeishu(), triggerId = event.references?.triggerId;
+      const original = triggerId ? this.#store.triggers.get(triggerId) : undefined;
+      if (!config || event.actor.id !== config.operator.openId || original?.meta?.tenantKey && original.meta.tenantKey !== config.tenantKey ||
+          event.source.chatId && route?.chatId !== event.source.chatId) return null;
+    }
+    return route;
+  }
+  #materialProofRouteAllowed(proof, route) {
+    // Local remains one project role. Older remote proofs never acquire the
+    // identity of whichever account happens to be configured after an upgrade.
+    return !!route && (proof?.route ? JSON.stringify(proof.route) === JSON.stringify(route) : route.source === 'local');
+  }
+  #bindMaterialMessage(message) {
+    if (message.id.startsWith('material-notice:') || this.#store.getMeta(`material-message:${message.id}`)) return;
+    const id = message.ticketId && (this.#store.getMeta(`public:${message.ticketId}`) ?? message.ticketId);
+    const ticketIds = this.#materialSourceIds(id && this.#store.getMeta(`ticket:${id}`));
+    if (ticketIds.length) this.#store.setMeta(`material-message:${message.id}`, { revision: this.getMaterialSettings().revision,
+      destination: materialDestination(message.channel), route: this.#materialRoute(message.channel), ticketIds });
+  }
+  #bindMaterialEvent(event) {
+    const ticketIds = this.#materialSourceIds(event.ticketId && this.#store.getMeta(`ticket:${event.ticketId}`));
+    if (this.getMaterialSettings().revision || ticketIds.length) this.#store.setMeta(`material-event:${event.id}`, { ticketIds, route: this.#materialEventRoute(event) });
+  }
   #materialContextAllowed(meta, event) {
-    try { this.#assertMaterialDisclosure(this.#materialSourceIds(meta), materialDestination(this.#materialEventChannel(event))); return true; }
+    try {
+      const sources = this.#materialSourceIds(meta);
+      if (sources.length && !this.#materialEventRoute(event)) return false;
+      this.#assertMaterialDisclosure(sources, materialDestination(this.#materialEventChannel(event))); return true;
+    }
     catch { return false; }
   }
   #materialSourceIds(meta) {
     return [...new Set([...(meta?.materialBinding ? [meta.id] : []), ...(meta?.materialContextSources ?? [])])].sort();
+  }
+  #materialAudience(destination) {
+    if (destination.source === 'local') return { source: 'local', id: 'operator' };
+    if (destination.source === 'feishu') {
+      const config = this.#config().feishu;
+      if (!config || config.enabled === false) return null;
+      if (destination.id === 'operator') return config.operator
+        ? { source: 'feishu', appId: config.appId, tenantKey: config.tenantKey, openId: config.operator.openId } : null;
+      return config.chats?.some(chat => chat.chatId === destination.id)
+        ? { source: 'feishu', appId: config.appId, tenantKey: config.tenantKey, chatId: destination.id } : null;
+    }
+    if (destination.source === 'github') {
+      const repository = this.#config().github?.repository;
+      return repository && destination.id.startsWith(`${repository}#`) ? { source: 'github', host: 'github.com', id: destination.id } : null;
+    }
+    return destination;
+  }
+  #materialDisclosureRoutes(binding) {
+    return binding.sources[0].destinations.flatMap(destination => {
+      try { assertMaterialDestination(binding, destination); } catch { return []; }
+      const route = this.#materialAudience(destination);
+      return route ? [{ destination, route }] : [];
+    });
   }
   #assertMaterialDisclosure(ticketIds, destination, { fresh = false } = {}) {
     for (const id of ticketIds) {
       const meta = this.#store.getMeta(`ticket:${id}`);
       if (!meta?.materialBinding) throw materialError('MATERIAL_BINDING_CHANGED', 'Material disclosure provenance is no longer available');
       this.#validateTicketMaterials(meta); assertMaterialDestination(meta.materialBinding, destination);
+      if (destination.source !== 'local') {
+        const route = this.#materialAudience(destination);
+        if (!route || !meta.materialDisclosureRoutes?.some(proof => JSON.stringify(proof.destination) === JSON.stringify(destination) && JSON.stringify(proof.route) === JSON.stringify(route)))
+          throw materialError('MATERIAL_ROUTE_CHANGED', 'Material belongs to a previous or unverified destination identity');
+      }
       if (fresh && meta.materialObservations?.length) this.#assertMaterialFreshness(id);
     }
   }
   #materialSessionScope(events) {
     const settings = this.getMaterialSettings(), records = this.#store.listMeta('ticket:').map(row => row.value).filter(meta => this.#materialSourceIds(meta).length);
     if (!settings.revision && !records.length) return '';
-    const destinations = events.map(event => materialDestination(this.#materialEventChannel(event)));
+    const destinations = events.map(event => ({ destination: materialDestination(this.#materialEventChannel(event)), route: this.#materialEventRoute(event) }));
     const grants = records.map(meta => [meta.id, this.#materialSourceIds(meta), meta.materialBinding ? materialDigest(meta.materialBinding) : null,
       events.every(event => this.#materialContextAllowed(meta, event))]).sort((a,b) => a[0].localeCompare(b[0]));
     return `:materials:${settings.revision}:${materialDigest({ destinations, grants })}`;
@@ -912,8 +993,10 @@ export class ProjectRuntime {
         if(!route || JSON.stringify(route)!==JSON.stringify(noticeProof.route))throw materialError('MATERIAL_NOTICE_INVALID','Material host notice no longer matches its original route');
         return;
       }
-      this.#assertMaterialDisclosure(this.#materialSourceIds(meta), materialDestination(message.channel), { fresh:true });
+      const materialSources = this.#materialSourceIds(meta);
+      this.#assertMaterialDisclosure(materialSources, materialDestination(message.channel), { fresh:true });
       const proof = this.#store.getMeta(`material-message:${message.id}`);
+      if ((proof || materialSources.length) && !this.#materialProofRouteAllowed(proof, this.#materialRoute(message.channel))) throw materialError('MATERIAL_ROUTE_CHANGED', 'Material reply identity is no longer authorized');
       if (proof) {
         if (proof.revision !== this.getMaterialSettings().revision || JSON.stringify(proof.destination) !== JSON.stringify(materialDestination(message.channel))) throw new Error('Material reply authorization changed');
         this.#assertMaterialDisclosure(proof.ticketIds, proof.destination, {fresh:true});
@@ -923,7 +1006,8 @@ export class ProjectRuntime {
       this.#outbox.withdraw(message.id);
       if(!noticeProof && !message.id.startsWith('material-notice:'))this.#store.atomic(()=>{
         const ticketIds=[...new Set([...this.#materialSourceIds(meta),...(this.#store.getMeta(`material-message:${message.id}`)?.ticketIds??[])])];
-        const route=this.#materialNoticeRoute(message,ticketIds);
+        const originalProof=this.#store.getMeta(`material-message:${message.id}`);
+        const route=this.#materialProofRouteAllowed(originalProof,this.#materialRoute(message.channel)) ? this.#materialNoticeRoute(message,ticketIds) : null;
         if(route){const notice=materialWithdrawalNotice(message,ticketIds,route);if(this.#outbox.status(notice.message.id)===undefined){this.#store.setMeta(`material-host-notice:${notice.message.id}`,notice.proof);this.#outbox.send(notice.message);}}
       });
       throw new Later('Material result is stale or no longer authorized for this destination');
@@ -1043,6 +1127,9 @@ export class ProjectRuntime {
     const originProof = this.#store.getMeta(`material-event:${origin.id}`);
     const assessment = status.evalId ? this.#store.getMeta(`assessment:${status.evalId}`) : null;
     const materialSources = [...new Set([...(originProof?.ticketIds??[]),...(assessment?.materialSources??[])])].sort();
+    const route = this.#materialEventRoute(event);
+    if (originProof && !this.#materialProofRouteAllowed(originProof, route) || materialSources.length && (!this.#materialProofRouteAllowed(originProof, route) ||
+        assessment?.materialSources?.length && !(assessment.materialRoutes ?? (route?.source === 'local' ? [route] : [])).some(value => JSON.stringify(value) === JSON.stringify(route)))) return null;
     try { this.#assertMaterialDisclosure(materialSources,materialDestination(this.#materialEventChannel(event))); }
     catch { return null; }
     let reason = null;
@@ -1100,11 +1187,15 @@ export class ProjectRuntime {
     for (const item of this.#coordinationInbox().list({ limit: 20 }).reverse()) {
       if (item.ticketId && !this.#materialContextAllowed(this.#store.getMeta(`ticket:${item.ticketId}`), event)) continue;
       const proof = this.#store.getMeta(`material-event:${item.id}`);
+      if (materialScope && ((proof || this.#materialEventChannel(item).source !== 'local') && !this.#materialProofRouteAllowed(proof, this.#materialEventRoute(event)) ||
+          item.source?.channel === 'feishu' && !this.#materialEventRoute(item))) continue;
+      if (materialScope && item.ticketId && this.#materialSourceIds(this.#store.getMeta(`ticket:${item.ticketId}`)).length &&
+          !this.#materialProofRouteAllowed(proof, this.#materialEventRoute(event))) continue;
       try { this.#assertMaterialDisclosure(proof?.ticketIds ?? [], destination); } catch { continue; }
       const itemDestination = materialDestination(this.#materialEventChannel(item)), eventDestination = materialDestination(this.#materialEventChannel(event));
       if (materialScope && JSON.stringify(itemDestination) !== JSON.stringify(eventDestination)) continue;
       const row = { id: item.id, kind: item.kind, ticketId: item.ticketId ?? null, status: item.status,
-        text: item.text.slice(0, 400), summary: materialScope && !proof ? null : item.result?.summary?.slice(0, 400) ?? null,
+        text: item.text.slice(0, 400), summary: materialScope && (!proof || !this.#materialProofRouteAllowed(proof, this.#materialEventRoute(event))) ? null : item.result?.summary?.slice(0, 400) ?? null,
         requests: (item.receipts ?? []).filter(receipt => receipt.kind === 'request' && receipt.result?.triggerId).slice(0, 4)
           .map(receipt => this.#coordinationRequestCard(receipt.result.triggerId, event)).filter(Boolean) };
       if (Buffer.byteLength(JSON.stringify([...recentEvents, row])) > 8000) break;
@@ -1157,7 +1248,11 @@ export class ProjectRuntime {
       return fn(owner);
     });
     try {
+      const eventProof = this.#store.getMeta(`material-event:${event.id}`), eventRoute = this.#materialEventRoute(event);
+      if (eventProof && !this.#materialProofRouteAllowed(eventProof, eventRoute)) throw materialError('MATERIAL_ROUTE_CHANGED', 'This event belongs to a previous coordination identity');
       if (event.ticketId && !this.#materialContextAllowed(this.#store.getMeta(`ticket:${event.ticketId}`), event)) throw materialError('MATERIAL_DESTINATION_DENIED', 'This event contains material that cannot be disclosed to its coordination destination');
+      if (event.ticketId && this.#materialSourceIds(this.#store.getMeta(`ticket:${event.ticketId}`)).length &&
+          !this.#materialProofRouteAllowed(eventProof, eventRoute)) throw materialError('MATERIAL_ROUTE_CHANGED', 'Material event destination identity has not been verified');
       const snapshot = this.#coordinationContext(event);
       const reader = createCoordinationReader(this.#store, { allowTicket: meta => this.#materialContextAllowed(meta, event),
         allowSharedRecords: !this.#materialSessionScope([event]), ticketCard: (meta, domain) => this.#coordinationTicketCard(meta, domain, event),
@@ -1195,10 +1290,10 @@ export class ProjectRuntime {
         this.#assertMaterialDisclosure(materialSources, materialDestination(this.#materialEventChannel(event)));
         if (materialSession) {
           this.#store.setMeta(`material-session:${sessionKey}`, {ticketIds:materialSources});
-          this.#store.setMeta(`material-event:${event.id}`, {ticketIds:materialSources});
+          this.#store.setMeta(`material-event:${event.id}`, {ticketIds:materialSources,route:eventRoute});
         }
         const saveProof = (id, channel) => {
-          if (materialSession) this.#store.setMeta(`material-message:${id}`, {revision:materialsSettings.revision,destination:materialDestination(channel),ticketIds:materialSources});
+          if (materialSession) this.#store.setMeta(`material-message:${id}`, {revision:materialsSettings.revision,destination:materialDestination(channel),route:this.#materialRoute(channel),ticketIds:materialSources});
         };
         return inbox.complete(event.id, { expectedVersion: event.version, expectedGeneration: event.generation, policyVersion, contextVersion: snapshot.version,
         context, result, readSet: reader.records() }, {
@@ -1394,7 +1489,7 @@ export class ProjectRuntime {
     if (materialBinding && materialOrigins.some(origin => materialBinding.sources.some(source => !source.readers.some(reader => reader.source === origin.actor.source && reader.id === origin.actor.id)))) materialBinding = null;
     const meta = { id: domain.id, domainId: domain.id, projectId: this.projectId, text: trigger.text, threadId: trigger.threads[0].id,
       ...(github ? { github } : {}), ...(githubPull ? { githubPull } : {}), createdAt: domain.createdAt, updatedAt: domain.updatedAt,
-      ...(materialBinding ? { materialBinding, materialDestinations, materialObservations: [] } : {}),
+      ...(materialBinding ? { materialBinding, materialDestinations, materialDisclosureRoutes: this.#materialDisclosureRoutes(materialBinding), materialObservations: [] } : {}),
       messages: candidate.triggers.map(t => ({ text: t.text, at: t.at, triggerId: t.id })), reports: [], runId: null, interrupted: false };
     this.#save(meta); this.#store.setMeta(`public:${domain.id}`, meta.id);
     if (github) this.#store.setMeta(`github:thread:${github.thread}`, meta.id);
@@ -1482,6 +1577,11 @@ export class ProjectRuntime {
       this.#engine.candidateDelivered(candidate.evalId);
       const links = createCandidateLinks({ store:this.#store, policy:()=>this.#policy(), candidate, repository:this.#config().github?.repository });
       const materialEvents = candidate.triggers.map(trigger => this.#assessmentOrigin(trigger.id) ?? {references:{triggerId:trigger.id}});
+      for (const event of materialEvents) {
+        const proof = event.id && this.#store.getMeta(`material-event:${event.id}`);
+        if (proof && !this.#materialProofRouteAllowed(proof, this.#materialEventRoute(event)))
+          throw Object.assign(new Error('Original material request belongs to a previous coordination identity'), { failureKind: 'authority', code: 'assessment_authority', retryable: false });
+      }
       const materialSession = this.#materialSessionScope(materialEvents);
       const materialAllowed = meta => materialEvents.every(event => this.#materialContextAllowed(meta, event));
       const allowedTickets = links.candidate.tickets.filter(ticket => materialAllowed(this.#store.getMeta(`ticket:${this.#store.getMeta(`public:${ticket.id}`) ?? ticket.id}`)));
@@ -1501,7 +1601,7 @@ export class ProjectRuntime {
           ...(materialReader.tickets()).flatMap(card=>this.#materialSourceIds(this.#store.getMeta(`ticket:${card.id}`))),
           ...(this.#store.getMeta(`material-session:${sessionKey}`)?.ticketIds??[])])].sort();
         for (const event of materialEvents) this.#assertMaterialDisclosure(ticketIds,materialDestination(this.#materialEventChannel(event)));
-        this.#store.setMeta(`material-session:${sessionKey}`,{ticketIds});recordBase.materialSources=ticketIds;return ticketIds;
+        this.#store.setMeta(`material-session:${sessionKey}`,{ticketIds});recordBase.materialSources=ticketIds;recordBase.materialRoutes=materialEvents.map(event=>this.#materialEventRoute(event));return ticketIds;
       };
       guard(()=>rememberMaterials());
       outcome = await assessor.assess({ candidate:assessmentCandidate, projectRoot: this.projectRoot, runId,
@@ -1569,7 +1669,7 @@ export class ProjectRuntime {
           },
           onAnswer: (answer, input) => {
             const reply=this.#answerCandidate(answer,input),trigger=input.triggers.find(item=>item.id===answer.triggerId);
-            if(materialSession)this.#store.setMeta(`material-message:${reply.id}`,{revision:this.getMaterialSettings().revision,destination:materialDestination(trigger.channel),ticketIds:materialSources});
+            if(materialSession)this.#store.setMeta(`material-message:${reply.id}`,{revision:this.getMaterialSettings().revision,destination:materialDestination(trigger.channel),route:this.#materialRoute(trigger.channel),ticketIds:materialSources});
             return reply;
           } });
         if(applied.applied&&applied.kind==='attach'&&materialSources.length){const meta=this.#meta(this.#store.getMeta(`public:${applied.ticket.id}`)??applied.ticket.id);this.#assertMaterialInputTarget(materialSources,meta,applied.ticket);meta.materialContextSources=[...new Set([...(meta.materialContextSources??[]),...materialSources])].sort();this.#save(meta);}
@@ -2683,7 +2783,7 @@ export class ProjectRuntime {
       const { trigger, domain } = this.#accept(text, scope, threadId);
       const meta = { id: domain.id, domainId: domain.id, projectId: this.projectId, text, threadId,
         operatorNotifications, managedJobs,
-        ...(materialBinding ? { materialBinding, materialDestinations, materialObservations: [] } : {}),
+        ...(materialBinding ? { materialBinding, materialDestinations, materialDisclosureRoutes: this.#materialDisclosureRoutes(materialBinding), materialObservations: [] } : {}),
         ...(snapshotPaths ? { attentionSnapshotPaths: snapshotPaths } : {}),
         createdAt: domain.createdAt, updatedAt: domain.updatedAt, messages: [{ text, at: trigger.at }], reports: [], runId: null, interrupted: false };
       this.#save(meta); this.#store.setMeta(`public:${domain.id}`, meta.id);

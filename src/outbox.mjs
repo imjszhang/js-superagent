@@ -3,10 +3,11 @@ import { reconcilePendingReviewDestination } from './runtime/github-review-deliv
 
 /** Durable receipts; network delivery occurs only outside storage transactions. */
 export class Outbox {
-  constructor(store, effects, { deliver, authorize } = {}) { this.store = store; this.effects = effects; this.delivery = deliver; this.authorize = authorize; }
+  constructor(store, effects, { deliver, authorize, onEnqueue } = {}) { this.store = store; this.effects = effects; this.delivery = deliver; this.authorize = authorize; this.onEnqueue = onEnqueue; }
   send(message) {
     this.store.atomic(() => {
       if (this.status(message.id) !== undefined) return;
+      this.onEnqueue?.(message);
       this.store.db.prepare('INSERT INTO receipts(id, data, status) VALUES (?, ?, ?)').run(message.id, JSON.stringify(message), 'pending');
       this.effects.enqueue('reply', message.id, {});
     });

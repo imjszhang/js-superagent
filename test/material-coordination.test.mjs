@@ -13,25 +13,31 @@ import {CoordinationInbox} from '../src/runtime/coordination.mjs';
 import {MATERIAL_NOTICE_TEXT,materialWithdrawalNotice} from '../src/runtime/material-notice.mjs';
 
 const principal={source:'local',id:'operator'}, secret='SYNTHETIC_MATERIAL_CANARY';
-function fixture(t,{external=false}={}) {
+function fixture(t,{external=false,feishu=false,question=false}={}) {
   const root=realpathSync(mkdtempSync(join(tmpdir(),'material-coordination-')));
   const source=external?realpathSync(mkdtempSync(join(tmpdir(),'material-source-'))):root;
   writeFileSync(join(source,'notes.md'),secret);
-  const sourceIdentity=external?ensureProjectIdentity(source,'fixture-source'):null,events=[],assessments=[];
+  const sourceIdentity=external?ensureProjectIdentity(source,'fixture-source'):null,events=[],assessments=[],sent=[];
+  const network={fail:true};
+  const api={list:async()=>({code:0,data:{items:[],has_more:false}}),get:async request=>({code:0,data:{items:[{message_id:request.path.message_id,chat_id:'oc_dm'}]}}),
+    reply:async request=>{if(network.fail)throw new Error('fixture network unavailable');sent.push(request);return {code:0,data:{message_id:`om_sent_${sent.length}`}};},
+    create:async request=>{if(network.fail)throw new Error('fixture network unavailable');sent.push(request);return {code:0,data:{message_id:`om_sent_${sent.length}`,chat_id:'oc_dm'}};}};
+  const feishuSDK={Client:class {constructor(){this.im={message:api};}},EventDispatcher:class {register(){return this;}},WSClient:class {async start(){} close(){}}};
   let callback=input=>({summary:'Observed material context',actions:input.event.source?.channel==='feishu'?[]:[{kind:'reply',ticketId:null,text:input.context.tickets.some(card=>card.summary?.includes(secret))?secret:'No disclosed material'}]});
-  const runtime=createProjectAgent({projectRoot:root,execution:{driver:'fixture',enableAgentTools:true},driver:{capabilities:{agentTools:true,boundedMaterialReadsVersion:1,sessionResume:true},async run(input){
+  const runtime=createProjectAgent({projectRoot:root,...(feishu?{feishuSDK}:{}),execution:{driver:'fixture',enableAgentTools:true},driver:{capabilities:{agentTools:true,boundedMaterialReadsVersion:1,sessionResume:true},async run(input){
     input.checkpoint({driver:'fixture',id:'material-worker'});
     if(input.agentTools.contextResources().some(ref=>ref.resource==='materials')){
       let n=0;const read=ref=>input.agentTools.call({name:'js_superagent_read',arguments:{resource:'materials',id:ref.id},callId:`read-${++n}`,sessionId:'material-worker',turnId:'turn-one'});
       await read(input.agentTools.contextResources().find(ref=>ref.resource==='materials'&&ref.value.kind==='directory'));
       await read(input.agentTools.contextResources().find(ref=>ref.resource==='materials'&&ref.value.kind==='file'));
     }
-    return {version:2,state:'waiting',summary:secret,artifacts:[],attention:null};
+    return {version:2,state:'waiting',summary:secret,artifacts:[],attention:question?{question:secret}:null};
   }},assessor:{async assess(input){assessments.push(input);input.checkpoint({driver:'fixture-assessor',id:input.session?.id??`candidate-${assessments.length}`});return {kind:'ignore',reason:'No new work',rules:[]};},async handleEvent(input){
     events.push(input);input.checkpoint({driver:'fixture-assessor',id:input.session?.id??`coordinator-${events.length}`});return callback(input);
   }}}).init();
   const settings={entries:[{id:'project',project:external?{root:source,projectId:sourceIdentity.projectId,instanceId:sourceIdentity.instanceId}:'self',include:['notes.md'],views:['current'],readers:[principal],destinations:[principal]}]};
   runtime.configureMaterials(settings,{expectedRevision:0});
+  if(feishu){process.env.MATERIAL_TEST_FEISHU_SECRET='fixture-secret';runtime.configure({feishu:{appId:'cli_fixture',appSecretEnv:'MATERIAL_TEST_FEISHU_SECRET',botOpenId:'ou_bot',tenantKey:'tenant',chats:[{chatId:'oc_group',type:'group',mode:'mentions'}],operator:{openId:'ou_alice'}}});}
   runtime.configureCoordinator({assessor:{driver:'fixture-assessor'},workflowMode:'continuous'},{expectedRevision:0});
   const store=new Store(join(projectStateDirectory(root),'state.sqlite'));
   const enqueue=value=>new CoordinationInbox(store).enqueue(value);
@@ -41,8 +47,67 @@ function fixture(t,{external=false}={}) {
     if(proof)store.setMeta(`material-message:${id}`,proof);
     new Outbox(store,new Effects(store)).send({id,kind:'reply',...(ticketId?{ticketId}:{}),channel:{source:'local',thread:id,address:{}},text:secret});
   };
-  return {root,source,runtime,events,assessments,settings,store,enqueue,submit,queue,setCallback:value=>callback=value};
+  const dm=(id,from,text)=>runtime.receiveSourceEvent('feishu',{sender:{sender_id:{open_id:from},sender_type:'user',tenant_key:'tenant'},message:{message_id:id,chat_id:'oc_dm',chat_type:'p2p',message_type:'text',create_time:'1793491200000',content:JSON.stringify({text})}});
+  return {root,source,runtime,events,assessments,settings,store,enqueue,submit,queue,dm,sent,network,setCallback:value=>callback=value};
 }
+
+test('replacing the Feishu operator separates sessions, historical summaries and queued material replies',async t=>{
+  const f=fixture(t,{feishu:true}),oldSummary='PRIVATE_OLD_OPERATOR_SUMMARY';
+  f.runtime.configureMaterials({entries:f.settings.entries.map(entry=>({...entry,destinations:[principal,{source:'feishu',id:'operator'}]}))},{expectedRevision:1});
+  const ticket=f.submit();await f.runtime.runNext();await f.runtime.prepareExecution();
+  f.setCallback(input=>({summary:oldSummary,actions:[{kind:'reply',ticketId:null,text:oldSummary}]}));
+  f.dm('om_alice_one','ou_alice','Inspect material');await f.runtime.runNext();
+  f.dm('om_alice_two','ou_alice','Inspect again');await f.runtime.runNext();
+  assert.ok(f.events.at(-1).session,'same operator resumes the same session across different message IDs');
+  assert.match(JSON.stringify(f.events.at(-1).context),new RegExp(oldSummary));
+  const oldMessages=f.runtime.notifications().filter(message=>message.text===oldSummary);
+  assert.equal(oldMessages.length,2);
+  assert.ok(oldMessages.every(message=>f.store.getMeta(`material-message:${message.id}`).route.openId==='ou_alice'));
+  const oldEvent=f.runtime.coordinationStatus().events.find(event=>event.source?.messageId==='om_alice_one');
+  assert.equal(f.store.getMeta(`material-event:${oldEvent.id}`).route.openId,'ou_alice');
+  f.dm('om_alice_queued','ou_alice','Old pending private input');
+  await f.runtime.stop();f.runtime.configureV2({feishu:{operator:{openId:'ou_bob'}}});await f.runtime.prepareExecution();
+  f.setCallback(input=>{
+    assert.equal(input.session,undefined);assert.doesNotMatch(JSON.stringify(input.context),new RegExp(oldSummary));
+    assert.doesNotMatch(JSON.stringify(input.context),new RegExp(secret));assert.equal(input.context.tickets.length,0);
+    assert.equal(input.readContext({resource:'tickets',query:secret}).items.length,0);
+    assert.equal(input.readContext({resource:'tickets',recordId:ticket.id}).missing,true);
+    assert.ok(input.context.recentEvents.every(event=>event.id!==oldEvent.id));
+    return {summary:'Fresh operator session',actions:[]};
+  });
+  f.dm('om_bob_one','ou_bob','Inspect current material');await f.runtime.runNext();await f.runtime.runNext();
+  assert.equal(f.runtime.coordinationStatus().events.find(event=>event.source?.messageId==='om_alice_queued').status,'failed');
+  assert.equal(f.events.length,3);f.network.fail=false;
+  f.store.db.prepare("UPDATE effects SET due=0 WHERE kind='reply'").run();await f.runtime.flushNotifications();
+  for(const message of oldMessages)assert.equal(f.runtime.notifications().find(item=>item.id===message.id).status,'dropped');
+  assert.equal(f.sent.length,0);assert.equal(f.runtime.notifications().filter(item=>item.id.startsWith('material-notice:')).length,0);
+});
+
+test('legacy remote material proofs cannot be adopted by the current operator',async t=>{
+  const f=fixture(t,{feishu:true});
+  f.runtime.configureMaterials({entries:f.settings.entries.map(entry=>({...entry,destinations:[principal,{source:'feishu',id:'operator'}]}))},{expectedRevision:1});
+  const ticket=f.submit();await f.runtime.runNext();await f.runtime.prepareExecution();f.store.setMeta('feishu:operator-chat',{chatId:'oc_dm'});
+  const channel={source:'feishu',thread:'tenant:oc_dm:operator',address:{sourceId:'feishu',tenantKey:'tenant',chatId:'oc_dm',messageId:'om_legacy',operator:'true'}};
+  f.store.setMeta('material-message:legacy-message',{revision:2,destination:{source:'feishu',id:'operator'},ticketIds:[ticket.id]});
+  new Outbox(f.store,new Effects(f.store)).send({id:'legacy-message',kind:'reply',channel,text:secret});
+  f.network.fail=false;await f.runtime.flushNotifications();
+  const message=f.runtime.notifications().find(item=>item.id==='legacy-message');
+  assert.equal(message.status,'dropped');assert.equal(message.terminal.reason,'MATERIAL_ROUTE_CHANGED');assert.equal(f.sent.length,0);
+});
+
+test('host material questions bind the recipient on enqueue and survive learning the same operator chat',async t=>{
+  const f=fixture(t,{feishu:true,question:true});
+  f.runtime.configureMaterials({entries:f.settings.entries.map(entry=>({...entry,destinations:[principal,{source:'feishu',id:'operator'}]}))},{expectedRevision:1});
+  const ticket=f.submit();await f.runtime.runNext();await f.runtime.prepareExecution();
+  const question=f.runtime.notifications().find(message=>message.channel.source==='feishu'&&message.ticketId===ticket.id);
+  assert.ok(question);assert.equal(question.status,'pending');
+  const proof=f.store.getMeta(`material-message:${question.id}`);
+  assert.deepEqual(proof.ticketIds,[ticket.id]);assert.equal(proof.route.openId,'ou_alice');assert.equal(proof.route.chatId,null);
+  f.dm('om_learn_chat','ou_alice','Check question');await f.runtime.runNext();
+  f.network.fail=false;f.store.db.prepare("UPDATE effects SET due=0 WHERE kind='reply'").run();await f.runtime.flushNotifications();
+  assert.equal(f.runtime.notifications().find(message=>message.id===question.id).status,'sent');
+  assert.equal(f.sent.length,1);assert.equal(f.sent[0].data.receive_id,'ou_alice');
+});
 
 test('queued local material output is withdrawn after source grant revocation',async t=>{
   const f=fixture(t),ticket=f.submit();await f.runtime.runNext();

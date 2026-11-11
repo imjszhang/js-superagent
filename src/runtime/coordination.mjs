@@ -169,7 +169,7 @@ export function validateWorkEventResult(value, { event, context = {} } = {}) {
 
 /** Durable work-event inbox; all state lives in the existing Store transaction. */
 export class CoordinationInbox {
-  constructor(store, { now = () => new Date().toISOString() } = {}) { this.store = store; this.now = now; }
+  constructor(store, { now = () => new Date().toISOString(), onEnqueue } = {}) { this.store = store; this.now = now; this.onEnqueue = onEnqueue; }
   enqueue(input) {
     object(input, 'event');
     const id = text(input.id, 'event ID', 256);
@@ -192,6 +192,7 @@ export class CoordinationInbox {
       const sequence = (this.store.getMeta('coordination:sequence') ?? 0) + 1;
       this.store.setMeta('coordination:sequence', sequence);
       const record = { ...facts, version, sequence, needsModel, status: needsModel || facts.kind==='operator' && facts.references?.management ? 'pending' : 'recorded', createdAt: this.now(), generation: 0, attempts: 0, cycleAttempts: 0, receipts: [], history: [] };
+      this.onEnqueue?.(record);
       this.store.setMeta(PREFIX + id, record);
       return record;
     });
