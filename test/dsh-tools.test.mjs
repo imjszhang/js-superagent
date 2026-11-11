@@ -77,6 +77,7 @@ test('a rejected command launch tells the model which fields to send, without ho
 });
 test('material and preparation failures preserve actionable categories without disclosing private diagnostics', async () => {
   const bridge = await openDshToolBridge({ runId: 'run-1', agentTools: { version: 1, definitions: [definition], call(value) {
+    if (value.arguments.code === 'RESERVED_PAGE_CONTRACT') throw new Error('Remote context result exceeds its reserved page contract');
     throw Object.assign(new Error('private /home/credentials/source diagnostic'), { code: value.arguments.code });
   } } }, { sessionId: 'session-1', options: { enableAgentTools: true }, redact: value => value });
   try {
@@ -85,6 +86,8 @@ test('material and preparation failures preserve actionable categories without d
       ['MATERIAL_BINDING_CHANGED', 'authorization-changed', /Stop using old references/],
       ['PREPARATION_CONFLICT', 'preparation-conflict', /saved result/],
       ['MATERIAL_LIMIT', 'budget-or-capacity', /incomplete coverage/],
+      ['MATERIAL_PAGE_LIMIT', 'budget-or-capacity', /does not mean the directory is missing/],
+      ['RESERVED_PAGE_CONTRACT', 'budget-or-capacity', /do not infer that the source is missing/],
       ['MATERIAL_SNAPSHOT', 'source-changed', /do not fall back/],
     ]) {
       const response = await call(bridge, { ...payload, callId: code, arguments: { code } });

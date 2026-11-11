@@ -34,10 +34,15 @@ function rejection(error) {
     PREPARATION_STALE: ['source-changed', 'This preparation belongs to an older workspace generation. Inspect the current host context before continuing.'],
     PREPARATION_CONFLICT: ['preparation-conflict', 'Another preparation owns this workspace generation. Inspect its saved result before requesting further preparation.'],
     MATERIAL_LIMIT: ['budget-or-capacity', 'The material exceeds its permitted bound. Report incomplete coverage instead of claiming the whole source was read.'],
+    MATERIAL_PAGE_LIMIT: ['budget-or-capacity', 'The page response exceeds its bounded envelope. Try one smaller page with a new call, or report incomplete coverage; this does not mean the directory is missing.'],
     MATERIAL_ENCODING: ['unsupported-material', 'This content is not supported as text. Report the unsupported material or request a host-provided text representation.'],
   }[error?.code];
   if (typed) return { error: 'Host rejected this tool call; inspect scope, capabilities and current state.', category: typed[0], hint: typed[1] };
   const detail = String(error?.message ?? error);
+  if (detail === 'Remote context result exceeds its reserved page contract') return {
+    error: 'Host rejected this tool call; inspect scope, capabilities and current state.', category: 'budget-or-capacity',
+    hint: 'The page response did not fit its bounded contract. Try one smaller page with a new call, or report incomplete coverage; do not infer that the source is missing.',
+  };
   const category = /budget|capacity/i.test(detail) ? 'budget-or-capacity' : /scope|path|workspace/i.test(detail) ? 'scope' : /identity|unknown/i.test(detail) ? 'unknown-identity' : /invalid|must be|required/i.test(detail) ? 'invalid-arguments' : 'unavailable';
   const hint = category === 'invalid-arguments' ? 'Check required fields and types in the tool schema. Command profiles take only profileId; optional child text uses the trusted profile instruction.'
     : category === 'unknown-identity' ? 'Use only IDs from the current trusted profile catalog or scoped context.'

@@ -22,6 +22,12 @@ Real DSH acceptance on the frozen package from commit `39b413eebf924647b70e89318
 
 The release procedure repeats this acceptance against the final frozen archive, records its source commit and integrity, checks the registry download, and retains private target-project/Feishu evidence in that project's deployment record. Public examples and tests use fictional fixtures. A passing service health check is not business acceptance; neither publication nor target-project switching is claimed by this source document.
 
+## Alpha.1 pagination correction
+
+The wider deployment acceptance uncovered a directory case absent from the initial small fixtures: the body was paginated but every response repeated all child references. Large directories could therefore exceed the existing tool envelope reservation and be reported as unavailable, even though the host had observed the directory. Reducing the requested body page did not solve the repeated reference overhead.
+
+The `0.15.0-alpha.1` correction pages the child references with the body, measures the complete escaped response, and keeps source-version and shared-budget checks intact. Large-directory, escaped-text, continuation and restored-provider tests exercise the real tool bridge. The real-provider current-input fixture now also requires traversal of a large directory. Earlier candidate results remain historical evidence; deployment acceptance must be rerun with the corrected package. Schema 15, existing grants, fixed snapshots, workspaces and historical receipts remain unchanged.
+
 ## Compatibility and limits
 
 Existing schema 14 projects retain their old behavior until explicit material configuration or `upgrade` moves the stopped project to schema 15. Upgrade keeps one pre-upgrade backup; preopened old writers refuse schema 15. Relocation preserves the source schema and minimum writer version.
