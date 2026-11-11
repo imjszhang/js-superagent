@@ -3,6 +3,11 @@ import { createHash } from 'node:crypto';
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function clip(value, limit) { return typeof value === 'string' && value.length > limit ? `${value.slice(0, limit)}\n[truncated]` : value; }
 function ticketCard(ticket, textLimit) {
+  if (ticket.materialProjectionVersion === 1) return { id:ticket.id,status:ticket.status,reportState:ticket.reportState,
+    ...(ticket.materialState==='stale'?{materialState:'stale',materialNotice:ticket.materialNotice}:
+      {scope:ticket.scope,summary:ticket.summary,attention:ticket.attention,ended:ticket.ended}),version:digest(ticket) };
+  if (ticket.materialState === 'stale') return { id: ticket.id, status: ticket.status, reportState: ticket.reportState,
+    materialState: 'stale', materialNotice: ticket.materialNotice, version: digest(ticket) };
   return { id: ticket.id, title: ticket.title, scope: clip(ticket.mandate?.scope, textLimit), strength: ticket.mandate?.strength,
     stage: ticket.stage, ended: ticket.ended ?? null, attention: ticket.attention ?? null,
     latestReport: ticket.assignments?.at(-1)?.report ?? null, threads: ticket.threads, version: digest(ticket) };

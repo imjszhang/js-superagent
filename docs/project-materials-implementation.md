@@ -30,6 +30,10 @@ The `0.15.0-alpha.1` correction pages the child references with the body, measur
 
 ## Compatibility and limits
 
+The `0.15.0-alpha.2` follow-up separates authorization to disclose material-derived information from the freshness required to reuse its body. An authorized but stale ticket remains discoverable through a host-generated metadata projection; its old scope, report, attention and raw history do not enter a new coordinator context. The same projection applies to bounded record reads, recent events and request cards. Freshness transitions also change the native session identity so an earlier body cannot re-enter through resumed conversation history.
+
+Projected metadata retains its disclosure dependencies. Output checks still revalidate grants, concrete recipients and settings; only genuinely exposed bodies require current-file freshness. A new task that actually received an old material body retains that dependency. Legacy queued proofs keep their stricter interpretation, and existing withdrawn messages are not rewritten to remove dependencies. A new reply must be generated from the newly checked context. Runtime, transport, package and real-project verification must establish this behavior before deployment is considered complete.
+
 Existing schema 14 projects retain their old behavior until explicit material configuration or `upgrade` moves the stopped project to schema 15. Upgrade keeps one pre-upgrade backup; preopened old writers refuse schema 15. Relocation preserves the source schema and minimum writer version.
 
 Current-input editing uses material copies. Dirty overlays into worktrees and automatic copy-to-PR conversion are not supported. Material-derived automatic draft PR creation is refused because the new output destination has not been explicitly granted. Cross-project sources are for authorized reading; one task does not mutate several source projects. Preparation refuses an in-place predecessor without an isolated baseline or any unresolved changes, jobs, deliveries or input consumption.
