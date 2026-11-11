@@ -2,6 +2,8 @@
 
 The `0.15.0-alpha.0` source tree adds a host-controlled material contract. A material source tells the Worker which project files it may inspect. A workspace tells the native executor where it runs and writes. They are separate identities. `workspace.mode: auto` retains its existing Git worktree/copy choice unless a trusted submission explicitly selects material preparation.
 
+`0.15.0-alpha.1` corrects large-directory pagination without changing the schema or grants. Each response bounds the entire JSON envelope, including escaped text and child references. Only child references covered by the returned page become available; subsequent pages retain the same full-record version. A host observation records a source read, while the tool receipt and coverage record establish what was actually delivered to the Worker.
+
 This is a prerelease implementation, not a statement that an npm version has been published. Existing projects do not gain file access or material defaults merely by installing the package. Opening an existing schema 14 project does not promote it to schema 15. Stop the project's service and active execution before explicitly running `upgrade` or `configureMaterials`; these operations back up and migrate to schema 15. Schema 14 writers must refuse schema 15. Moving an existing project preserves its schema and minimum writer version, and invalidates material bindings tied to the previous project root.
 
 ## Configure a project source

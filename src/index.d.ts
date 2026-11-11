@@ -311,6 +311,8 @@ export interface MaterialSnapshotReceipt {id:string;digest:string;source:Materia
 export interface MaterialReferenceDescriptor {sourceId:string;kind:'status'|'directory'|'file';path:string}
 export interface MaterialObservation {
   version:1;bindingDigest:string;id:string;descriptor:MaterialReferenceDescriptor;valueVersion:string;observedAt:string;
+  /** UTF-8 byte coverage of the provider page; absent on pre-alpha.1 observations. Tool receipts establish delivery. */
+  page?:{offset:number;nextOffset:number|null;length:number};
   references:MaterialReferenceDescriptor[];runId?:string|null;workspaceProvisionId?:string|null;workspaceGeneration?:number|null;
 }
 export interface MaterialFreshness {version:1;fresh:boolean;changed:string[];observedRecords:number;checkedAt:string;runId?:string|null;workspaceProvisionId?:string|null}

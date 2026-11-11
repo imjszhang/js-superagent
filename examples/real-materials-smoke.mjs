@@ -4,6 +4,7 @@ import { mkdtempSync, realpathSync, writeFileSync, readFileSync, mkdirSync, exis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import { parseAcceptanceArgs, importFrozenModule } from './acceptance/frozen-package.mjs';
 
 const args = parseAcceptanceArgs(), {createProjectAgent,inspectProjectIdentity} = await importFrozenModule(args.artifact,'src/index.mjs');
@@ -35,10 +36,36 @@ async function run(f,text,materials) {
 }
 const prefix='Read the original task using js_superagent_read. Read authorized materials using its materials resource and host-minted directory/file references. Do not use native file or shell tools. ';
 try {
-  const current=project('current');writeFileSync(join(current.path,'notes.md'),'uncommitted lime 731');
-  const a=await run(current,prefix+'Report the exact current notes.md text.',{sources:[{id:'project',view:{kind:'current'}}]});
-  assert.match(a.result.reports.at(-1).summary,/uncommitted lime 731/);assert.equal(readFileSync(join(current.agent.getWorkspace(a.ticket.id).path,'notes.md'),'utf8'),'committed apple');
-  evidence.scenarios.push({name:'current-dirty-host-read',ticketId:a.ticket.id,observations:a.detail.materialObservations.length,status:'passed'});save();
+  const current=project('current'),directory='notes',entryCount=320,targetPath='notes/plot-0317.md';
+  mkdirSync(join(current.path,directory));
+  for(let index=0;index<entryCount;index++) {
+    const plot=String(index).padStart(4,'0');
+    writeFileSync(join(current.path,directory,`plot-${plot}.md`),`Fictional orchard plot ${plot}: archived observation.\n`);
+  }
+  current.git('add','--',directory);current.git('commit','-m','fictional paginated material fixture');
+  const committedTarget=readFileSync(join(current.path,targetPath),'utf8');
+  // A per-run fictional value prevents a guessed or prompt-copied answer from passing.
+  const dirtyTarget=`Fictional current observation ${randomUUID()}: uncommitted lime.\n`;
+  writeFileSync(join(current.path,targetPath),dirtyTarget);
+  current.agent.configureMaterials({entries:[{...current.entry(),include:[directory]}]},{expectedRevision:1});
+  evidence.currentDirectoryFixture={directory,entries:entryCount,targetPath,targetSha256:createHash('sha256').update(dirtyTarget).digest('hex')};save();
+  const a=await run(current,prefix+`The authorized ${directory}/ directory contains ${entryCount} fictional material files. Locate ${targetPath} by reading the host directory references. Continue directory pages using their returned nextOffset and the same version until this file's host-minted reference appears; do not guess record IDs. Read that file through its host reference, then report its relative path and exact current text.`,
+    {sources:[{id:'project',view:{kind:'current'}}]});
+  const currentReport=a.result.reports.at(-1).summary,observations=a.detail.materialObservations;
+  assert.ok(currentReport.includes(targetPath),'Report must identify the requested relative material file');
+  assert.ok(currentReport.includes(dirtyTarget.trim()),'Report must contain the actual per-run uncommitted file text');
+  assert.equal(readFileSync(join(current.agent.getWorkspace(a.ticket.id).path,targetPath),'utf8'),committedTarget);
+  const directoryReads=observations.filter(item=>item.descriptor?.sourceId==='project'&&item.descriptor.kind==='directory'&&item.descriptor.path===directory);
+  const fileRead=observations.find(item=>item.descriptor?.sourceId==='project'&&item.descriptor.kind==='file'&&item.descriptor.path===targetPath);
+  assert.ok(directoryReads.some(item=>item.page?.offset===0&&Number.isSafeInteger(item.page.nextOffset)),'Host observations must prove the directory exceeds its first page');
+  assert.ok(directoryReads.some(item=>item.page?.offset>0),'Host observations must prove a later directory page was read');
+  assert.ok(directoryReads.some(item=>item.page?.offset>0&&item.references?.some(ref=>ref.kind==='file'&&ref.path===targetPath)),
+    'The requested file reference must have been minted by a later directory page');
+  assert.equal(new Set(directoryReads.map(item=>item.valueVersion)).size,1,'Directory pagination must retain one fixed observed version');
+  assert.ok(fileRead,'Host observations must include the requested file read');
+  evidence.scenarios.push({name:'current-dirty-host-read',ticketId:a.ticket.id,observations:observations.length,
+    ...evidence.currentDirectoryFixture,report:currentReport,directoryPages:directoryReads.map(({id,valueVersion,page})=>({id,valueVersion,page})),
+    fileRead:{id:fileRead.id,valueVersion:fileRead.valueVersion,page:fileRead.page},status:'passed'});save();
 
   const fixed=project('fixed'), sha=fixed.git('rev-parse','HEAD');writeFileSync(join(fixed.path,'notes.md'),'frozen pear 842');
   fixed.agent.configureMaterials({entries:[fixed.entry('committed'),fixed.entry('frozen')]},{expectedRevision:1});
