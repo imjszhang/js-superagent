@@ -1,11 +1,13 @@
 import {
   constants, lstatSync, realpathSync, mkdirSync, readdirSync, readFileSync,
-  writeFileSync, renameSync, openSync, closeSync, readSync, writeSync, fstatSync, readlinkSync,
+  writeFileSync, renameSync, openSync, closeSync, readSync, writeSync, fstatSync, readlinkSync, chmodSync,
 } from 'node:fs';
-import { join, resolve, isAbsolute } from 'node:path';
+import { join, resolve, isAbsolute, dirname } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { ensureProjectStateDirectory, projectStateDirectory } from './state-paths.mjs';
+import { assertProjectIdentity } from './project-identity.mjs';
+import { materialSnapshotDigest, materialPathAllowed } from './materials.mjs';
 
 const MODES = new Set(['in-place', 'auto', 'copy', 'worktree']);
 const IGNORED = new Set(['.git', '.js-superagent', 'node_modules', '.venv', 'venv', '__pycache__', '.cache', 'coverage']);
@@ -87,7 +89,54 @@ function regularRecord(path) {
   return json(path);
 }
 function sameIdentity(a, b) {
-  return ['projectRoot', 'path', 'ticketId', 'mode', 'provisionId', 'baseCommit', 'branch', 'sourceWorkspaceProvisionId', 'generation', 'previousProvisionId', 'continuationId'].every(key => a[key] === b[key]);
+  return ['projectRoot', 'path', 'ticketId', 'mode', 'provisionId', 'baseCommit', 'branch', 'sourceWorkspaceProvisionId', 'generation', 'previousProvisionId', 'continuationId', 'preparationId', 'materialSnapshotDigest'].every(key => a[key] === b[key]) &&
+    (!a.materialSnapshotDigest || JSON.stringify(a.materialSource) === JSON.stringify(b.materialSource) && JSON.stringify(a.config) === JSON.stringify(b.config));
+}
+
+function boundedPaths(paths, label) {
+  if (!Array.isArray(paths) || !paths.length || paths.length > 256 || paths.some(path => typeof path !== 'string' || !path ||
+      isAbsolute(path) || /^[A-Za-z]:/.test(path) || /[\\\0]/.test(path) || path !== '.' && path.split('/').some(part => !part || part === '.' || part === '..'))) {
+    throw new Error(`${label} requires bounded relative paths`);
+  }
+  return [...new Set(paths)];
+}
+const inScope = (path, paths) => paths.some(scope => scope === '.' || path === scope || path.startsWith(`${scope}/`));
+
+/** Only the trusted material provider constructs this input. Contents are checked before any copy is written. */
+function checkedMaterialSnapshot(value, projectRoot) {
+  if (!value || value.version !== 1 || !/^[a-f\d]{64}$/.test(value.digest ?? '') ||
+      value.source?.root !== projectRoot || !value.source.entryId || !value.source.projectId || !value.source.instanceId ||
+      !['current', 'commit', 'snapshot'].includes(value.source.view?.kind) || !Number.isFinite(Date.parse(value.observedAt)) ||
+      !value.files || typeof value.files !== 'object' || Array.isArray(value.files)) throw new Error('Invalid material snapshot identity');
+  if (materialSnapshotDigest(value) !== value.digest) throw new Error('Material snapshot digest changed');
+  const identity = assertProjectIdentity(projectRoot, value.source.projectId);
+  if (identity.instanceId !== value.source.instanceId) throw new Error('Material snapshot project instance changed');
+  const include = boundedPaths(value.include, 'Material snapshot scope'), exclude = value.exclude ?? [];
+  const config = normalizeConfig({ mode: 'copy', exclude });
+  config.includePaths = include;
+  const files = Object.create(null), bytes = Object.create(null);
+  let size = 0;
+  if (Object.keys(value.files).length > MAX_FILES) throw new Error('Material snapshot exceeds file count limit');
+  for (const path of Object.keys(value.files).sort()) {
+    boundedPaths([path], 'Material file');
+    if (path === '.' || !inScope(path, include) || ignored(path, config) || !materialPathAllowed({ include, exclude }, path)) throw new Error('Material snapshot file exceeds its allowed scope');
+    const file = value.files[path];
+    if (!file || file.encoding !== 'base64' || typeof file.content !== 'string' ||
+        !/^[a-f\d]{64}$/.test(file.sha256 ?? '') || !Number.isSafeInteger(file.size) || file.size < 0 || file.size > MAX_FILE_BYTES ||
+        !Number.isSafeInteger(file.mode) || file.mode < 0 || file.mode > 0o777) throw new Error('Invalid material snapshot file');
+    const content = Buffer.from(file.content, 'base64');
+    if (content.toString('base64') !== file.content || content.length !== file.size || digest(content) !== file.sha256) throw new Error('Material snapshot content changed');
+    size += content.length;
+    if (size > MAX_BYTES) throw new Error('Material snapshot exceeds byte limit');
+    files[path] = { type: 'file', sha256: file.sha256, size: file.size, mode: file.mode };
+    bytes[path] = content;
+  }
+  // A regular file cannot also be an ancestor of another entry.
+  for (const path of Object.keys(files)) for (let parent = dirname(path); parent !== '.'; parent = dirname(parent)) {
+    if (Object.hasOwn(files, parent)) throw new Error('Material snapshot has conflicting file paths');
+  }
+  return { source: structuredClone(value.source), digest: value.digest, include, exclude, config, files, bytes,
+    fileCount: Object.keys(files).length, size, observedAt: value.observedAt };
 }
 function ownerMarker(path, workspace, create = false) {
   const dir = join(path, '.js-superagent'), marker = join(dir, 'workspace-owner.json');
@@ -172,8 +221,13 @@ export function validateWorkspace({ projectRoot, workspace }) {
   const root = canonicalProject(projectRoot);
   if (!workspace || workspace.projectRoot !== root || workspace.state !== 'ready' || !['in-place', 'copy', 'worktree'].includes(workspace.mode)) throw new Error('Invalid or unfinished saved workspace');
   const generation = generationOf(workspace.generation);
-  if (generation && (workspace.mode !== 'worktree' || !/^[a-f\d-]{36}$/.test(workspace.previousProvisionId ?? '') ||
+  if (generation && (workspace.preparationId
+    ? workspace.mode !== 'copy' || !/^[a-f\d-]{36}$/.test(workspace.previousProvisionId ?? '') || !/^[A-Za-z\d_-]{1,120}$/.test(workspace.preparationId) || workspace.continuationId !== undefined
+    : workspace.mode !== 'worktree' || !/^[a-f\d-]{36}$/.test(workspace.previousProvisionId ?? '') ||
       !/^[A-Za-z\d_-]{1,120}$/.test(workspace.continuationId ?? '') || workspace.branch !== `js-superagent-continuation/${workspace.ticketId}/g${generation}`)) throw new Error('Invalid continuation workspace identity');
+  if (workspace.materialSnapshotDigest && (workspace.mode !== 'copy' || workspace.snapshotOrigin !== 'project-materials' ||
+      !/^[a-f\d]{64}$/.test(workspace.materialSnapshotDigest) || workspace.materialSource?.root !== root ||
+      !/^[A-Za-z\d_-]{1,120}$/.test(workspace.preparationId ?? ''))) throw new Error('Invalid material workspace identity');
   if (workspace.mode === 'in-place') {
     if (workspace.path !== root) throw new Error('In-place workspace points to another project');
     return structuredClone(workspace);
@@ -194,13 +248,18 @@ export function validateWorkspace({ projectRoot, workspace }) {
 }
 
 /** Provision one pinned workspace. persist must synchronously save each state transition. */
-export function prepareWorkspace({ projectRoot, ticketId, config = { mode: 'in-place' }, existing, persist, sourceWorkspace, scopePaths,
-  generation = existing?.generation ?? 0, previousProvisionId = existing?.previousProvisionId, continuationId = existing?.continuationId }) {
+export function prepareWorkspace({ projectRoot, ticketId, config = { mode: 'in-place' }, existing, persist, sourceWorkspace, scopePaths, materialSnapshot,
+  generation = existing?.generation ?? 0, previousProvisionId = existing?.previousProvisionId, continuationId = existing?.continuationId,
+  preparationId = existing?.preparationId }) {
   const root = canonicalProject(projectRoot), settings = normalizeConfig(config);
   generationOf(generation);
-  if (generation && (settings.mode !== 'worktree' || !/^[a-f\d-]{36}$/.test(previousProvisionId ?? '') ||
-      !/^[A-Za-z\d_-]{1,120}$/.test(continuationId ?? ''))) throw new Error('Continuation workspace requires an explicit predecessor and identity');
-  if (existing && (generationOf(existing.generation) !== generation || existing.previousProvisionId !== previousProvisionId || existing.continuationId !== continuationId)) throw new Error('Workspace generation changed; inspect its existing ownership');
+  if (generation && (preparationId
+    ? settings.mode !== 'copy' || !/^[a-f\d-]{36}$/.test(previousProvisionId ?? '') || !/^[A-Za-z\d_-]{1,120}$/.test(preparationId) || continuationId !== undefined
+    : settings.mode !== 'worktree' || !/^[a-f\d-]{36}$/.test(previousProvisionId ?? '') || !/^[A-Za-z\d_-]{1,120}$/.test(continuationId ?? ''))) throw new Error('Continuation workspace requires an explicit predecessor and identity');
+  if (existing && (generationOf(existing.generation) !== generation || existing.previousProvisionId !== previousProvisionId || existing.continuationId !== continuationId || existing.preparationId !== preparationId)) throw new Error('Workspace generation changed; inspect its existing ownership');
+  const material = materialSnapshot ? checkedMaterialSnapshot(materialSnapshot, root) : null;
+  if (material && (settings.mode !== 'copy' || sourceWorkspace || scopePaths || !/^[A-Za-z\d_-]{1,120}$/.test(preparationId ?? ''))) throw new Error('Material preparation requires an explicit copy workspace identity');
+  if (material) { settings.includePaths = material.include; settings.exclude = [...new Set([...settings.exclude, ...material.exclude])]; }
   const source = sourceWorkspace ? validateWorkspace({ projectRoot: root, workspace: sourceWorkspace }) : null;
   if (source) {
     if (settings.mode !== 'copy') throw new Error('Parent snapshots require copy mode');
@@ -212,6 +271,7 @@ export function prepareWorkspace({ projectRoot, ticketId, config = { mode: 'in-p
   if (!/^[a-zA-Z0-9_-]{1,120}$/.test(ticketId ?? '')) throw new Error('Invalid workspace ticket ID');
   if (existing?.state === 'ready') {
     if (existing.ticketId !== ticketId) throw new Error('Saved workspace belongs to another ticket');
+    if (material && existing.materialSnapshotDigest !== material.digest) throw new Error('Material snapshot changed after preparation');
     return validateWorkspace({ projectRoot: root, workspace: existing });
   }
   let workspace = existing;
@@ -226,7 +286,14 @@ export function prepareWorkspace({ projectRoot, ticketId, config = { mode: 'in-p
     if (mode === 'worktree' && (!repository || repository.nested)) throw new Error('Worktree mode requires the exact Git project root; use copy for a nested project or ordinary directory');
     workspace = { mode, path: mode === 'in-place' ? root : join(projectStateDirectory(root), 'workspaces', workspaceName(ticketId, generation)),
       projectRoot: root, ticketId, createdAt: new Date().toISOString(), state: 'preparing', provisionId: randomUUID(),
-      config: settings, ...(fallbackReason ? { fallbackReason } : {}), ...(generation ? { generation, previousProvisionId, continuationId } : {}) };
+      config: settings, ...(fallbackReason ? { fallbackReason } : {}), ...(generation ? { generation, previousProvisionId, ...(continuationId ? { continuationId } : {}) } : {}),
+      ...(preparationId ? { preparationId } : {}) };
+    if (material) {
+      workspace.materialSource = material.source;
+      workspace.materialSnapshotDigest = material.digest;
+      workspace.snapshotOrigin = 'project-materials';
+      workspace.sourceObservedAt = material.observedAt;
+    }
     if (source) {
       workspace.sourceWorkspaceProvisionId = source.provisionId ?? `in-place:${root}`;
       workspace.sourceWorkspacePath = source.path;
@@ -288,7 +355,19 @@ export function prepareWorkspace({ projectRoot, ticketId, config = { mode: 'in-p
     mkdirSync(staging, { mode: 0o700 });
     if (workspace.sourceWorkspaceProvisionId && (!source || workspace.sourceWorkspaceProvisionId !== (source.provisionId ?? `in-place:${root}`) || workspace.sourceWorkspacePath !== source.path)) throw new Error('Parent snapshot recovery requires the same owned source workspace');
     const snapshotRoot = source?.path ?? root;
-    const captured = snapshot(snapshotRoot, workspace.config, staging);
+    if (workspace.materialSnapshotDigest && (!material || workspace.materialSnapshotDigest !== material.digest ||
+        JSON.stringify(workspace.materialSource) !== JSON.stringify(material.source))) throw new Error('Material snapshot recovery requires its original immutable input');
+    let captured;
+    if (material) {
+      for (const [path, info] of Object.entries(material.files)) {
+        if (ignored(path, workspace.config)) throw new Error('Material snapshot conflicts with workspace exclusions');
+        mkdirSync(dirname(join(staging, path)), { recursive: true, mode: 0o700 });
+        writeFileSync(join(staging, path), material.bytes[path], { flag: 'wx', mode: info.mode });
+        chmodSync(join(staging, path), info.mode);
+      }
+      captured = { files: material.files, skipped: [], fileCount: material.fileCount, bytes: material.size };
+      workspace.sourceSnapshotDigest = digest(JSON.stringify(material.files));
+    } else captured = snapshot(snapshotRoot, workspace.config, staging);
     if (source) {
       validateWorkspace({ projectRoot: root, workspace: source });
       const after = snapshot(snapshotRoot, workspace.config);
@@ -296,7 +375,8 @@ export function prepareWorkspace({ projectRoot, ticketId, config = { mode: 'in-p
       if (JSON.stringify(captured.files) !== JSON.stringify(regular)) throw new Error('Parent workspace changed during child snapshot; inspect the preserved staging copy');
       workspace.sourceSnapshotDigest = digest(JSON.stringify(captured.files));
     }
-    const manifest = { version: 1, files: captured.files, skipped: captured.skipped };
+    const manifest = { version: 1, files: captured.files, skipped: captured.skipped,
+      ...(material ? { materialSnapshotDigest: material.digest, source: material.source, observedAt: material.observedAt, include: material.include, exclude: material.exclude } : {}) };
     writeRecord(paths.manifest, manifest);
     workspace = { ...workspace, manifestPath: paths.manifest, manifestSha256: digest(readFileSync(paths.manifest)),
       excludedPaths: captured.skipped, snapshotFiles: captured.fileCount, snapshotBytes: captured.bytes, state: 'ready' };
@@ -341,6 +421,34 @@ export function prepareContinuationWorkspace({ projectRoot, ticketId, previousWo
 /** A child receives a bounded snapshot of its parent's current files, including uncommitted changes. */
 export function prepareChildWorkspaceSnapshot({ projectRoot, ticketId, parentWorkspace, paths, existing, persist }) {
   return prepareWorkspace({ projectRoot, ticketId, config: { mode: 'copy' }, sourceWorkspace: parentWorkspace, scopePaths: paths, existing, persist });
+}
+
+/** Host-only copy from an immutable, authorized material bundle. No source path is selected by the model. */
+export function prepareMaterialWorkspace({ projectRoot, ticketId, materialSnapshot, preparationId, previousWorkspace,
+  existing, persist, assertAuthorized = () => {} }) {
+  if (typeof assertAuthorized !== 'function' || typeof persist !== 'function') throw new Error('Material preparation needs synchronous authorization and persistence callbacks');
+  const check = () => {
+    const result = assertAuthorized();
+    if (result === false || result?.then) throw new Error('Material preparation is no longer authorized');
+  };
+  check();
+  const root = canonicalProject(projectRoot);
+  const material = checkedMaterialSnapshot(materialSnapshot, root);
+  let generation = 0, previousProvisionId;
+  if (previousWorkspace) {
+    const previous = validateWorkspace({ projectRoot: root, workspace: previousWorkspace });
+    if (previous.ticketId !== ticketId || previous.mode === 'in-place') throw new Error('Material re-preparation needs the same isolated ticket predecessor');
+    if (inspectWorkspace({ projectRoot: root, workspace: previous }).changes.length) throw new Error('Previous workspace has unpreserved Worker changes');
+    generation = generationOf(previous.generation) + 1;
+    previousProvisionId = previous.provisionId;
+  }
+  if (existing && (existing.preparationId !== preparationId || existing.materialSnapshotDigest !== material.digest ||
+      existing.generation !== (generation || undefined) || existing.previousProvisionId !== previousProvisionId)) throw new Error('Material preparation identity changed after it started');
+  const workspace = prepareWorkspace({ projectRoot: root, ticketId, materialSnapshot, preparationId,
+    config: { mode: 'copy', exclude: material.exclude }, generation, previousProvisionId, existing,
+    persist(value) { check(); return persist(value); } });
+  check();
+  return workspace;
 }
 
 /** Read-only bounded regular-file snapshot used for trusted adoption planning. */
