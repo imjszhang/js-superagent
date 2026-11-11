@@ -49,9 +49,9 @@ test('schema 12 upgrades with a preserved backup and old dispatchers leave Worke
   assert.equal(oldStore.db.prepare('PRAGMA user_version').get().user_version, 12);
   // This freezes the previously shipped dispatch contract, without loading git history.
   const oldHandlers = { reply() { legacySends++; }, 'coordinator-answer'() { legacySends++; } };
-  assert.equal(runtime.upgradeRuntime().schemaVersion, 14);
-  assert.equal(oldStore.db.prepare('PRAGMA user_version').get().user_version, 14);
-  assert.equal(oldStore.getMeta('runtime:minimum-version'), '0.13.0-alpha.0');
+  assert.equal(runtime.upgradeRuntime().schemaVersion, 15);
+  assert.equal(oldStore.db.prepare('PRAGMA user_version').get().user_version, 15);
+  assert.equal(oldStore.getMeta('runtime:minimum-version'), '0.15.0-alpha.0');
   assert.deepEqual(oldStore.getMeta('upgrade:preserved'), { revision: 1, original: 'pre-upgrade state' });
   const history = inspectDatabase(path).migrations;
   assert.deepEqual(history.filter(row => row.toVersion === 13).map(({ id, fromVersion, toVersion }) => ({ id, fromVersion, toVersion })),

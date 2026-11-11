@@ -26,6 +26,29 @@ test('business tools journal exactly one domain mutation across host reconstruct
   assert.throws(() => f.host.call({ ...call, arguments: { ...call.arguments, text: 'Different payload' } }), /identity conflict/);
   assert.equal(f.store.getMeta('ack-count'), 1);
 });
+
+test('workspace preparation is explicitly granted, bounded and idempotent across host reconstruction', t => {
+  const f = fixture(t, { commands: { prepare_workspace(args, identity) {
+    f.store.setMeta('prepare-count', (f.store.getMeta('prepare-count') ?? 0) + 1);
+    assert.equal(identity.runId, 'run-one');
+    return { accepted: true, status: 'pending', materialId: args.materialId, provisionId: args.provisionId };
+  } } });
+  const args = { materialId: 'material-source-one', provisionId: 'ec401f82-bc28-4667-b870-cb56a8ade120', reason: 'Use the current material baseline' };
+  const call = f.request('prepare_workspace', args);
+  assert.equal(f.host.call(call).status, 'pending');
+  assert.equal(createWorkerToolHost(f.options).call(call).status, 'pending');
+  assert.equal(f.store.getMeta('prepare-count'), 1);
+  assert.equal(f.host.terminalReport(), null, 'Preparation is not a business completion report');
+  for (const forbidden of [{ cwd: '/elsewhere' }, { command: 'run anything' }, { permission: 'workspace-write' }]) {
+    assert.throws(() => f.host.call(f.request('prepare_workspace', { ...args, ...forbidden }, 'invalid-call')), /arguments/);
+  }
+  assert.throws(() => f.host.call(f.request('prepare_workspace', { materialId: args.materialId, provisionId: args.provisionId }, 'missing-reason')), /arguments/);
+  const ungranted = fixture(t);
+  assert.equal(ungranted.host.definitions.some(tool => tool.name === 'js_superagent_prepare_workspace'), false);
+  assert.throws(() => ungranted.host.call(ungranted.request('prepare_workspace', args)), /not available/);
+  f.setActive(false);
+  assert.throws(() => f.host.call(call), /revoked/);
+});
 test('session spoofing, cancellation and renewed policy refusal apply even to cached calls', t => {
   const f = fixture(t), call = f.request('read', { resource: 'messages', id: 'input-one' });
   assert.throws(() => f.host.call({ ...call, sessionId: 'another-session' }), /identity/);
@@ -68,6 +91,23 @@ test('read budgets are durable and cached retries do not consume them twice', t 
   const f = fixture(t, { limits: { maxReads: 1 } }), call = f.request('read', { resource: 'messages', id: 'input-one' });
   f.host.call(call); f.host.call(call);
   assert.throws(() => createWorkerToolHost(f.options).call(f.request('read', { resource: 'messages' }, 'extra-read')), /budget/);
+});
+test('remote receipt replay does not reprepare changed material and still checks current authorization', async t => {
+  let preparations = 0, reads = 0, authorized = true, contentChanged = false;
+  const remoteReads = {
+    references: () => [{ resource: 'materials', id: 'material-one', value: { sourceId: 'current' } }],
+    prepare(args) { preparations++; if (contentChanged) throw new Error('Material source changed'); return { resource: args.resource, id: args.id }; },
+    validate() { if (!authorized) throw new Error('Material authorization revoked'); },
+    async read(prepared) { reads++; return { ...prepared, version: 'a'.repeat(64), offset: 0, text: 'old', length: 3, nextOffset: null }; },
+  };
+  const f = fixture(t, { remoteReads }), call = f.request('read', { resource: 'materials', id: 'material-one' });
+  const original = await f.host.call(call);
+  contentChanged = true;
+  assert.deepEqual(await createWorkerToolHost(f.options).call(call), original);
+  assert.equal(preparations, 1); assert.equal(reads, 1);
+  assert.throws(() => f.host.call(f.request('read', call.arguments, 'new-observation')), /source changed/);
+  authorized = false;
+  assert.throws(() => f.host.call(call), /authorization revoked/);
 });
 test('failed or oversized domain mutations roll back journals and side effects atomically', t => {
   const f = fixture(t);

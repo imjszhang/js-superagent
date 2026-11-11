@@ -275,6 +275,49 @@ test('SDK project rules load only current directory ancestors and refresh the re
   assert.ok(f.pids.every(pid=>!alive(pid)));
 });
 
+test('host-only materials require the scoped read bridge and keep native defaults byte-compatible', t => {
+  const f = fixture(t), defaults = validateDshOptions(f.options);
+  assert.deepEqual(validateDshOptions({ ...f.options, materialAccess: 'native' }), defaults);
+  const bounded = { ...f.options, permission: 'read-only', enableAgentTools: true, materialAccess: 'host-only' };
+  const capabilities = createDshSdkDriver(bounded).capabilities;
+  assert.equal(capabilities.boundedMaterialReadsVersion, 1);
+  assert.equal(capabilities.workspacePreparationVersion, 1);
+  assert.equal(capabilities.nativeBackgroundOwnership, false);
+  assert.equal(createDshSdkDriver({ ...f.options, enableAgentTools: true }).capabilities.boundedMaterialReadsVersion, undefined);
+  for (const patch of [{ permission: 'workspace-write' }, { enableAgentTools: false }, { enableManagedJobs: true }, { materialAccess: 'any-path' }]) {
+    assert.throws(() => validateDshOptions({ ...bounded, ...patch }));
+  }
+  assert.throws(() => validateDshOptions(bounded, { role: 'coordinator' }));
+});
+
+test('host-only Worker removes native file access, uses scoped instructions, and pins the mode on resume', async t => {
+  const f = fixture(t, '', '0.2.2-alpha.2');
+  writeFileSync(join(f.root, 'AGENTS.md'), 'UNGRANTED_CWD_INSTRUCTION');
+  const resources = [{ resource: 'materials', id: 'material-root', value: { title: 'Authorized current materials' } }];
+  const agentTools = { version: 1, definitions: [{ name: 'js_superagent_prepare_workspace', description: 'Host preparation', inputSchema: { type: 'object' } }],
+    contextResources: () => resources, call() { throw new Error('This fixture makes no tool calls'); } };
+  const options = { ...f.options, permission: 'read-only', enableAgentTools: true, materialAccess: 'host-only' };
+  const driver = createDshSdkDriver(options), input = { ...f.input, agentTools, ticket: { id: 'bounded-ticket', text: 'Read permitted current materials', scope: 'Read-only investigation' } };
+  await driver.run(input);
+  const session = f.sessions[0], home = join(stateDir(f.root), 'harness', 'dsh', session.id);
+  const binding = JSON.parse(readFileSync(join(home, 'binding.json'), 'utf8'));
+  assert.equal(binding.materialAccess, 'host-only');
+  const patches = JSON.parse(readFileSync(join(home, 'profiles', 'sdk', 'cordis.patch.yml'), 'utf8'));
+  for (const id of ['tool-fs', 'tool-fs-search', 'tool-bash', 'tool-pwsh', 'tool-jobs', 'tool-working-directory', 'tool-subagent', 'tool-web', 'tool-plugin-manager']) {
+    assert.equal(patches.find(p => p.id === id)?.disabled, true, id);
+  }
+  const prompt = readFileSync(join(f.root, 'input.txt'), 'utf8');
+  assert.doesNotMatch(prompt, /UNGRANTED_CWD_INSTRUCTION|Older scoped context is in read-only manifest/);
+  assert.match(prompt, /host material references/);
+  assert.match(prompt, /stop work and return waiting with attention null/);
+  const manifest = JSON.parse(readFileSync(join(stateDir(f.root), 'harness-context', input.runId, 'project-rules.json')));
+  assert.equal(manifest.source, 'host-materials');
+  assert.deepEqual(manifest.files, []);
+  await driver.run({ ...input, session, runId: randomUUID() });
+  await assert.rejects(createDshSdkDriver({ ...options, materialAccess: 'native' }).run({ ...input, session, runId: randomUUID() }), /configuration changed/);
+  assert.deepEqual(JSON.parse(readFileSync(join(home, 'binding.json'), 'utf8')), binding);
+});
+
 test('a DSH report that ends the message is accepted after a leading sentence', () => {
   const bare = { version: 2, state: 'ready', summary: 'Fetched the title.', artifacts: ['subtask/fetch.json'], attention: null, answers: null };
   assert.equal(parseDshReport(JSON.stringify(bare)).state, 'ready');

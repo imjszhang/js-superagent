@@ -84,10 +84,10 @@ test('v1 upgrade preserves legacy records and makes a consistent one-time backup
 
 test('future database versions are rejected without rewriting their schema', t => {
   const f = fixture(t), db = new DatabaseSync(f.path);
-  db.exec('PRAGMA user_version=15'); db.close();
-  assert.throws(() => new Store(f.path), /Unsupported state schema: 15/);
+  db.exec('PRAGMA user_version=16'); db.close();
+  assert.throws(() => new Store(f.path), /Unsupported state schema: 16/);
   const after = new DatabaseSync(f.path);
-  try { assert.equal(after.prepare('PRAGMA user_version').get().user_version, 15); }
+  try { assert.equal(after.prepare('PRAGMA user_version').get().user_version, 16); }
   finally { after.close(); }
 });
 

@@ -79,14 +79,14 @@ test('new maintenance flags reject ambiguous/misplaced operations before initial
   ]) assert.equal(f.run(...args).status, 1, args.join(' '));
   assert.equal(existsSync(stateDir(f.root)), false);
   assert.equal(existsSync(f.directory), false);
-  assert.match(f.run('--help').stdout, /schema 14/);
+  assert.match(f.run('--help').stdout, /schema 15/);
   assert.match(f.run('--help').stdout, /machine limits set/);
 });
 
 test('CLI initializes and upgrades local state, exposes repository ownership without remote calls, and requires reviewed release', t => {
   const f = fixture(t);
   const initialized = f.json('init', '--github-repo', 'owner/repo', '--github-actor', 'alice');
-  const upgraded = f.json('upgrade'); assert.equal(upgraded.schemaVersion, 14);
+  const upgraded = f.json('upgrade'); assert.equal(upgraded.schemaVersion, 15);
   const machine = createMachineCoordinator({ projectRoot: f.root, projectId: initialized.projectId }, { directory: f.directory });
   machine.register(); machine.claimRepository({ repository: 'owner/repo', repositoryId: 23 }); machine.close();
   assert.equal(f.json('github', 'binding', 'status').bindings[0].repositoryId, 23);

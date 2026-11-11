@@ -41,10 +41,12 @@ export function recoveryEvidence(value, { session, runId, kind = 'transient' } =
   return result;
 }
 
+export const carriesRecoveryBudget = previous => previous?.status === 'resuming' || previous?.status === 'superseded' && previous.reason === 'material-preparation';
+
 export function nextRecoveryPlan(previous, { settings, evidence, runId, now = Date.now() } = {}) {
   settings=normalizeRecoverySettings(settings);
   if (!settings.autoResume || !evidence) return null;
-  const attempt = previous?.status === 'resuming' ? previous.attempt : 0;
+  const attempt = carriesRecoveryBudget(previous) ? previous.attempt : 0;
   return { status:attempt >= settings.maxAttempts ? 'exhausted' : 'pending',attempt,runId,session:evidence.session,evidence,
     nextAt:new Date(now + Math.min(60000,settings.initialDelayMs * 2 ** attempt)).toISOString(),createdAt:previous?.createdAt ?? new Date(now).toISOString() };
 }

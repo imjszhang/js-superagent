@@ -42,6 +42,13 @@ function fixture(t, { initialized = true, execution = { driver: 'codex-app-serve
 }
 const check = (report, id) => report.checks.find(item => item.id === id);
 
+test('setup accepts explicitly upgraded material schema without mutating it', async t => {
+  const f = fixture(t, { schema: 15 }), before = snapshot(f.base);
+  const report = await checkProjectSetup({ projectRoot: f.root }, f.deps);
+  assert.equal(check(report, 'database').status, 'passed');
+  assert.deepEqual(snapshot(f.base), before);
+});
+
 test('setup checks an uninitialized directory without creating state or inspecting services', async t => {
   const f = fixture(t, { initialized: false }), before = snapshot(f.base);
   const report = await checkProjectSetup({ projectRoot: f.root }, f.deps);

@@ -73,11 +73,11 @@ test('ordered migrations commit one versioned history and leave prior package ba
   assert.equal(noChange.backup, null);
   const future = new DatabaseSync(f.path); future.exec('PRAGMA user_version=5'); future.close();
   const supported = new Store(f.path);
-  supported.db.exec('PRAGMA user_version = 15');
-  assert.throws(() => supported.setMeta('unexpected-future-write', true), /Unsupported state schema: 15/);
+  supported.db.exec('PRAGMA user_version = 16');
+  assert.throws(() => supported.setMeta('unexpected-future-write', true), /Unsupported state schema: 16/);
   assert.equal(supported.getMeta('unexpected-future-write'), undefined);
   supported.close();
-  assert.throws(() => new Store(f.path), /Unsupported state schema: 15/);
+  assert.throws(() => new Store(f.path), /Unsupported state schema: 16/);
 });
 
 test('later migration failure rolls all schema and data back while retaining snapshot', async t => {

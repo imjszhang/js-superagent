@@ -6,6 +6,7 @@ import { BUILTIN_ADAPTERS, RETIRED_DRIVERS } from './builtin.mjs';
 const ID = /^[a-z][a-z\d-]{0,63}$/;
 const ROLES = ['worker', 'child', 'coordinator'];
 const CAPABILITIES = ['structuredProgress', 'sessionResume', 'realtimeInput', 'inputAcknowledgements', 'backgroundTasks', 'subagents', 'agentTools', 'nativeBackgroundOwnership'];
+const VERSIONED_CAPABILITIES = ['boundedMaterialReadsVersion', 'workspacePreparationVersion'];
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,255}$/;
 function object(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new Error(`${label} must be a plain object`);
@@ -30,7 +31,7 @@ export function createHarnessRegistry({ adapters = [], assessors = createBuiltin
       const { driver, adapterVersion, requiredCapabilities, ...options } = execution;
       const entry = select(driver, role);
       if (adapterVersion !== undefined && adapterVersion !== entry.version) throw new Error(`Harness ${driver} adapter version changed; explicitly replace the execution target`);
-      if (requiredCapabilities !== undefined && (!Array.isArray(requiredCapabilities) || requiredCapabilities.some(key => !CAPABILITIES.includes(key)))) throw new Error('Unknown required Harness capability');
+      if (requiredCapabilities !== undefined && (!Array.isArray(requiredCapabilities) || requiredCapabilities.some(key => !CAPABILITIES.includes(key) && !VERSIONED_CAPABILITIES.includes(key)))) throw new Error('Unknown required Harness capability');
       const validate = role === 'coordinator' ? entry.assessor?.validate ?? entry.validate : entry.validate;
       const validated = synchronous(validate(structuredClone(options), { role }), 'Harness validation') ?? options;
       object(validated, 'Normalized Harness options');
@@ -130,7 +131,7 @@ export function createHarnessRegistry({ adapters = [], assessors = createBuiltin
     const instance = synchronous(entry.createDriver(options, { role }), 'Harness factory');
     if (!instance || typeof instance.run !== 'function' || instance.reportVersion !== 2) throw new Error('Harness Driver must implement run with reportVersion 2; migrate legacy Driver results');
     const effective = driverCapabilities(instance);
-    for (const capability of requiredCapabilities) if (effective[capability] !== true) throw new Error(`Harness ${entry.id} does not provide required capability ${capability}`);
+    for (const capability of requiredCapabilities) if (effective[capability] !== (VERSIONED_CAPABILITIES.includes(capability) ? 1 : true)) throw new Error(`Harness ${entry.id} does not provide required capability ${capability}`);
     if (options.enableManagedJobs === true && (!effective.backgroundTasks || !effective.subagents)) throw new Error('Selected Harness does not provide managed job tools');
     if (options.enableAgentTools === true && !effective.agentTools) throw new Error('Selected Harness does not provide business tools');
     return instance;

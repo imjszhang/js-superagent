@@ -1,3 +1,9 @@
+import { assertMaterialDestination } from './materials.mjs';
+import { combineContextReads, materialDestination } from './runtime/material-context.mjs';
+import { materialWithdrawalNotice, verifyMaterialWithdrawalNotice } from './runtime/material-notice.mjs';
+import { preparationPending, requestWorkspacePreparation as createWorkspacePreparation, preparationReport, validatePreparationOwner, activatePreparedWorkspace } from './runtime/workspace-preparation.mjs';
+import { prepareMaterialWorkspace, validateWorkspace } from './workspaces.mjs';
+import { previewLocalApplication, applyLocalApplication, recoverLocalApplication, inspectLocalApplication, listLocalApplications } from './runtime/local-application.mjs';
 import { RuntimeMachineGuard, MACHINE_DEPENDENCIES, MACHINE_GUARD } from './runtime/machine-guard.mjs';
 import { OwnerControls, OWNER_CONTROL_METHODS, ONLINE_SETTING_METHODS, normalizeOwnerControl } from './runtime/owner-controls.mjs';
 import { assertCoordinatorAnswer, answerFingerprint, coordinatorAnswerScope } from './runtime/coordinator-answers.mjs';
@@ -21,7 +27,7 @@ import { createCoordinationReader } from './runtime/coordination-context.mjs';
 import { feedbackDisposition } from './runtime/feedback.mjs';
 import { projectStateDirectory } from './state-paths.mjs';
 import { watchStateChanges } from './runtime/state-watch.mjs';
-import { realpathSync, writeFileSync, linkSync, unlinkSync, existsSync } from 'node:fs';
+import { realpathSync, writeFileSync, linkSync, unlinkSync, existsSync, mkdirSync } from 'node:fs';
 import { join, resolve, relative, isAbsolute } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { hostname } from 'node:os';
@@ -36,9 +42,11 @@ import { createManagedJobs, normalizeManagedJobsSettings } from './runtime/jobs.
 import { inspectManagedJobRecovery } from './runtime/job-recovery.mjs';
 import { createWorkerToolHost } from './runtime/agent-tools.mjs';
 import { createWorkerGitHubReads } from './runtime/worker-github-context.mjs';
+import { createWorkerProjectReads } from './runtime/worker-project-context.mjs';
+import { normalizeMaterialSettings, resolveMaterialBinding, validateMaterialBinding, materialDigest, materialError, captureMaterialSnapshot, validateMaterialSnapshot, readMaterialFile, MATERIAL_LIMITS } from './materials.mjs';
 import { createHostToolVerifier, recordHostToolResult, hostRecoveryBlockReason } from './runtime/host-tool-recovery.mjs';
 import { workerContextResources, contextVersion, contextConsumption } from './runtime/worker-context.mjs';
-import { normalizeRecoverySettings, retryBeforeStart, buildTicketTrace, recoveryEvidence, nextRecoveryPlan } from './runtime/recovery.mjs';
+import { normalizeRecoverySettings, retryBeforeStart, buildTicketTrace, recoveryEvidence, nextRecoveryPlan, carriesRecoveryBudget } from './runtime/recovery.mjs';
 import { planChildAdoption, applyChildAdoption, recoverChildAdoption as recoverSavedChildAdoption } from './runtime/child-adoption.mjs';
 import { BusinessHealthRegistry } from './runtime/business-health.mjs';
 import { PromptRegistry } from './runtime/prompt-registry.mjs';
@@ -170,7 +178,8 @@ export class ProjectRuntime {
       if(savedIdentity && identity.initialized && (savedIdentity.instanceId!==identity.instanceId || savedIdentity.stateId!==identity.stateId)) {readOnly=true;this.#store.readOnly=true;}
       this.#effects = new Effects(this.#store);
       this.#coordinator = new CoordinatorRegistry(this.#store, { validateAssessor: value => this.#harnessRegistry.validateExecution(value, { role: 'coordinator' }) });
-      this.#outbox = new Outbox(this.#store, this.#effects, { deliver: async message => {
+      this.#outbox = new Outbox(this.#store, this.#effects, { onEnqueue: message => this.#bindMaterialMessage(message), authorize: message => this.#authorizeMaterialMessage(message), deliver: async message => {
+        this.#authorizeMaterialMessage(message);
         if (message.channel.source !== 'github') {
           if (message.channel.source === 'feishu' && this.#config().feishu?.enabled !== false && !this.#feishuSourceId) throw new Later('Feishu connection is not ready');
           const workerAnswer = this.#store.getMeta(`worker-answer-reply:${message.id}`);
@@ -201,6 +210,7 @@ export class ProjectRuntime {
           ...(workerAnswer ? { workerAnswer: { triggerId: workerAnswer.trigger.id, ticketId: workerAnswer.ticketId, channel: workerAnswer.trigger.channel } } : {}),
           authorizeSend: () => {
             this.#machine.assert(); this.#machine.claim();
+            this.#authorizeMaterialMessage(message);
             if (this.#stopping || this.isPaused()) throw new Later('Runtime is paused or stopping');
             if (workerAnswer) {
               try {
@@ -337,6 +347,9 @@ export class ProjectRuntime {
         }},
         {id:'host-alignment-v13',from:13,to:14,up(db){
           db.prepare('INSERT OR REPLACE INTO kv(key,data) VALUES (?,?)').run('runtime:minimum-version',JSON.stringify('0.13.0-alpha.0'));
+        }},
+        {id:'project-materials-v14',from:14,to:15,up(db){
+          db.prepare('INSERT OR REPLACE INTO kv(key,data) VALUES (?,?)').run('runtime:minimum-version',JSON.stringify('0.15.0-alpha.0'));
         }}],
       assertStopped:()=>!this.#loop && !this.#busy && !this.#executions().length });
   }
@@ -345,7 +358,7 @@ export class ProjectRuntime {
     // recorded until they exit; recovery refuses new work without treating them as a second execution.
     return !(name.endsWith(':sync-lock') || name.startsWith('effect:github-webhook:') || name.startsWith('managed-job:'));
   }
-  #prepareMachine({adoptLegacy=false}={}) {
+  #prepareMachine({adoptLegacy=false,targetSchema=14}={}) {
     this.#db(); this.#machine.writable();
     if(!inspectProjectIdentity(this.projectRoot,this.projectId).initialized && !adoptLegacy)throw Object.assign(new Error('Run upgrade on the stopped legacy project before enabling multi-project execution'),{code:'PROJECT_IDENTITY_ADOPTION_REQUIRED'});
     const databasePath=join(projectStateDirectory(this.projectRoot),'state.sqlite');
@@ -354,11 +367,11 @@ export class ProjectRuntime {
     if(blocking.length)throw Object.assign(new Error('Stop live or unverifiable project execution owners before acquiring execution'),{code:'PROJECT_EXECUTION_ACTIVE',details:blocking.map(owner=>owner.name)});
     // Settle records whose owners are already dead before a schema upgrade can count them as active work.
     this.#store.atomic(() => this.#recover());
-    const pending=liveOwners(), upgrading=inspectDatabase(databasePath).schemaVersion<14;
+    const pending=liveOwners(), upgrading=inspectDatabase(databasePath).schemaVersion<targetSchema;
     // A crashed parent's surviving job guardians keep its execution record, which already refuses new work.
     // Defer the upgrade until they exit; any other live owner must be stopped first.
     if(upgrading && pending.some(owner=>!owner.name.startsWith('managed-job:')))throw Object.assign(new Error('Stop live or unverifiable project execution owners before upgrading the state schema'),{code:'PROJECT_EXECUTION_ACTIVE',details:pending.map(owner=>owner.name)});
-    if(!upgrading || !pending.length)this.#advanceSchema(14);
+    if(!upgrading || !pending.length)this.#advanceSchema(targetSchema);
     const identity = ensureProjectIdentity(this.projectRoot, this.projectId, { adoptLegacy });
     const previous = this.#store.getMeta('instance:identity');
     if (previous && (previous.instanceId !== identity.instanceId || previous.stateId !== identity.stateId)) throw Object.assign(new Error('State database belongs to another local instance'), { code: 'PROJECT_IDENTITY_CONFLICT' });
@@ -389,7 +402,7 @@ export class ProjectRuntime {
   #installMachineGuards() {
     if (this.#machineWrapped) return; this.#machineWrapped = true;
     const asynchronous = ['runNext','syncGitHub','processGitHubWebhooks','flushNotifications','linkGitHubPullRequest',
-      'verifyTicket','deliverTicket','runPRReview','jobControl','controlNativePreview','adoptChild','recoverChildAdoption','replaceSession'];
+      'applyMaterialChanges','recoverMaterialApplication','verifyTicket','deliverTicket','runPRReview','jobControl','controlNativePreview','adoptChild','recoverChildAdoption','replaceSession'];
     for (const name of asynchronous) {
       const original = this[name].bind(this);
       if (OWNER_CONTROL_METHODS.includes(name)) {
@@ -739,7 +752,7 @@ export class ProjectRuntime {
     return policy;
   }
   coordinatorStatus() { this.#db(); return { settings: this.#coordinator.current(), active: !!this.#assessing, history: this.#coordinator.history() }; }
-  #coordinationInbox() { return new CoordinationInbox(this.#db(), { now: () => this.#now() }); }
+  #coordinationInbox() { return new CoordinationInbox(this.#db(), { now: () => this.#now(), onEnqueue: event => this.#bindMaterialEvent(event) }); }
   coordinationStatus() {
     const inbox = this.#coordinationInbox();
     return { mode: this.#coordinator.current().workflowMode ?? 'candidates', active: !!this.#assessing,
@@ -830,6 +843,175 @@ export class ProjectRuntime {
     if (!['failed', 'unsupported'].includes(event.status)) throw new Error('Only failed coordination events can be retried');
     this.#advanceSchema(9);
     return inbox.retry(id);
+  }
+  #materialEventChannel(event) {
+    if (event?.source?.channel === 'feishu' || !event?.source && event?.requiresCoordination && this.#operatorFeishu()) return this.#operatorFeishu() ? operatorDirectChannel(this.#operatorFeishu()) : {source:'feishu',address:{operator:'true'}};
+    const triggerId = event?.references?.triggerId;
+    const trigger = triggerId ? this.#store.triggers.get(triggerId) : undefined;
+    return trigger?.channel ?? { source: 'local', thread: event?.id ?? 'materials', address: {} };
+  }
+  #materialRoute(channel) {
+    const source = channel?.source ?? 'local', address = channel?.address ?? {};
+    if (source === 'local') return { source, id: 'operator' };
+    if (source === 'feishu') {
+      const config = this.#config().feishu;
+      if (!config || config.enabled === false || address.tenantKey !== config.tenantKey) return null;
+      if (address.operator === 'true') {
+        const openId = config.operator?.openId, chatId = this.#store.getMeta(OPERATOR_CHAT_KEY)?.chatId ?? null;
+        if (!openId || address.openId && address.openId !== openId || address.chatId && address.chatId !== chatId) return null;
+        return { source, appId: config.appId, tenantKey: config.tenantKey, openId, chatId: address.chatId ?? null };
+      }
+      const chatId = address.chatId ?? address.chat_id;
+      return config.chats?.some(chat => chat.chatId === chatId) ? { source, appId: config.appId, tenantKey: config.tenantKey, chatId } : null;
+    }
+    if (source === 'github') {
+      const config = this.#config().github;
+      if (!config || address.repository !== config.repository) return null;
+      return { source, host: 'github.com', repository: config.repository, id: materialDestination(channel).id };
+    }
+    return { source, id: materialDestination(channel).id };
+  }
+  #materialEventRoute(event) {
+    const channel = this.#materialEventChannel(event);
+    const value = this.#materialRoute(channel), route = value?.source === 'feishu' && value.openId
+      ? { ...value, chatId: this.#store.getMeta(OPERATOR_CHAT_KEY)?.chatId ?? null } : value;
+    if (event?.source?.channel === 'feishu' && event.actor?.source === 'feishu') {
+      const config = this.#operatorFeishu(), triggerId = event.references?.triggerId;
+      const original = triggerId ? this.#store.triggers.get(triggerId) : undefined;
+      if (!config || event.actor.id !== config.operator.openId || original?.meta?.tenantKey && original.meta.tenantKey !== config.tenantKey ||
+          event.source.chatId && route?.chatId !== event.source.chatId) return null;
+    }
+    return route;
+  }
+  #materialProofRouteAllowed(proof, route) {
+    // Local remains one project role. Older remote proofs never acquire the
+    // identity of whichever account happens to be configured after an upgrade.
+    return !!route && (proof?.route ? JSON.stringify(proof.route) === JSON.stringify(route) : route.source === 'local');
+  }
+  #bindMaterialMessage(message) {
+    if (message.id.startsWith('material-notice:') || this.#store.getMeta(`material-message:${message.id}`)) return;
+    const id = message.ticketId && (this.#store.getMeta(`public:${message.ticketId}`) ?? message.ticketId);
+    const ticketIds = this.#materialSourceIds(id && this.#store.getMeta(`ticket:${id}`));
+    if (ticketIds.length) this.#store.setMeta(`material-message:${message.id}`, { revision: this.getMaterialSettings().revision,
+      destination: materialDestination(message.channel), route: this.#materialRoute(message.channel), ticketIds });
+  }
+  #bindMaterialEvent(event) {
+    const ticketIds = this.#materialSourceIds(event.ticketId && this.#store.getMeta(`ticket:${event.ticketId}`));
+    if (this.getMaterialSettings().revision || ticketIds.length) this.#store.setMeta(`material-event:${event.id}`, { ticketIds, route: this.#materialEventRoute(event) });
+  }
+  #materialContextAllowed(meta, event) {
+    try {
+      const sources = this.#materialSourceIds(meta);
+      if (sources.length && !this.#materialEventRoute(event)) return false;
+      this.#assertMaterialDisclosure(sources, materialDestination(this.#materialEventChannel(event))); return true;
+    }
+    catch { return false; }
+  }
+  #materialSourceIds(meta) {
+    return [...new Set([...(meta?.materialBinding ? [meta.id] : []), ...(meta?.materialContextSources ?? [])])].sort();
+  }
+  #materialAudience(destination) {
+    if (destination.source === 'local') return { source: 'local', id: 'operator' };
+    if (destination.source === 'feishu') {
+      const config = this.#config().feishu;
+      if (!config || config.enabled === false) return null;
+      if (destination.id === 'operator') return config.operator
+        ? { source: 'feishu', appId: config.appId, tenantKey: config.tenantKey, openId: config.operator.openId } : null;
+      return config.chats?.some(chat => chat.chatId === destination.id)
+        ? { source: 'feishu', appId: config.appId, tenantKey: config.tenantKey, chatId: destination.id } : null;
+    }
+    if (destination.source === 'github') {
+      const repository = this.#config().github?.repository;
+      return repository && destination.id.startsWith(`${repository}#`) ? { source: 'github', host: 'github.com', id: destination.id } : null;
+    }
+    return destination;
+  }
+  #materialDisclosureRoutes(binding) {
+    return binding.sources[0].destinations.flatMap(destination => {
+      try { assertMaterialDestination(binding, destination); } catch { return []; }
+      const route = this.#materialAudience(destination);
+      return route ? [{ destination, route }] : [];
+    });
+  }
+  #assertMaterialDisclosure(ticketIds, destination, { fresh = false } = {}) {
+    for (const id of ticketIds) {
+      const meta = this.#store.getMeta(`ticket:${id}`);
+      if (!meta?.materialBinding) throw materialError('MATERIAL_BINDING_CHANGED', 'Material disclosure provenance is no longer available');
+      this.#validateTicketMaterials(meta); assertMaterialDestination(meta.materialBinding, destination);
+      if (destination.source !== 'local') {
+        const route = this.#materialAudience(destination);
+        if (!route || !meta.materialDisclosureRoutes?.some(proof => JSON.stringify(proof.destination) === JSON.stringify(destination) && JSON.stringify(proof.route) === JSON.stringify(route)))
+          throw materialError('MATERIAL_ROUTE_CHANGED', 'Material belongs to a previous or unverified destination identity');
+      }
+      if (fresh && meta.materialObservations?.length) this.#assertMaterialFreshness(id);
+    }
+  }
+  #materialSessionScope(events) {
+    const settings = this.getMaterialSettings(), records = this.#store.listMeta('ticket:').map(row => row.value).filter(meta => this.#materialSourceIds(meta).length);
+    if (!settings.revision && !records.length) return '';
+    const destinations = events.map(event => ({ destination: materialDestination(this.#materialEventChannel(event)), route: this.#materialEventRoute(event) }));
+    const grants = records.map(meta => [meta.id, this.#materialSourceIds(meta), meta.materialBinding ? materialDigest(meta.materialBinding) : null,
+      events.every(event => this.#materialContextAllowed(meta, event))]).sort((a,b) => a[0].localeCompare(b[0]));
+    return `:materials:${settings.revision}:${materialDigest({ destinations, grants })}`;
+  }
+  #assertMaterialInputTarget(ticketIds, meta, domain = this.#store.tickets.get(meta.domainId)) {
+    if (!ticketIds.length) return;
+    const channels = [...(domain?.channels ?? [])];
+    if (this.#operatorFeishu() && isOperatorTicket(meta, domain)) channels.push(operatorDirectChannel(this.#operatorFeishu()));
+    for (const channel of channels) this.#assertMaterialDisclosure(ticketIds, materialDestination(channel));
+  }
+  #materialNoticeRoute(message, ticketIds) {
+    const ids=[...new Set([...(message.ticketId?[this.#store.getMeta(`public:${message.ticketId}`)??message.ticketId]:[]),...ticketIds])];
+    if (!ids.length || ids.some(id=>{const meta=this.#store.getMeta(`ticket:${id}`),domain=meta&&this.#store.tickets.get(meta.domainId);return !domain || domain.ended?.by==='human' || !this.#policy().revalidate(domain.mandate);})) return null;
+    const channel=message.channel,address=channel.address??{};
+    if(channel.source==='local')return {source:'local'};
+    if(channel.source==='feishu'){
+      const config=this.#config().feishu;
+      if(!config || config.enabled===false || address.tenantKey!==config.tenantKey)return null;
+      if(address.operator==='true'){
+        if(!config.operator || address.openId && address.openId!==config.operator.openId || address.chatId && address.chatId!==this.#store.getMeta(OPERATOR_CHAT_KEY)?.chatId)return null;
+        return {source:'feishu',tenantKey:config.tenantKey,operatorId:config.operator.openId};
+      }
+      if(!config.chats?.some(chat=>chat.chatId===address.chatId))return null;
+      return {source:'feishu',tenantKey:config.tenantKey,chatId:address.chatId};
+    }
+    if(channel.source==='github'){
+      const config=this.#config().github;
+      if(!config || address.repository!==config.repository || !this.#githubListened(address))return null;
+      return {source:'github',repository:config.repository};
+    }
+    return null;
+  }
+  #authorizeMaterialMessage(message) {
+    const publicId = message.ticketId && (this.#store.getMeta(`public:${message.ticketId}`) ?? message.ticketId);
+    const meta = publicId && this.#store.getMeta(`ticket:${publicId}`);
+    const noticeProof=this.#store.getMeta(`material-host-notice:${message.id}`);
+    try {
+      if(noticeProof || message.id.startsWith('material-notice:')){
+        if(!verifyMaterialWithdrawalNotice(message,noticeProof))throw materialError('MATERIAL_NOTICE_INVALID','Material host notice no longer matches its fixed template');
+        const route=this.#materialNoticeRoute(message,noticeProof.ticketIds);
+        if(!route || JSON.stringify(route)!==JSON.stringify(noticeProof.route))throw materialError('MATERIAL_NOTICE_INVALID','Material host notice no longer matches its original route');
+        return;
+      }
+      const materialSources = this.#materialSourceIds(meta);
+      this.#assertMaterialDisclosure(materialSources, materialDestination(message.channel), { fresh:true });
+      const proof = this.#store.getMeta(`material-message:${message.id}`);
+      if ((proof || materialSources.length) && !this.#materialProofRouteAllowed(proof, this.#materialRoute(message.channel))) throw materialError('MATERIAL_ROUTE_CHANGED', 'Material reply identity is no longer authorized');
+      if (proof) {
+        if (proof.revision !== this.getMaterialSettings().revision || JSON.stringify(proof.destination) !== JSON.stringify(materialDestination(message.channel))) throw new Error('Material reply authorization changed');
+        this.#assertMaterialDisclosure(proof.ticketIds, proof.destination, {fresh:true});
+      }
+    } catch (error) {
+      this.#store.setMeta(`receipt:terminal:${message.id}`, { status: 'withdrawn', reason: error.code ?? 'material-authorization-changed' });
+      this.#outbox.withdraw(message.id);
+      if(!noticeProof && !message.id.startsWith('material-notice:'))this.#store.atomic(()=>{
+        const ticketIds=[...new Set([...this.#materialSourceIds(meta),...(this.#store.getMeta(`material-message:${message.id}`)?.ticketIds??[])])];
+        const originalProof=this.#store.getMeta(`material-message:${message.id}`);
+        const route=this.#materialProofRouteAllowed(originalProof,this.#materialRoute(message.channel)) ? this.#materialNoticeRoute(message,ticketIds) : null;
+        if(route){const notice=materialWithdrawalNotice(message,ticketIds,route);if(this.#outbox.status(notice.message.id)===undefined){this.#store.setMeta(`material-host-notice:${notice.message.id}`,notice.proof);this.#outbox.send(notice.message);}}
+      });
+      throw new Later('Material result is stale or no longer authorized for this destination');
+    }
   }
   #coordinationTicketCard(meta, domain, event) {
     const report = latestAssignment(domain)?.report;
@@ -942,6 +1124,14 @@ export class ProjectRuntime {
     if (event.actor?.source !== 'local' && (origin.actor?.source !== event.actor?.source || origin.actor?.id !== event.actor?.id ||
       origin.source?.channel !== event.source?.channel || origin.source?.chatId !== event.source?.chatId)) return null;
     const status = assessmentStatus(this.#store, triggerId);
+    const originProof = this.#store.getMeta(`material-event:${origin.id}`);
+    const assessment = status.evalId ? this.#store.getMeta(`assessment:${status.evalId}`) : null;
+    const materialSources = [...new Set([...(originProof?.ticketIds??[]),...(assessment?.materialSources??[])])].sort();
+    const route = this.#materialEventRoute(event);
+    if (originProof && !this.#materialProofRouteAllowed(originProof, route) || materialSources.length && (!this.#materialProofRouteAllowed(originProof, route) ||
+        assessment?.materialSources?.length && !(assessment.materialRoutes ?? (route?.source === 'local' ? [route] : [])).some(value => JSON.stringify(value) === JSON.stringify(route)))) return null;
+    try { this.#assertMaterialDisclosure(materialSources,materialDestination(this.#materialEventChannel(event))); }
+    catch { return null; }
     let reason = null;
     if (!this.#recoveryOperatorAllowed(event) || !this.#assessmentOriginAllowed(triggerId)) reason = 'authority';
     else if (this.isPaused() || this.#stopping) reason = 'paused';
@@ -952,8 +1142,8 @@ export class ProjectRuntime {
     else if (status.status !== 'failed') reason = 'not-failed';
     else if (!['format', 'transient', 'timeout'].includes(status.failureKind)) reason = 'inspection-required';
     const allowed = reason === null;
-    const card = { ...status, text: trigger.text.slice(0, 1000), summary: origin.result?.summary?.slice(0, 600) ?? null, source: { channel: origin.source?.channel, ...(origin.source?.chatId ? { chatId: origin.source.chatId } : {}) },
-      recovery: { allowed, reason } };
+    const card = { ...status, text: trigger.text.slice(0, 1000), summary: this.getMaterialSettings().revision && !originProof ? null : origin.result?.summary?.slice(0, 600) ?? null, source: { channel: origin.source?.channel, ...(origin.source?.chatId ? { chatId: origin.source.chatId } : {}) },
+      recovery: { allowed, reason }, ...(materialSources.length ? {materialSources} : {}) };
     const version = createHash('sha256').update(JSON.stringify({ card, policy: this.#policy().version,
       assessor: this.#coordinator.current().version, origin: { actor: origin.actor, source: origin.source }, actor: event.actor })).digest('hex');
     card.recovery.version = version;
@@ -982,7 +1172,8 @@ export class ProjectRuntime {
     return { triggerId: action.triggerId, status, ticketId: card.ticketId ?? null, receiptId: action.id, reason: card.recovery.reason };
   }
   #coordinationContext(event) {
-    const records = this.#db().listMeta('ticket:').map(row => row.value);
+    const destination = materialDestination(this.#materialEventChannel(event)), materialScope = this.#materialSessionScope([event]);
+    const records = this.#db().listMeta('ticket:').map(row => row.value).filter(meta => this.#materialContextAllowed(meta, event));
     records.sort((a, b) => Number(b.id === event.ticketId) - Number(a.id === event.ticketId) || b.updatedAt.localeCompare(a.updatedAt));
     const tickets = [];
     for (const meta of records.slice(0, 100)) {
@@ -992,13 +1183,25 @@ export class ProjectRuntime {
       tickets.push(row);
     }
     const recentEvents = [];
+    const materialSources = new Set(tickets.flatMap(card => this.#materialSourceIds(this.#store.getMeta(`ticket:${card.id}`))));
     for (const item of this.#coordinationInbox().list({ limit: 20 }).reverse()) {
+      if (item.ticketId && !this.#materialContextAllowed(this.#store.getMeta(`ticket:${item.ticketId}`), event)) continue;
+      const proof = this.#store.getMeta(`material-event:${item.id}`);
+      if (materialScope && ((proof || this.#materialEventChannel(item).source !== 'local') && !this.#materialProofRouteAllowed(proof, this.#materialEventRoute(event)) ||
+          item.source?.channel === 'feishu' && !this.#materialEventRoute(item))) continue;
+      if (materialScope && item.ticketId && this.#materialSourceIds(this.#store.getMeta(`ticket:${item.ticketId}`)).length &&
+          !this.#materialProofRouteAllowed(proof, this.#materialEventRoute(event))) continue;
+      try { this.#assertMaterialDisclosure(proof?.ticketIds ?? [], destination); } catch { continue; }
+      const itemDestination = materialDestination(this.#materialEventChannel(item)), eventDestination = materialDestination(this.#materialEventChannel(event));
+      if (materialScope && JSON.stringify(itemDestination) !== JSON.stringify(eventDestination)) continue;
       const row = { id: item.id, kind: item.kind, ticketId: item.ticketId ?? null, status: item.status,
-        text: item.text.slice(0, 400), summary: item.result?.summary?.slice(0, 400) ?? null,
+        text: item.text.slice(0, 400), summary: materialScope && (!proof || !this.#materialProofRouteAllowed(proof, this.#materialEventRoute(event))) ? null : item.result?.summary?.slice(0, 400) ?? null,
         requests: (item.receipts ?? []).filter(receipt => receipt.kind === 'request' && receipt.result?.triggerId).slice(0, 4)
           .map(receipt => this.#coordinationRequestCard(receipt.result.triggerId, event)).filter(Boolean) };
       if (Buffer.byteLength(JSON.stringify([...recentEvents, row])) > 8000) break;
       recentEvents.push(row);
+      for (const id of proof?.ticketIds ?? []) materialSources.add(id);
+      for (const request of row.requests) for (const id of request.materialSources??[]) materialSources.add(id);
     }
     const target = tickets.find(ticket => ticket.id === event.ticketId);
     // The normal result receipt for a locally submitted ticket goes to local. It is
@@ -1006,6 +1209,7 @@ export class ProjectRuntime {
     const needsOperatorNotification = !!this.#operatorFeishu() && target?.operatorTicket && event.requiresCoordination &&
       (event.kind === 'result' || event.kind === 'report' && ['blocked', 'failed'].includes(event.references?.reportState));
     const context = { tickets, recentEvents: recentEvents.reverse(), omittedTickets: Math.max(0, records.length - tickets.length),
+      ...(materialScope ? { materialSources: [...materialSources].sort() } : {}),
       ...(needsOperatorNotification ? { operatorNotification: { required: true, eventId: event.id, ticketId: event.ticketId,
         channel: 'feishu', hostResultDelivery: 'local-only' } } : {}) };
     return { context, version: createHash('sha256').update(JSON.stringify(context)).digest('hex') };
@@ -1044,14 +1248,31 @@ export class ProjectRuntime {
       return fn(owner);
     });
     try {
+      const eventProof = this.#store.getMeta(`material-event:${event.id}`), eventRoute = this.#materialEventRoute(event);
+      if (eventProof && !this.#materialProofRouteAllowed(eventProof, eventRoute)) throw materialError('MATERIAL_ROUTE_CHANGED', 'This event belongs to a previous coordination identity');
+      if (event.ticketId && !this.#materialContextAllowed(this.#store.getMeta(`ticket:${event.ticketId}`), event)) throw materialError('MATERIAL_DESTINATION_DENIED', 'This event contains material that cannot be disclosed to its coordination destination');
+      if (event.ticketId && this.#materialSourceIds(this.#store.getMeta(`ticket:${event.ticketId}`)).length &&
+          !this.#materialProofRouteAllowed(eventProof, eventRoute)) throw materialError('MATERIAL_ROUTE_CHANGED', 'Material event destination identity has not been verified');
       const snapshot = this.#coordinationContext(event);
-      const reader = createCoordinationReader(this.#store, { ticketCard: (meta, domain) => this.#coordinationTicketCard(meta, domain, event),
+      const reader = createCoordinationReader(this.#store, { allowTicket: meta => this.#materialContextAllowed(meta, event),
+        allowSharedRecords: !this.#materialSessionScope([event]), ticketCard: (meta, domain) => this.#coordinationTicketCard(meta, domain, event),
         requestCards: () => this.#coordinationRequests(event),
         maxReads: options.contextLimits?.maxReads ?? 3, maxBytes: options.contextLimits?.readBytes ?? 32000 });
-      const sessionKey = `coordinator:session:${settings.version}${promptAssembly ? `:${promptAssembly.version}` : ''}`;
+      const materialsSettings = this.getMaterialSettings();
+      const materialSession = this.#materialSessionScope([event]);
+      const sessionKey = `coordinator:session:${settings.version}${promptAssembly ? `:${promptAssembly.version}` : ''}${materialSession}`;
+      const rememberMaterials = () => {
+        if (!materialSession) return;
+        const ticketIds = [...new Set([...(snapshot.context.materialSources ?? []), ...reader.tickets().flatMap(card => this.#materialSourceIds(this.#store.getMeta(`ticket:${card.id}`))),
+          ...reader.requests().flatMap(card=>card.materialSources??[]),
+          ...(this.#store.getMeta(`material-session:${sessionKey}`)?.ticketIds ?? [])])].sort();
+        this.#assertMaterialDisclosure(ticketIds, materialDestination(this.#materialEventChannel(event)));
+        this.#store.setMeta(`material-session:${sessionKey}`, {ticketIds});
+      };
+      guard(() => rememberMaterials());
       const result = await assessor.handleEvent({ event, context: snapshot.context, projectRoot: this.projectRoot, runId,
         timeoutMs: Math.max(1, Date.parse(event.deadlineAt) - Date.parse(this.#now())),
-        readContext: request => guard(() => reader.read(request)),
+        readContext: request => guard(() => { const record = reader.read(request); rememberMaterials(); return record; }),
         signal: this.#assessmentAbort.signal, session: this.#store.getMeta(sessionKey),
         checkpoint: session => guard(() => this.#store.setMeta(sessionKey, driverSession(session))),
         registerProcess: pid => guard(owner => {
@@ -1060,8 +1281,20 @@ export class ProjectRuntime {
         }) });
       guard(owner => {
         if (!guardiansExited(owner)) throw new Error('Coordinator still owns live processes; inspect before retrying');
+        if (this.#materialSessionScope([event]) !== materialSession) throw new Error('Coordination context or policy changed; reassessment required');
         reader.verify();
         const context = { ...snapshot.context, tickets: [...new Map([...snapshot.context.tickets, ...reader.tickets()].map(ticket => [ticket.id, ticket])).values()], requests: reader.requests() };
+        const materialSources = [...new Set([...(snapshot.context.materialSources ?? []), ...context.tickets.flatMap(card => this.#materialSourceIds(this.#store.getMeta(`ticket:${card.id}`))),
+          ...reader.requests().flatMap(card=>card.materialSources??[]),
+          ...(this.#store.getMeta(`material-session:${sessionKey}`)?.ticketIds ?? [])])].sort();
+        this.#assertMaterialDisclosure(materialSources, materialDestination(this.#materialEventChannel(event)));
+        if (materialSession) {
+          this.#store.setMeta(`material-session:${sessionKey}`, {ticketIds:materialSources});
+          this.#store.setMeta(`material-event:${event.id}`, {ticketIds:materialSources,route:eventRoute});
+        }
+        const saveProof = (id, channel) => {
+          if (materialSession) this.#store.setMeta(`material-message:${id}`, {revision:materialsSettings.revision,destination:materialDestination(channel),route:this.#materialRoute(channel),ticketIds:materialSources});
+        };
         return inbox.complete(event.id, { expectedVersion: event.version, expectedGeneration: event.generation, policyVersion, contextVersion: snapshot.version,
         context, result, readSet: reader.records() }, {
         currentPolicyVersion: () => this.#policy().version,
@@ -1082,6 +1315,7 @@ export class ProjectRuntime {
             return isOperatorTicket(meta, this.#store.tickets.get(meta.domainId));
           }
           const meta = this.#meta(action.ticketId), domain = this.#store.tickets.get(meta.domainId);
+          if (['note','answer'].includes(action.kind)) this.#assertMaterialInputTarget(materialSources,meta,domain);
           if (domain.ended || !this.#policy().revalidate(domain.mandate)) return false;
           if (action.kind === 'answer') return event.kind === 'operator' && action.text === event.text && !!domain.attention && !this.#attentionAnswer(domain.attention.id);
           return action.kind !== 'stop' || event.kind === 'operator' && event.references?.stopTicketId === action.ticketId;
@@ -1091,8 +1325,9 @@ export class ProjectRuntime {
           if (action.kind === 'retryRequest') return this.#retryRequest(action, event);
           if (action.kind === 'reply') {
             const feishu = event.source?.channel === 'feishu' && this.#operatorFeishu();
-            this.#outbox.send({ id: action.id, kind: 'reply', channel: feishu ? operatorReplyChannel(feishu, event.source.chatId, event.source.messageId)
-              : { source: 'local', thread: event.id, address: {} }, text: action.text });
+            const channel = feishu ? operatorReplyChannel(feishu, event.source.chatId, event.source.messageId) : { source: 'local', thread: event.id, address: {} };
+            saveProof(action.id, channel);
+            this.#outbox.send({ id: action.id, kind: 'reply', channel, text: action.text });
             return { receiptId: action.id };
           }
           if (action.kind === 'answer') {
@@ -1100,13 +1335,20 @@ export class ProjectRuntime {
               via: event.source?.channel === 'feishu' ? 'feishu-text' : 'local' });
             return { ticketId: action.ticketId, attentionId: record.attentionId };
           }
-          if (action.kind === 'notify') return this.#notifyOperator({ id: action.id, ticketId: action.ticketId, text: action.text });
+          if (action.kind === 'notify') {
+            saveProof(action.id, {source:'local',address:{}});
+            if (this.#operatorFeishu()) saveProof(`${action.id}:feishu`, operatorDirectChannel(this.#operatorFeishu()));
+            return this.#notifyOperator({ id: action.id, ticketId: action.ticketId, text: action.text });
+          }
           if (action.kind === 'request') {
             const result = this.request({ text: event.text, threadId: `coordination-${event.id}` });
             this.#store.setMeta(`assessment-origin:${result.triggerId}`, { eventId: event.id });
             return result;
           }
-          if (action.kind === 'note') { this.note(action.ticketId, action.text); return { ticketId: action.ticketId }; }
+          if (action.kind === 'note') {
+            if (materialSources.length) { const target=this.#meta(action.ticketId); target.materialContextSources=[...new Set([...(target.materialContextSources??[]),...materialSources])].sort(); this.#save(target); }
+            this.note(action.ticketId, action.text); return { ticketId: action.ticketId };
+          }
           if (action.kind === 'requestStatus') { this.requestStatus(action.ticketId); return { ticketId: action.ticketId }; }
           if (action.kind === 'stop') {
             if (event.kind === 'follow_up') return this.#stopFromGitHub(this.#meta(action.ticketId), this.#store.triggers.get(event.references.triggerId), action.text);
@@ -1234,8 +1476,20 @@ export class ProjectRuntime {
     const github = !pull && trigger.source === 'github' && trigger.meta.repository && trigger.meta.issueNumber ? {
       repository: trigger.meta.repository, issueNumber: trigger.meta.issueNumber, thread: trigger.threads[0].id,
       url: `https://github.com/${trigger.meta.repository}/issues/${trigger.meta.issueNumber}` } : undefined;
+    const materialOrigins = candidate.triggers.map(item => {
+      const event = this.#assessmentOrigin(item.id);
+      const actor = event?.actor ? { source: event.actor.source, id: event.actor.id } : item.actor;
+      const feishu = event?.source?.channel === 'feishu' && this.#operatorFeishu();
+      const destination = materialDestination(feishu ? operatorReplyChannel(feishu, event.source.chatId, event.source.messageId) : item.channel);
+      return { actor, destination };
+    });
+    const materialDestinations = [...new Map(materialOrigins.map(item => [JSON.stringify(item.destination), item.destination])).values()];
+    let materialBinding = this.#resolveTicketMaterials(undefined, { actor: materialOrigins[0].actor, destinations: materialDestinations });
+    // A merged candidate cannot borrow the first author's material grant.
+    if (materialBinding && materialOrigins.some(origin => materialBinding.sources.some(source => !source.readers.some(reader => reader.source === origin.actor.source && reader.id === origin.actor.id)))) materialBinding = null;
     const meta = { id: domain.id, domainId: domain.id, projectId: this.projectId, text: trigger.text, threadId: trigger.threads[0].id,
       ...(github ? { github } : {}), ...(githubPull ? { githubPull } : {}), createdAt: domain.createdAt, updatedAt: domain.updatedAt,
+      ...(materialBinding ? { materialBinding, materialDestinations, materialDisclosureRoutes: this.#materialDisclosureRoutes(materialBinding), materialObservations: [] } : {}),
       messages: candidate.triggers.map(t => ({ text: t.text, at: t.at, triggerId: t.id })), reports: [], runId: null, interrupted: false };
     this.#save(meta); this.#store.setMeta(`public:${domain.id}`, meta.id);
     if (github) this.#store.setMeta(`github:thread:${github.thread}`, meta.id);
@@ -1322,13 +1576,34 @@ export class ProjectRuntime {
         throw Object.assign(new Error('Original operator authority is no longer configured'), { failureKind: 'authority', code: 'assessment_authority', retryable: false });
       this.#engine.candidateDelivered(candidate.evalId);
       const links = createCandidateLinks({ store:this.#store, policy:()=>this.#policy(), candidate, repository:this.#config().github?.repository });
-      const assessmentCandidate = links.candidate;
+      const materialEvents = candidate.triggers.map(trigger => this.#assessmentOrigin(trigger.id) ?? {references:{triggerId:trigger.id}});
+      for (const event of materialEvents) {
+        const proof = event.id && this.#store.getMeta(`material-event:${event.id}`);
+        if (proof && !this.#materialProofRouteAllowed(proof, this.#materialEventRoute(event)))
+          throw Object.assign(new Error('Original material request belongs to a previous coordination identity'), { failureKind: 'authority', code: 'assessment_authority', retryable: false });
+      }
+      const materialSession = this.#materialSessionScope(materialEvents);
+      const materialAllowed = meta => materialEvents.every(event => this.#materialContextAllowed(meta, event));
+      const allowedTickets = links.candidate.tickets.filter(ticket => materialAllowed(this.#store.getMeta(`ticket:${this.#store.getMeta(`public:${ticket.id}`) ?? ticket.id}`)));
+      const assessmentCandidate = { ...links.candidate, tickets:allowedTickets,
+        ...(links.candidate.ticketReferences ? {ticketReferences:links.candidate.ticketReferences.filter(reference => allowedTickets.some(ticket => ticket.id === reference.ticketId))} : {}) };
       const assertAssessment = () => guard(() => { if (this.isPaused()) throw new Later('Assessment is paused'); links.verify(); });
       const sourceContext=createCandidateSourceContext({candidate:assessmentCandidate,projectRoot:this.projectRoot,github:this.#config().github,
         request:this.#repositoryRequest,
         assertActive:assertAssessment,signal:this.#assessmentAbort.signal});
       const contextReads = [];
-      const sessionKey=`coordinator:session:${settings.version}${promptAssembly?`:${promptAssembly.version}`:''}`;
+      const materialReader = materialSession && createCoordinationReader(this.#store, {allowTicket:materialAllowed,allowSharedRecords:false,
+        ticketCard:(meta,domain)=>this.#coordinationTicketCard(meta,domain,materialEvents[0]),maxReads:64,maxBytes:320000});
+      const sessionKey=`coordinator:session:${settings.version}${promptAssembly?`:${promptAssembly.version}`:''}${materialSession ? `:candidate${materialSession}` : ''}`;
+      const rememberMaterials = () => {
+        if (!materialSession) return [];
+        const ticketIds = [...new Set([...allowedTickets.flatMap(ticket=>this.#materialSourceIds(this.#store.getMeta(`ticket:${this.#store.getMeta(`public:${ticket.id}`)??ticket.id}`))),
+          ...(materialReader.tickets()).flatMap(card=>this.#materialSourceIds(this.#store.getMeta(`ticket:${card.id}`))),
+          ...(this.#store.getMeta(`material-session:${sessionKey}`)?.ticketIds??[])])].sort();
+        for (const event of materialEvents) this.#assertMaterialDisclosure(ticketIds,materialDestination(this.#materialEventChannel(event)));
+        this.#store.setMeta(`material-session:${sessionKey}`,{ticketIds});recordBase.materialSources=ticketIds;recordBase.materialRoutes=materialEvents.map(event=>this.#materialEventRoute(event));return ticketIds;
+      };
+      guard(()=>rememberMaterials());
       outcome = await assessor.assess({ candidate:assessmentCandidate, projectRoot: this.projectRoot, runId,
         signal: this.#assessmentAbort.signal, rules: settings.policy.rules,
         timeoutMs: Math.max(1, Date.parse(this.#store.threads.get(candidate.thread.key)?.evaluating?.deadline) - Date.parse(this.#now())),
@@ -1339,7 +1614,13 @@ export class ProjectRuntime {
         contextReferences:sourceContext.contextReferences,
         readContextRecord: async (resource, id, options) => {
           assertAssessment();
-          const record = await (['sources','repository'].includes(resource) ? sourceContext.readContextRecord(resource,id,options) : guard(() => this.readContextRecord(resource, id, options)));
+          const record = await (['sources','repository'].includes(resource) ? sourceContext.readContextRecord(resource,id,options) : guard(() => {
+            if (!materialReader || resource==='triggers' && candidate.triggers.some(trigger=>trigger.id===id)) return this.readContextRecord(resource,id,options);
+            const value=materialReader.read({resource,recordId:id,offset:options?.offset??0});
+            if(value.missing)throw materialError('MATERIAL_ACCESS_DENIED','This context record is outside the material disclosure scope');
+            if(options?.version && options.version!==value.version)throw new Error('Context record changed; reread its current version');
+            rememberMaterials();return value;
+          }));
           assertAssessment();
           if (contextReads.length < 64) contextReads.push({ resource, id, version: record.version, offset: record.offset,
             ...(record.provenance ? { provenance: record.provenance } : {}) });
@@ -1360,6 +1641,9 @@ export class ProjectRuntime {
       };
       const result = guard(()=>{
         links.verify();
+        if(this.#materialSessionScope(materialEvents)!==materialSession)throw new Error('Coordination context or policy changed; reassessment required');
+        if(materialReader)materialReader.verify();
+        const materialSources=rememberMaterials();
         if (candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id)))
           throw Object.assign(new Error('Original operator authority changed during assessment'), { failureKind: 'authority', code: 'assessment_authority', retryable: false });
         if (outcome.kind === 'attach') links.verify(outcome.ticketId, outcome.triggerId ?? candidate.triggers[0].id);
@@ -1379,8 +1663,16 @@ export class ProjectRuntime {
           }
         }
         const applied=applyAssessment({ engine: this.#engine, store: this.#store, candidate:assessmentCandidate, outcome, policy: this.#policy(),
-          onAccepted: (domain, decision, input) => this.#recordAccepted(domain, decision, input),
-          onAnswer: (answer, input) => this.#answerCandidate(answer, input) });
+          onAccepted: (domain, decision, input) => {
+            this.#recordAccepted(domain, decision, input);
+            if(materialSources.length){const meta=this.#meta(domain.id);this.#assertMaterialInputTarget(materialSources,meta,domain);meta.materialContextSources=materialSources;this.#save(meta);}
+          },
+          onAnswer: (answer, input) => {
+            const reply=this.#answerCandidate(answer,input),trigger=input.triggers.find(item=>item.id===answer.triggerId);
+            if(materialSession)this.#store.setMeta(`material-message:${reply.id}`,{revision:this.getMaterialSettings().revision,destination:materialDestination(trigger.channel),route:this.#materialRoute(trigger.channel),ticketIds:materialSources});
+            return reply;
+          } });
+        if(applied.applied&&applied.kind==='attach'&&materialSources.length){const meta=this.#meta(this.#store.getMeta(`public:${applied.ticket.id}`)??applied.ticket.id);this.#assertMaterialInputTarget(materialSources,meta,applied.ticket);meta.materialContextSources=[...new Set([...(meta.materialContextSources??[]),...materialSources])].sort();this.#save(meta);}
         if(applied.applied&&applied.kind==='attach')for(const input of candidate.triggers.filter(input=>input.id===applied.triggerId)){
           const budget=this.#botReviewGate(input,{ticketId:this.#store.getMeta(`public:${applied.ticket.id}`)??applied.ticket.id,reserve:true});
           if(!budget.allowed)throw new Error(`Routing includes unavailable bot review work (${budget.reason}); inspect and split the candidate`);
@@ -1633,7 +1925,7 @@ export class ProjectRuntime {
     if (this.#outbox.status(record.receiptId) === 'pending') { this.#outbox.withdraw(record.receiptId); return; }
     const feishu = this.#operatorFeishu(), sent = this.#store.getMeta(`receipt:${record.receiptId}`);
     if (!record.card || !feishu || !sent?.messageId || !sent.chatId) return;
-    this.#outbox.send({ id: `operator-card:${record.attentionId}:${state}`, kind: 'reply', channel: operatorCardUpdateChannel(feishu, sent.chatId, sent.messageId),
+    this.#outbox.send({ id: `operator-card:${record.attentionId}:${state}`, kind: 'reply', ticketId:this.#meta(record.ticketId).domainId, channel: operatorCardUpdateChannel(feishu, sent.chatId, sent.messageId),
       text: `问题已关闭：${state}`, card: closedDecisionCard({ publicId: record.ticketId, question: record.question, decision: this.#attentionDecision(record.attentionId)?.decision,
         state, answers: answer?.kind === 'structured' ? answer.answers : undefined }) });
   }
@@ -2220,18 +2512,18 @@ export class ProjectRuntime {
       this.#store.setMeta('delivery:settings', next); this.#store.setMeta(`delivery:revision:${next.revision}`, next); return next;
     });
   }
-  async #withOwnedOperation(id, work, {allowPaused=false}={}) {
+  async #withOwnedOperation(id, work, {allowPaused=false,allowCancelledRollback=false}={}) {
     if(this.#meta(id).relocationInspection)throw new Error('Inspect the relocated workspace and explicitly replace its native session before verification or delivery');
     if (this.#operation) throw new Error('Another verification or delivery is active');
     const token = randomUUID();
     this.#db().atomic(() => {
       const domain = this.getDomainTicket(id), owner = this.#store.getMeta('operation:owner');
       if ((!allowPaused && this.isPaused()) || this.#stopping || this.#executions().length || this.#store.listMeta('native-handoff:').some(row => row.value.ticketId === id && ['holding','resuming','closing'].includes(row.value.status)) && !this.#onlyHeldPreviews(id) || owner && (!ownerIsDead(owner) || !guardiansExited(owner))) throw new Error('Stop or finish active work before verification or delivery');
-      if (!this.#policy().revalidate(domain.mandate) || domain.ended?.by === 'human') throw new Error('Ticket is no longer authorized');
+      if (!allowCancelledRollback && (!this.#policy().revalidate(domain.mandate) || domain.ended?.by === 'human')) throw new Error('Ticket is no longer authorized');
       this.#store.setMeta('operation:owner', { token, pid: process.pid, host: hostname(), ticketId: id });
     });
     this.#operationAbort = new AbortController();
-    const timer = setInterval(() => { if (this.#store.getMeta('operation:owner')?.token !== token || this.getDomainTicket(id).ended?.by === 'human') this.#operationAbort?.abort(); }, 25);
+    const timer = setInterval(() => { if (this.#store.getMeta('operation:owner')?.token !== token || !allowCancelledRollback && this.getDomainTicket(id).ended?.by === 'human') this.#operationAbort?.abort(); }, 25);
     this.#operation = Promise.resolve().then(() => work(this.#operationAbort.signal)).finally(() => {
       clearInterval(timer);
       this.#store.atomic(() => { const owner = this.#store.getMeta('operation:owner'); if (owner?.token === token && guardiansExited(owner)) this.#store.deleteMeta('operation:owner'); });
@@ -2240,6 +2532,8 @@ export class ProjectRuntime {
     return this.#operation;
   }
   #verify(id, profile, signal) {
+    const meta = this.#meta(id); this.#validateTicketMaterials(meta); this.#assertNoPendingMaterialApplication();
+    if (preparationPending(meta) || meta.materialBinding?.access === 'host-only') throw new Error('Verification requires a prepared native workspace grant');
     return runVerification({ projectRoot: this.projectRoot, workspace: this.getWorkspace(id), profile, signal,
       persist: value => this.#store.atomic(() => {
         const meta = this.#meta(id); meta[value.kind === 'prepare' ? 'preparation' : 'verification'] = value; this.#save(meta);
@@ -2304,6 +2598,12 @@ export class ProjectRuntime {
       } });
   }
   async #deliver(id, settings, signal, finalReport) {
+    const materialMeta = this.#meta(id); this.#validateTicketMaterials(materialMeta);
+    const materialSources = this.#materialSourceIds(materialMeta);
+    if (materialSources.length && settings.mode === 'draft-pr') throw materialError('MATERIAL_DESTINATION_DENIED', 'Material-derived work needs an explicitly known authorized destination; automatic draft PR creation is not supported');
+    this.#assertMaterialDisclosure(materialSources,{source:'local',id:'operator'},{fresh:true});
+    if (preparationPending(materialMeta) || materialMeta.materialBinding?.access === 'host-only') throw new Error('Delivery requires a prepared native workspace grant');
+    if (materialMeta.materialBinding) this.#assertMaterialFreshness(id);
     validateUIEvidence(this.#meta(id).uiEvidence,{projectRoot:this.projectRoot,workspace:this.getWorkspace(id),settings:settings.uiEvidence});
     const meta = this.#meta(id), domain = this.getDomainTicket(id);
     if (!meta.workspace || !meta.runId) throw new Error('Run the Worker before delivering its workspace');
@@ -2326,7 +2626,7 @@ export class ProjectRuntime {
     try {
       const result = await this.#deliveryService(settings).deliver({ ...settings, workspace: meta.workspace, verification: meta.verification,
         runId: meta.runId, ...attempt.description, signal,
-        authorize: () => (this.#machine.assert(),this.#machine.claim(),true) && !this.isPaused() && !this.#stopping && this.#policy().revalidate(this.getDomainTicket(id).mandate) && this.getDomainTicket(id).ended?.by !== 'human'
+        authorize: () => (this.#machine.assert(),this.#machine.claim(),this.#assertMaterialDisclosure(this.#materialSourceIds(this.#meta(id)),{source:'local',id:'operator'},{fresh:true}),true) && !this.isPaused() && !this.#stopping && this.#policy().revalidate(this.getDomainTicket(id).mandate) && this.getDomainTicket(id).ended?.by !== 'human'
           && !this.#githubWorkBlocked(this.#meta(id), this.getDomainTicket(id)) });
       if (result.pullRequest) {
         const pull = normalizePullRequest(await this.#channel().getPullRequest(result.pullRequest.number), settings.repository, result.pullRequest.number);
@@ -2397,15 +2697,93 @@ export class ProjectRuntime {
     nonempty(text, 'text'); nonempty(threadId, 'threadId');
     return this.#db().atomic(() => { const trigger = this.#trigger(text, threadId); this.#engine.receive(trigger); return { triggerId: trigger.id, threadId }; });
   }
-  submit({ text, scope = text, attentionSnapshotPaths, operatorNotifications = true, managedJobs = true } = {}) {
+  materialCapabilities() { return { version: 1, boundedReadsVersion: 1, workspacePreparationVersion: 1, localApplicationVersion: 1, schemaVersion: 15 }; }
+  getMaterialSettings() { return structuredClone(this.#db().getMeta('materials:settings') ?? { ...normalizeMaterialSettings(), revision: 0 }); }
+  configureMaterials(settings, { expectedRevision } = {}) {
+    const normalized = normalizeMaterialSettings(settings);
+    this.#db();
+    const assertIdle = () => {
+      if (this.#loopActive() || this.#loop || this.#busy || this.#assessing || this.#executions().length || this.#store.getMeta('operation:owner')) throw materialError('MATERIAL_ACTIVE', 'Stop execution before changing material settings');
+    };
+    assertIdle(); this.#advanceSchema(15);
+    return this.#store.atomic(() => {
+      assertIdle();
+      const current = this.getMaterialSettings();
+      if (!Number.isSafeInteger(expectedRevision) || current.revision !== expectedRevision) throw materialError('MATERIAL_REVISION', 'Material settings revision conflict');
+      const next = { ...normalized, revision: current.revision + 1 };
+      this.#store.setMeta('materials:settings', next);
+      return structuredClone(next);
+    });
+  }
+  #readMaterialSnapshot(id) {
+    if (typeof id !== 'string' || !/^[A-Za-z\d][A-Za-z\d._-]{0,119}$/.test(id)) throw materialError('MATERIAL_SNAPSHOT', 'Invalid host snapshot ID');
+    const record = this.#db().getMeta(`material:snapshot:${id}`);
+    if (!record) throw materialError('MATERIAL_SNAPSHOT', 'Unknown host material snapshot');
+    const root = realpathSync(projectStateDirectory(this.projectRoot));
+    const file = readMaterialFile({ project: { root }, include: ['materials/snapshots'], exclude: [] }, `materials/snapshots/${id}.json`, MATERIAL_LIMITS.snapshotBytes * 2);
+    const snapshot = validateMaterialSnapshot(JSON.parse(file.bytes.toString('utf8')));
+    if (snapshot.digest !== record.digest || materialDigest(snapshot.source) !== materialDigest(record.source)) throw materialError('MATERIAL_SNAPSHOT', 'Saved snapshot no longer matches its host receipt');
+    return snapshot;
+  }
+  createMaterialSnapshot({ sourceId, actor = { source: 'local', id: 'operator' }, view = { kind: 'current' } } = {}) {
+    const settings = this.getMaterialSettings();
+    const binding = resolveMaterialBinding({ projectRoot: this.projectRoot, projectId: this.projectId, settings, actor,
+      request: { sources: [{ id: sourceId, view }] } });
+    const revalidate = () => validateMaterialBinding({ binding, projectRoot: this.projectRoot, projectId: this.projectId, settings: this.getMaterialSettings() });
+    const snapshot = captureMaterialSnapshot(binding.sources[0], { snapshots: id => this.#readMaterialSnapshot(id), assertActive: revalidate });
+    const id = randomUUID(), directory = join(projectStateDirectory(this.projectRoot), 'materials', 'snapshots');
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    if (realpathSync(directory) !== directory) throw materialError('MATERIAL_PATH', 'Snapshot directory must be owned directly by the host');
+    const record = { id, digest: snapshot.digest, source: snapshot.source, observedAt: snapshot.observedAt };
+    this.#store.atomic(() => { revalidate(); writeNew(join(directory, `${id}.json`), JSON.stringify(snapshot)); this.#store.setMeta(`material:snapshot:${id}`, record); });
+    return structuredClone(record);
+  }
+  #resolveTicketMaterials(request, { actor = { source: 'local', id: 'operator' }, destinations = [] } = {}) {
+    const settings = this.getMaterialSettings();
+    if (request === undefined && !settings.defaults) return null;
+    try {
+      const binding = resolveMaterialBinding({ projectRoot: this.projectRoot, projectId: this.projectId, settings, request, actor, destinations });
+      for (const source of binding.sources) if (source.view.kind === 'snapshot') validateMaterialSnapshot(this.#readMaterialSnapshot(source.view.snapshotId), source);
+      return binding;
+    } catch (error) {
+      if (request === undefined && ['MATERIAL_ACCESS_DENIED', 'MATERIAL_DESTINATION_DENIED'].includes(error.code)) return null;
+      throw error;
+    }
+  }
+  #validateTicketMaterials(meta) {
+    if (!meta.materialBinding) return true;
+    return validateMaterialBinding({ binding: meta.materialBinding, projectRoot: this.projectRoot, projectId: this.projectId,
+      settings: this.getMaterialSettings(), destinations: meta.materialDestinations ?? [] });
+  }
+  #materialReads(meta, { assertActive = () => {}, onObservation } = {}) {
+    if (!meta.materialBinding) return null;
+    const bindingDigest = materialDigest(meta.materialBinding), runId = meta.runId;
+    const revalidate = () => {
+      assertActive();
+      const current = this.#meta(meta.id);
+      if (materialDigest(current.materialBinding) !== bindingDigest || current.runId !== runId) throw materialError('MATERIAL_BINDING_CHANGED', 'Material run or binding was replaced');
+      this.#validateTicketMaterials(current);
+    };
+    return createWorkerProjectReads({ binding: meta.materialBinding, assertActive: revalidate,
+      snapshots: id => this.#readMaterialSnapshot(id), observations: meta.materialObservations ?? [],
+      onObservation: observation => this.#store.atomic(() => {
+        revalidate();
+        const current = this.#meta(meta.id), saved = { ...observation, runId, workspaceProvisionId: current.workspace?.provisionId ?? null, workspaceGeneration: current.workspace?.generation ?? null };
+        (current.materialObservations ??= []).push(saved); this.#save(current); onObservation?.(structuredClone(saved));
+      }) });
+  }
+  submit({ text, scope = text, attentionSnapshotPaths, operatorNotifications = true, managedJobs = true, materials } = {}) {
     if (typeof operatorNotifications !== 'boolean' || typeof managedJobs !== 'boolean') throw new Error('Ticket capability flags must be boolean');
     nonempty(text, 'text'); nonempty(scope, 'scope');
     const snapshotPaths = normalizeAttentionSnapshotPaths(attentionSnapshotPaths);
     return this.#db().atomic(() => {
+      const materialDestinations = [{ source: 'local', id: 'operator' }];
+      const materialBinding = this.#resolveTicketMaterials(materials, { destinations: materialDestinations });
       const threadId = randomUUID();
       const { trigger, domain } = this.#accept(text, scope, threadId);
       const meta = { id: domain.id, domainId: domain.id, projectId: this.projectId, text, threadId,
         operatorNotifications, managedJobs,
+        ...(materialBinding ? { materialBinding, materialDestinations, materialDisclosureRoutes: this.#materialDisclosureRoutes(materialBinding), materialObservations: [] } : {}),
         ...(snapshotPaths ? { attentionSnapshotPaths: snapshotPaths } : {}),
         createdAt: domain.createdAt, updatedAt: domain.updatedAt, messages: [{ text, at: trigger.at }], reports: [], runId: null, interrupted: false };
       this.#save(meta); this.#store.setMeta(`public:${domain.id}`, meta.id);
@@ -2454,6 +2832,10 @@ export class ProjectRuntime {
       ...(snapshotError ? { snapshotError: snapshotError.error } : {}),
       answered: !!this.#attentionAnswer(domain.attention.id) };
     return { ...detail, answers: this.listAnswers(id),
+      materials: structuredClone(meta.materialBinding ?? null), materialBinding: structuredClone(meta.materialBinding ?? null),
+      materialObservations: structuredClone(meta.materialObservations ?? []), materialFreshness: structuredClone(meta.materialFreshness ?? null),
+      workspace: structuredClone(meta.workspace ?? null), workspacePreparation: structuredClone(meta.workspacePreparation ?? null),
+      workspaceHistory: structuredClone((meta.sessionHistory ?? []).filter(item => item.kind === 'material-preparation').map(({ id: preparationId, workspace }) => ({ preparationId, workspace }))),
       policyStatus:meta.policyStatus?{...meta.policyStatus,desiredRevision:new PromptRegistry(this.#store).current().revision}:null,
       reviewActions: this.reviewActionStatus(id),
       uiEvidence:this.uiEvidenceStatus(id),
@@ -2515,7 +2897,147 @@ export class ProjectRuntime {
     if (!workspace) return { workspace: null, changes: [] };
     return inspectProjectWorkspace({ projectRoot: this.projectRoot, workspace });
   }
+  #assertMaterialFreshness(id, provider = this.#materialReads(this.#meta(id))) {
+    if (!provider) return null;
+    const evidence = provider.checkFreshness();
+    const meta = this.#meta(id); meta.materialFreshness = { ...evidence, runId: meta.runId, workspaceProvisionId: meta.workspace?.provisionId ?? null }; this.#save(meta);
+    if (!evidence.fresh) throw Object.assign(new Error('Current project materials changed after they were read. Read the changed records again before reporting a result.'), { code: 'MATERIAL_CHANGED' });
+    return evidence;
+  }
+  workspacePreparationStatus(id) { return structuredClone(this.#meta(id).workspacePreparation ?? null); }
+  requestWorkspacePreparation(id, args) {
+    return this.#db().atomic(() => {
+      const meta = this.#meta(id), domain = this.getDomainTicket(id);
+      this.#validateTicketMaterials(meta);
+      if (this.#stopping || this.isPaused() || domain.ended || !this.#policy().revalidate(domain.mandate)) throw new Error('Workspace preparation is no longer authorized');
+      this.#assertNoPendingMaterialApplication();
+      const operation = createWorkspacePreparation({ meta, ...args, now: this.#now() });
+      meta.workspacePreparation = operation; this.#save(meta);
+      if (operation.status === 'queued') this.#effects.enqueue('workspace-preparation', operation.id, { ticketId: id, operationId: operation.id });
+      return structuredClone(operation);
+    });
+  }
+  retryWorkspacePreparation(id) {
+    return this.#db().atomic(() => {
+      const meta = this.#meta(id), operation = meta.workspacePreparation, domain = this.getDomainTicket(id);
+      if (!operation || operation.status !== 'blocked') throw new Error('Only a blocked preparation can be retried');
+      if (domain.ended || !this.#policy().revalidate(domain.mandate) || this.#executions().some(row => row.value.publicId === id)) throw new Error('Finish active work and verify the mandate before retrying preparation');
+      this.#validateTicketMaterials(meta);
+      meta.workspacePreparation = { ...operation, status: 'queued', updatedAt: this.#now() };
+      validatePreparationOwner(meta); this.#save(meta);
+      this.#effects.enqueue('workspace-preparation', operation.id, { ticketId: id, operationId: operation.id });
+      return structuredClone(meta.workspacePreparation);
+    });
+  }
+  async #processWorkspacePreparation({ticketId: id, operationId}) {
+    let meta = this.#meta(id), operation = meta.workspacePreparation, domain = this.getDomainTicket(id);
+    if (!operation || operation.id !== operationId || !['queued','preparing'].includes(operation.status)) return;
+    if (this.#executions().some(row => row.value.publicId === id)) throw new Later('Waiting for the previous Worker to release its workspace');
+    const authorized = () => {
+      const current = this.#meta(id), ticket = this.getDomainTicket(id);
+      if (this.#stopping || this.isPaused() || ticket.ended || !this.#policy().revalidate(ticket.mandate)) throw new Error('Preparation authority was revoked');
+      if (current.workspacePreparation?.id !== operationId || !validatePreparationOwner(current)) throw new Error('Preparation owner changed');
+      this.#validateTicketMaterials(current); return true;
+    };
+    try {
+      authorized(); this.#assertNoPendingMaterialApplication();
+      if (['failed','blocked'].includes(latestAssignment(domain)?.report?.state)) throw new Error('Inspect the failed Worker before continuing workspace preparation');
+      if (hostRecoveryBlockReason(this.#store,id) || this.#pendingDelivery(meta) || this.#store.listMeta('managed-job:').some(row => row.value.parent?.ticketId === id && ['pending','running','interrupted'].includes(row.value.status)) ||
+          this.#store.listMeta('native-handoff:').some(row => row.value.ticketId === id && ['holding','resuming','closing','interrupted'].includes(row.value.status)) ||
+          this.#store.listMeta('live-input:').some(row => !row.value.supersededBySessionReplacement && domain.inputs.some(input=>input.id===row.value.inputId&&!input.readAt) && !['read','not-sent','rejected'].includes(row.value.status)) ||
+          meta.inputAdoption && ['prepared','active'].includes(meta.inputAdoption.status)) throw new Error('Resolve background work, delivery and uncertain input before preparing a new workspace');
+      if (!operation.snapshot) {
+        const snapshot = this.#materialReads(meta, { assertActive: authorized }).exportSnapshot(operation.materialId);
+        this.#store.atomic(() => { authorized(); const current = this.#meta(id); current.workspacePreparation = { ...current.workspacePreparation, status: 'preparing', snapshot, updatedAt: this.#now() }; this.#save(current); });
+      }
+      meta = this.#meta(id); operation = meta.workspacePreparation;
+      const workspace = prepareMaterialWorkspace({ projectRoot: this.projectRoot, ticketId: id, preparationId: operation.id,
+        materialSnapshot: operation.snapshot, previousWorkspace: meta.workspace, existing: operation.workspace,
+        assertAuthorized: authorized, persist: value => this.#store.atomic(() => { authorized(); const current = this.#meta(id); current.workspacePreparation.workspace = value; this.#save(current); }) });
+      this.#store.atomic(() => {
+        authorized(); const current = this.#meta(id);
+        activatePreparedWorkspace(current, workspace, this.#now());
+        // The same Assignment receives a host note; this is not failure retry.
+        this.#engine.note(current.domainId, `Host prepared the authorized material workspace (${operation.id}). A new native session will use this workspace. Continue the original mandate; prior workspace and session remain archived.`);
+        this.#save(current);
+      });
+    } catch (error) {
+      this.#store.atomic(() => {
+        const current = this.#meta(id);
+        if (current.workspacePreparation?.id !== operationId || current.workspacePreparation.status === 'ready') return;
+        current.workspacePreparation = { ...current.workspacePreparation, status: this.getDomainTicket(id).ended ? 'cancelled' : 'blocked', error: { code: error.code ?? 'PREPARATION_BLOCKED', message: String(error.message).slice(0,1000) }, updatedAt: this.#now() };
+        this.#save(current);
+      });
+    }
+  }
+  #pendingMaterialApplications() {
+    return listLocalApplications({projectRoot:this.projectRoot}).filter(record=>!['applied','rolled-back'].includes(record.status));
+  }
+  #assertNoPendingMaterialApplication() {
+    if (this.#pendingMaterialApplications().length) throw Object.assign(new Error('An interrupted local material application owns the source. Inspect its journal and explicitly finish or roll back before continuing.'), {code:'MATERIAL_APPLY_RECOVERY_REQUIRED'});
+  }
+  #assertMaterialApplication(id, {fresh = true} = {}) {
+    const meta = this.#meta(id), binding = meta.materialBinding;
+    this.#validateTicketMaterials(meta);
+    this.#assertMaterialDisclosure(this.#materialSourceIds(meta),{source:'local',id:'operator'},{fresh});
+    if (!binding?.allowApply || binding.owner?.kind === 'longrun' || binding.access === 'host-only') throw new Error('This ticket does not own a native local application grant');
+    if (preparationPending(meta) || !meta.workspace || this.getDomainTicket(id).ended?.by === 'human' || !this.#policy().revalidate(this.getDomainTicket(id).mandate)) throw new Error('Material application is not authorized in the current ticket state');
+    return true;
+  }
+  previewMaterialApplication(id, {paths} = {}) {
+    this.#assertMaterialApplication(id);
+    return previewLocalApplication({ projectRoot: this.projectRoot, workspace: this.getWorkspace(id), paths });
+  }
+  async #materialApplicationLock(key, work) {
+    const lock = `material-application:${key}:owner`, token = randomUUID();
+    this.#store.atomic(() => { const previous = this.#store.getMeta(lock); if (previous && !ownerIsDead(previous)) throw new Error('Material application is already owned'); this.#store.setMeta(lock, { token, pid: process.pid, host: hostname() }); });
+    try { return await work(); } finally { this.#store.atomic(() => { if (this.#store.getMeta(lock)?.token === token) this.#store.deleteMeta(lock); }); }
+  }
+  applyMaterialChanges(id, {plan, operationId} = {}) {
+    this.#assertMaterialApplication(id,{fresh:false}); this.#assertNoPendingMaterialApplication();
+    return this.#withOwnedOperation(id, signal => applyLocalApplication({projectRoot:this.projectRoot,workspace:this.getWorkspace(id),plan,operationId,
+      // The durable plan owns the baseline after the first source write.
+      // Per-file CAS detects external edits; authorization still checks grants.
+      authorize:()=>{ signal.throwIfAborted(); return this.#assertMaterialApplication(id,{fresh:false}); },
+      withLock:(key,work)=>this.#materialApplicationLock(key,()=>{
+        let previous; try { previous=this.materialApplicationStatus(id,operationId); } catch(error) { if(error.code!=='ENOENT')throw error; }
+        // Check current observations inside the fence for new operations. A
+        // replay must reach the journal's exact-plan check, not reject its own writes.
+        if(!previous)this.#assertMaterialApplication(id);
+        return work();
+      }),
+      persist:value=>this.#store.atomic(()=>{const meta=this.#meta(id);meta.materialApplications??={};meta.materialApplications[value.id]=value;this.#save(meta);})}));
+  }
+  materialApplicationStatus(id, operationId) {
+    this.#meta(id);
+    if (operationId === undefined) return listLocalApplications({projectRoot:this.projectRoot,ticketId:id});
+    const record = inspectLocalApplication({projectRoot:this.projectRoot,operationId});
+    if (record.plan.ticketId !== id) throw new Error('Material application does not belong to this ticket');
+    return record;
+  }
+  recoverMaterialApplication(id, {operationId, mode} = {}) {
+    const record = this.materialApplicationStatus(id, operationId);
+    const authorize = () => {
+      const meta=this.#meta(id),binding=meta.materialBinding;
+      if (!binding?.allowApply || binding.owner?.kind === 'longrun' || binding.access === 'host-only') throw new Error('This ticket does not own a native local application grant');
+      if (mode !== 'rollback') return this.#assertMaterialApplication(id,{fresh:false});
+      // This public operator command can undo only the journal's own unchanged
+      // writes after cancellation. It cannot resume execution or gain new paths.
+      const workspaces=[meta.workspace,...(meta.sessionHistory??[]).map(item=>item.workspace)].filter(Boolean);
+      if (!workspaces.some(workspace=>workspace.provisionId===record.plan.workspaceProvisionId&&workspace.materialSnapshotDigest===record.plan.materialSnapshotDigest)) throw new Error('Application recovery workspace is no longer owned by this ticket');
+      return true;
+    };
+    authorize();
+    return this.#withOwnedOperation(id, signal => recoverLocalApplication({projectRoot:this.projectRoot,operationId,record,mode,
+      authorize:()=>{signal.throwIfAborted();return authorize();},withLock:(key,work)=>this.#materialApplicationLock(key,work),
+      persist:value=>this.#store.atomic(()=>{const meta=this.#meta(id);meta.materialApplications??={};meta.materialApplications[value.id]=value;this.#save(meta);})}),
+      {allowPaused:mode==='rollback',allowCancelledRollback:mode==='rollback'});
+  }
   #ticketExecution(execution, meta) {
+    if (meta?.materialBinding?.access === 'host-only') {
+      if (execution?.enableAgentTools !== true) throw new Error('Host-only materials require explicitly enabled agent tools');
+      return { ...execution, permission: 'read-only', materialAccess: 'host-only', enableManagedJobs: false };
+    }
     // Ticket grants can narrow a project executor, never enable its disabled tools.
     return meta?.managedJobs === false && execution?.enableManagedJobs === true
       ? { ...execution, enableManagedJobs: false } : execution;
@@ -3427,7 +3949,7 @@ export class ProjectRuntime {
   getSession(id) { const session = this.#meta(id).driverSession; return session ? driverSession(session) : null; }
   getDomainTicket(id) { return this.#db().tickets.get(this.#meta(id).domainId); }
   notifications() { this.#db(); return this.#outbox.list(); }
-  upgradeRuntime() { this.#prepareMachine({adoptLegacy:true}); this.#machine.coordinator.register({adoptLegacy:true}); return {schemaVersion:14, coordination:this.machineStatus()}; }
+  upgradeRuntime() { this.#prepareMachine({adoptLegacy:true,targetSchema:15}); this.#machine.coordinator.register({adoptLegacy:true}); return {schemaVersion:15, coordination:this.machineStatus()}; }
   isPaused() { return !!this.#db().getMeta('runtime:pause')?.paused; }
   pause(reason = 'Explicit operator pause') {
     nonempty(reason, 'reason');
@@ -3601,6 +4123,7 @@ export class ProjectRuntime {
       const meta = this.#meta(id), view = this.#view(meta);
       if (this.#store.tickets.get(meta.domainId).ended) throw new Error('Completed ticket has no active work to cancel');
       this.#engine.stopTicket(meta.domainId, 'Explicit local cancellation');
+      if (preparationPending(meta)) { meta.workspacePreparation.status = 'cancelled'; this.#effects.cancel('workspace-preparation', meta.workspacePreparation.id); }
       this.#invalidateRecovery(meta,'explicit-cancellation');
       meta.updatedAt = this.#now(); this.#save(meta);
       this.#syncOperatorAttention(meta.id);
@@ -3651,12 +4174,12 @@ export class ProjectRuntime {
     const prior = meta.recovery, plan = nextRecoveryPlan(prior, {settings:normalizeRecoverySettings({autoResume:settings.autoResume,retryBeforeStart:settings.retryBeforeStart,maxAttempts:settings.maxAttempts,initialDelayMs:settings.initialDelayMs}), evidence, runId});
     const inspect = !plan && settings.autoResume && failure?.origin === 'native-execution' && meta.driverSession && !this.#stopping && !this.#controller?.signal.aborted;
     if (plan || inspect) {
-      const deadlineAt = prior?.status === 'resuming' && prior.deadlineAt || new Date(Date.parse(execution.startedAt ?? this.#now()) + (meta.executionConfig?.timeoutMs ?? 600000)).toISOString();
-      const next = plan || {status:'inspect',attempt:prior?.status==='resuming'?prior.attempt:0,runId,session:meta.driverSession,createdAt:this.#now(),nextAt:this.#now()};
-      meta.recovery = {...next,deadlineAt,finalReportRepairAttempts:prior?.status==='resuming'?(prior.finalReportRepairAttempts??0):0,
-        ...(prior?.status==='resuming'&&prior.requestedBy?{requestedBy:prior.requestedBy}:{}),settingsRevision:settings.revision,trigger:inspect?'native-transport-or-process-failure':'native-transient-proof'};
+      const deadlineAt = carriesRecoveryBudget(prior) && prior.deadlineAt || new Date(Date.parse(execution.startedAt ?? this.#now()) + (meta.executionConfig?.timeoutMs ?? 600000)).toISOString();
+      const next = plan || {status:'inspect',attempt:carriesRecoveryBudget(prior)?prior.attempt:0,runId,session:meta.driverSession,createdAt:this.#now(),nextAt:this.#now()};
+      meta.recovery = {...next,deadlineAt,finalReportRepairAttempts:carriesRecoveryBudget(prior)?(prior.finalReportRepairAttempts??0):0,
+        ...(carriesRecoveryBudget(prior)&&prior.requestedBy?{requestedBy:prior.requestedBy}:{}),settingsRevision:settings.revision,trigger:inspect?'native-transport-or-process-failure':'native-transient-proof'};
       // An elapsed deadline forbids a new execution, but still permits one completed-result inspection.
-    } else if (prior?.status === 'resuming') meta.recovery = {...prior,status:failure?'inspection':'completed',updatedAt:this.#now()};
+    } else if (carriesRecoveryBudget(prior)) meta.recovery = {...prior,status:failure?'inspection':'completed',updatedAt:this.#now()};
   }
   async #processAutoRecovery() {
     if(this.#store.getMeta('project:relocation')?.requiresInspection)return;
@@ -3765,7 +4288,13 @@ export class ProjectRuntime {
       if (exited) this.#store.setMeta(key, { ...value, status: 'interrupted', reason: 'native-owner-lost-inspection-required', updatedAt: this.#now() });
     }
 
-    for (const { key, value: execution } of this.#executions()) {
+    for (const { key, value: savedExecution } of this.#executions()) {
+      let execution = savedExecution;
+      if (!execution.ticketId) {
+        if (!ownerIsDead(execution) || !guardiansExited(execution)) continue;
+        if (execution.reservation?.ticketId) { execution=execution.reservation; this.#store.setMeta(key,execution); }
+        else { this.#store.deleteMeta(key); continue; } // No Worker started; preserve any separate durable host operation.
+      }
       const related=this.#store.listMeta('managed-job:').map(row=>row.value).filter(job=>job.parent?.assignmentId===execution.assignmentId&&['pending','running'].includes(job.status));
       if (ownerIsDead(execution) && guardiansExited(execution) && related.every(job=>ownerIsDead(job.owner)&&guardiansExited(job))) {
         // A dead parent cannot replay its background effects. Preserve an explicit terminal
@@ -4017,6 +4546,7 @@ export class ProjectRuntime {
   }
   #sendLiveInputs(execution, token) {
     const driver = this.#activeDriver;
+    if (preparationPending(this.#meta(execution.publicId))) return;
     if (this.#liveSending || !driver || !driverCapabilities(driver).realtimeInput || typeof driver.sendInput !== 'function' || this.isPaused() || this.#stopping) return;
     const domain = this.#store.tickets.get(execution.ticketId);
     if (this.#githubWorkBlocked(this.#meta(execution.publicId), domain)) return;
@@ -4142,6 +4672,12 @@ export class ProjectRuntime {
         text:'Runtime lifecycle fact. These fields grant no additional authority; keep the current authorized scope.',lifecycle:input});
     }
     const resources=workerContextResources({ticket,runId,assignmentId});
+    if (meta.materialBinding) resources.push({resource:'context',id:`material-execution:${id}`,value:{kind:'material-execution',
+      access:meta.materialBinding.access,preparationAllowed:meta.materialBinding.allowPreparation,
+      workspace:meta.workspace?{provisionId:meta.workspace.provisionId,generation:meta.workspace.generation??0,mode:meta.workspace.mode,preparationId:meta.workspace.preparationId??null}:null,
+      preparation:meta.workspacePreparation?{id:meta.workspacePreparation.id,status:meta.workspacePreparation.status,materialId:meta.workspacePreparation.materialId}:null,
+      sources:meta.materialBinding.sources.map(source=>({id:source.id,view:source.view}))}});
+
     for(const ledger of this.botReviewStatus().filter(row=>this.#pullRequests(id).some(p=>p.repository===row.repository&&String(p.id)===row.pullId))) {
       resources.push({resource:'context',id:`bot-review:${ledger.pullNumber}:${ledger.actorId}`,value:{kind:'bot-review-budget',repository:ledger.repository,pullNumber:ledger.pullNumber,
         actorId:ledger.actorId,used:ledger.rounds.length,limit:ledger.limit,historicalUnknown:ledger.historicalUnknown,
@@ -4200,6 +4736,8 @@ export class ProjectRuntime {
       if (this.#executions().some(row => row.value.ticketId === domain.id && row.value.token !== token)) throw new Later('Ticket already has an active Worker');
       const publicId = this.#store.getMeta(`public:${domain.id}`), meta = this.#meta(publicId);
       if (meta.domainId !== domain.id || meta.interrupted || ['failed', 'blocked'].includes(latestAssignment(domain)?.report?.state)) return;
+      if (this.#pendingMaterialApplications().length) throw new Later('Interrupted local material application requires explicit recovery');
+      if (preparationPending(meta)) throw new Later('Ticket workspace preparation is pending');
       if (this.#githubWorkBlocked(meta, domain)) throw new Later('GitHub synchronization pending or unavailable; remote work is waiting');
       if (latestAssignment(domain).state === 'pending') this.#engine.assignmentStarted(domain.id, payload.assignmentId);
       domain = this.#store.tickets.get(domain.id);
@@ -4269,7 +4807,7 @@ export class ProjectRuntime {
         else this.#sendLiveInputs(execution, token);
       } catch (error) { this.#lastError = String(error); this.#controller?.abort(); }
     }, 25);
-    let report, normalizedReport, managedJobs, inputCapabilities, agentTools, jobState, unreadInputs=[], workerAnswerText;
+    let report, normalizedReport, managedJobs, inputCapabilities, agentTools, materialReads, jobState, unreadInputs=[], workerAnswerText;
     let failurePhase = 'preparation', failure;
     const contextRecords=new Map();
     try {
@@ -4283,6 +4821,12 @@ export class ProjectRuntime {
           break workerTurn;
         }
         const config = this.#config();
+        const materialMeta = this.#meta(execution.publicId);
+        this.#validateTicketMaterials(materialMeta);
+        this.#assertMaterialInputTarget(this.#materialSourceIds(materialMeta),materialMeta,this.getDomainTicket(execution.publicId));
+        const hostOnlyMaterials = materialMeta.materialBinding?.access === 'host-only';
+        // Before any prepare hook, prove that this executor can enforce the grant.
+        if (hostOnlyMaterials && this.#executionCapabilities(materialMeta.executionConfig ?? config.execution, materialMeta)?.boundedMaterialReadsVersion !== 1) throw new Error('Executor does not support bounded host-only materials');
         const sourcePull = this.#meta(execution.publicId).continuation?.status === 'ready' ? null : this.#meta(execution.publicId).githubPull;
         if (sourcePull) {
           const existing = this.getWorkspace(execution.publicId);
@@ -4297,19 +4841,36 @@ export class ProjectRuntime {
           }
         }
         const workspaceConfig = this.#workspaceSecrets(config, this.getWorkspace(execution.publicId));
-        const workspace = prepareWorkspace({ projectRoot: this.projectRoot, ticketId: execution.publicId,
-          config: legacyWorkspace ? { mode: 'in-place' } : workspaceConfig,
+        let workspace;
+        const workspaceSourceId = materialMeta.materialBinding?.workspaceSourceId;
+        const savedWorkspace = this.getWorkspace(execution.publicId);
+        if (savedWorkspace?.snapshotOrigin === 'project-materials' && savedWorkspace.state === 'ready') {
+          workspace = validateWorkspace({projectRoot:this.projectRoot,workspace:savedWorkspace});
+        } else if (workspaceSourceId && (!savedWorkspace || savedWorkspace.preparationId === `initial-${execution.publicId}`)) {
+          let snapshotId = materialMeta.initialMaterialSnapshot?.id;
+          if (!snapshotId) {
+            const source = materialMeta.materialBinding.sources.find(source=>source.id===workspaceSourceId);
+            const receipt = this.createMaterialSnapshot({sourceId:workspaceSourceId,actor:materialMeta.materialBinding.actor,view:source.view});
+            snapshotId = receipt.id;
+            withExecution((_current,meta)=>{this.#validateTicketMaterials(meta);meta.initialMaterialSnapshot=receipt;this.#save(meta);});
+          }
+          const sourceSnapshot = this.#readMaterialSnapshot(snapshotId);
+          workspace = prepareMaterialWorkspace({projectRoot:this.projectRoot,ticketId:execution.publicId,materialSnapshot:sourceSnapshot,existing:savedWorkspace??undefined,
+            preparationId:`initial-${execution.publicId}`,assertAuthorized:()=>withExecution((_current,meta)=>this.#validateTicketMaterials(meta)),
+            persist:value=>withExecution((_current,meta)=>{meta.workspace=value;this.#save(meta);})});
+        } else workspace = prepareWorkspace({ projectRoot: this.projectRoot, ticketId: execution.publicId,
+          config: legacyWorkspace ? { mode: 'in-place' } : hostOnlyMaterials && workspaceConfig.mode === 'in-place' ? { ...workspaceConfig, mode: 'copy' } : workspaceConfig,
           existing: this.getWorkspace(execution.publicId) ?? undefined,
           persist: value => withExecution((_current, meta) => { meta.workspace = value; this.#save(meta); }),
         });
         // Preparation can be slow; check shared cancellation before delivering the task.
         withExecution(() => {});
         const preparation = this.getDeliverySettings().prepare;
-        if (preparation && this.#meta(execution.publicId).preparation?.profileVersion !== preparation.version) {
+        if (!hostOnlyMaterials && preparation && this.#meta(execution.publicId).preparation?.profileVersion !== preparation.version) {
           const prepared = await this.#verify(execution.publicId, preparation, this.#controller.signal);
           if (prepared.status !== 'passed') throw new Error(`Workspace preparation ${prepared.status}`);
         }
-        await this.#beginUIEvidence(execution.publicId,this.#controller.signal);
+        if (!hostOnlyMaterials) await this.#beginUIEvidence(execution.publicId,this.#controller.signal);
         const runMeta = this.#meta(execution.publicId);
         const selectedExecution = runMeta.executionConfig ?? config.execution;
         const ticketExecution = this.#ticketExecution(selectedExecution, runMeta);
@@ -4330,7 +4891,7 @@ export class ProjectRuntime {
         runMeta.executionRevision ??= this.getExecutorSettings().revision;
         runMeta.executionPromptVersion ??= `worker-v1:${createHash('sha256').update(runMeta.executionConfig?.prompt ?? 'builtin').digest('hex').slice(0,16)}`;
         this.#save(runMeta);
-        const recoveryRemaining=runMeta.recovery?.status==='resuming'&&!runMeta.recoveredNative ? Date.parse(runMeta.recovery.deadlineAt)-Date.now() : null;
+        const recoveryRemaining=carriesRecoveryBudget(runMeta.recovery)&&runMeta.recovery.deadlineAt&&!runMeta.recoveredNative ? Date.parse(runMeta.recovery.deadlineAt)-Date.now() : null;
         if(recoveryRemaining!==null && recoveryRemaining<1000)throw new Error('Recovery deadline expired before native execution');
         const driver = this.#resolveDriver(recoveryRemaining===null?runMeta.executionConfig:{...runMeta.executionConfig,timeoutMs:Math.floor(recoveryRemaining)}), capabilities = driverCapabilities(driver);
         if (runMeta.executionConfig && Number(this.#store.db.prepare('PRAGMA user_version').get().user_version) >= 5) {
@@ -4364,25 +4925,27 @@ export class ProjectRuntime {
             ticketId: meta.id, text: item.summary.slice(0,16000), references: { runId: execution.runId, assignmentId: execution.assignmentId } });
           (meta.reportsV2 ??= []).push({ ...item, runId: execution.runId, at: this.#now() }); this.#save(meta);
         });
-        const jobsSettings = this.#meta(execution.publicId).managedJobs === false ? null : this.getJobsSettings().settings;
+        const jobsSettings = hostOnlyMaterials || this.#meta(execution.publicId).managedJobs === false ? null : this.getJobsSettings().settings;
         if(jobsSettings) managedJobs=this.#managedJobsFor({execution,workspace,snapshot,config,jobsSettings,token,withExecution});
         const scoped=this.#workerResources(execution.publicId,execution.runId,execution.assignmentId,execution.inputs);
         if(capabilities.boundedContextVersion===1)snapshot=scoped.ticket;
         if(capabilities.agentTools){
           if(this.#meta(execution.publicId).agentToolsVersion!==1)throw new Error('Existing session has no business tool grant; explicitly replace its session');
           const githubConfig = this.#config().github, githubConfigKey = webhookConfigurationKey(githubConfig);
-          const remoteReads = githubConfig ? createWorkerGitHubReads({ github: githubConfig, request: this.#repositoryRequest,
+          materialReads = this.#materialReads(this.#meta(execution.publicId), { assertActive: () => withExecution(() => {}) });
+          const githubReads = githubConfig ? createWorkerGitHubReads({ github: githubConfig, request: this.#repositoryRequest,
             threads: () => this.#workerGitHubThreads(execution.publicId), signal: this.#controller.signal,
             assertActive: () => withExecution(() => {
               if (this.isPaused() || !this.#policy().revalidate(this.getDomainTicket(execution.publicId).mandate) ||
                   webhookConfigurationKey(this.#config().github) !== githubConfigKey) throw new Error('GitHub context authority or configuration changed');
             }) }) : null;
           agentTools=createWorkerToolHost({store:this.#store,identity:{ticketId:execution.publicId,assignmentId:execution.assignmentId,runId:execution.runId},
-            remoteReads, signal: this.#controller.signal,
+            remoteReads: combineContextReads(githubReads, materialReads), signal: this.#controller.signal,
             sessionId:()=>this.getSession(execution.publicId)?.id,limits:runMeta.executionConfig?.contextLimits,
             assertActive:()=>withExecution(()=>{if(this.isPaused()||!this.#policy().revalidate(this.getDomainTicket(execution.publicId).mandate))throw new Error('Business tools are paused or the mandate was revoked');}),
             resources:()=>this.#workerResources(execution.publicId,execution.runId,execution.assignmentId,execution.inputs).resources,
             commands:{
+              ...(runMeta.materialBinding?.allowPreparation && capabilities.workspacePreparationVersion === 1 ? { prepare_workspace: args => this.requestWorkspacePreparation(execution.publicId, args) } : {}),
               review: args=>this.requestPRReview(execution.publicId,JSON.parse(args.request)),
               ack:({triggerId,text})=>{
                 if(this.#store.triggers.get(triggerId)?.meta?.contextOnly || this.#store.triggers.disposition(triggerId)?.context?.includes(execution.ticketId))throw new Error('Context-only observations do not grant request ownership');
@@ -4394,9 +4957,13 @@ export class ProjectRuntime {
               report:({state,summary,question,artifacts,answers,questionForTriggerId})=>{
                 if(questionForTriggerId&&!question)throw new Error('A directed question needs the question it raised');
                 const value={version:2,state,summary,artifacts,attention:question?{question,...(questionForTriggerId?{triggerId:questionForTriggerId}:{})}:null,...(answers?{answers}:{})};
-                normalizeDriverReport(value,{version:2});checkAnswerRead(value);this.#checkWorkerAnswer(execution,value);
+                normalizeDriverReport(value,{version:2});checkAnswerRead(value);
+                if (!preparationPending(this.#meta(execution.publicId))) {
+                  if (materialReads && ['ready','dropped','progress'].includes(state)) this.#assertMaterialFreshness(execution.publicId, materialReads);
+                  this.#checkWorkerAnswer(execution,value);
+                }
                 if(value.attention?.triggerId)assertWorkerAnswer({store:this.#store,policy:this.#policy(),repository:this.#config().github?.repository,ticketId:execution.ticketId,trigger:this.#store.triggers.get(value.attention.triggerId),execution});
-                if(state==='progress')progress(value);return {accepted:true,state};}
+                if(state==='progress' && !preparationPending(this.#meta(execution.publicId)))progress(value);return {accepted:true,state};}
             }});
         }
         this.#activeDriver = driver;
@@ -4487,6 +5054,10 @@ export class ProjectRuntime {
         if (this.#controller.signal.aborted) throw new Error('Execution cancelled or authorization revoked');
         failurePhase = 'report-protocol';
         normalizedReport = normalizeDriverReport(report, { version: capabilities.reportVersion });
+        const beforePreparation = normalizedReport;
+        normalizedReport = preparationReport(this.#meta(execution.publicId), normalizedReport);
+        if (normalizedReport !== beforePreparation) withExecution((_current, meta) => { meta.workspacePreparation.originalReport = beforePreparation; this.#save(meta); });
+        if (materialReads && ['ready','dropped'].includes(normalizedReport.state)) this.#assertMaterialFreshness(execution.publicId, materialReads);
         workerAnswerText = normalizedReport.answers ? normalizedReport.summary : undefined;
         checkAnswerRead(normalizedReport);
         if (['failed', 'blocked'].includes(normalizedReport.state)) failure = { origin: 'business', requiresInspection: false };
@@ -4502,8 +5073,8 @@ export class ProjectRuntime {
         }
         this.#checkWorkerAnswer(execution, normalizedReport);
         const settings = this.getDeliverySettings();
-        if(normalizedReport.state==='ready'){const evidence=await this.#finishUIEvidence(execution.publicId,this.#controller.signal);if(evidence.status==='incomplete')normalizedReport={...normalizedReport,state:'blocked',summary:`${normalizedReport.summary}\n\n${evidence.error}`,attention:null};}
-        if (normalizedReport.state === 'ready' && (settings.automatic || this.#onlyHeldPreviews(execution.publicId))) {
+        if(!hostOnlyMaterials && normalizedReport.state==='ready'){const evidence=await this.#finishUIEvidence(execution.publicId,this.#controller.signal);if(evidence.status==='incomplete')normalizedReport={...normalizedReport,state:'blocked',summary:`${normalizedReport.summary}\n\n${evidence.error}`,attention:null};}
+        if (!hostOnlyMaterials && normalizedReport.state === 'ready' && (settings.automatic || this.#onlyHeldPreviews(execution.publicId))) {
           if(!settings.verify)throw new Error('Native preview ready requires a configured host verification profile');
           failurePhase = 'verification';
           const verified = await this.#verify(execution.publicId, settings.verify, this.#controller.signal);
@@ -4787,6 +5358,7 @@ export class ProjectRuntime {
         return execute(payload);
       };
       const handlers = {
+        'workspace-preparation': payload => this.#processWorkspacePreparation(payload),
         review: this.#lane === 0 ? payload => this.#processPRReview(payload.requestId) : undefined,
         launch: reserved ? undefined : execute,
         delivery: deliver,

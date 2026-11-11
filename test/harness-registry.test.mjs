@@ -51,6 +51,21 @@ test('static probe starts no work and coordinator keeps a separate role contract
   assert.throws(() => registry.validateExecution({ driver: 'codex-app-server' }, { role: 'untrusted' }), /Unknown Harness role/);
 });
 
+test('versioned material requirements use the effective adapter mode and do not leak into coordinator settings', () => {
+  const registry = createHarnessRegistry();
+  const execution = { driver: 'dsh-sdk', model: 'test-model', permission: 'read-only', enableAgentTools: true, materialAccess: 'host-only',
+    backend: { auth: 'api-key', provider: 'deepseek-official', protocol: 'anthropic-messages', baseURL: 'https://example.com/anthropic', apiKeyEnv: 'TEST_KEY' },
+    requiredCapabilities: ['boundedMaterialReadsVersion', 'workspacePreparationVersion'] };
+  const description = registry.describeExecution(execution);
+  assert.equal(description.capabilities.boundedMaterialReadsVersion, 1);
+  assert.equal(description.capabilities.workspacePreparationVersion, 1);
+  assert.throws(() => registry.describeExecution({ ...execution, materialAccess: 'native' }), /required capability/);
+  const coordinator = registry.coordinatorExecution(execution);
+  assert.equal(coordinator.materialAccess, undefined);
+  assert.equal(coordinator.requiredCapabilities, undefined);
+  assert.equal(registry.validateExecution(coordinator, { role: 'coordinator' }).permission, 'read-only');
+});
+
 test('registered Harness executes a local ticket, pins version and workspace, and resumes after reopening', async t => {
   const root = mkdtempSync(join(tmpdir(), 'js-superagent-harness-'));
   const registry = createHarnessRegistry();
@@ -165,7 +180,7 @@ test('registry exposes the built-in adapters and rejects removed execution contr
   assert.equal(listed[0].label, 'Codex');
   assert.equal(listed[1].label, 'DSH');
   assert.equal(listed[2].label, 'Cursor');
-  assert.deepEqual(listed[1].preserveOnSave, ['executable', 'backend', 'permission', 'contextMode']);
+  assert.deepEqual(listed[1].preserveOnSave, ['executable', 'backend', 'permission', 'contextMode', 'materialAccess']);
   for(const driver of ['codex','dsh-headless']) assert.throws(()=>registry.createDriver({driver}),/removed.*migrate/);
   registry.register({id:'old-extension',version:'1',roles:['worker'],validate:value=>value,createDriver:()=>({async run(){return {status:'completed',summary:'old'};}})});
   assert.throws(()=>registry.createDriver({driver:'old-extension'}),/reportVersion 2/);

@@ -20,6 +20,23 @@ export function dshJobCatalog(input) {
 }
 // Only a fixed category and hint cross back to the model; host error text stays private.
 function rejection(error) {
+  const typed = {
+    MATERIAL_FORMAT: ['invalid-arguments', 'Use the current host reference and page fields from the tool schema.'],
+    PREPARATION_ARGUMENTS: ['invalid-arguments', 'Use the materialId and provisionId from the current host context, with a concrete reason.'],
+    MATERIAL_ACCESS_DENIED: ['scope', 'This material is outside the current grant. Do not substitute a different path or source.'],
+    MATERIAL_DESTINATION_DENIED: ['scope', 'This destination is not authorized for the material. Ask the host to resolve the output constraint.'],
+    MATERIAL_BINDING_CHANGED: ['authorization-changed', 'The material grant changed. Stop using old references and request host inspection.'],
+    PREPARATION_DENIED: ['scope', 'The current authorization does not permit this workspace preparation. Report the constraint to the host.'],
+    MATERIAL_IDENTITY: ['source-changed', 'The source project identity changed. Request host inspection before reading or preparing it.'],
+    MATERIAL_CHANGED: ['source-changed', 'The material changed during observation. Use a new call and its current version; do not combine pages from different versions.'],
+    MATERIAL_MISSING: ['source-changed', 'The material is no longer available. Refresh the directory reference with a new call or report the missing source.'],
+    MATERIAL_SNAPSHOT: ['source-changed', 'The frozen material cannot be verified. Request host inspection; do not fall back to current files.'],
+    PREPARATION_STALE: ['source-changed', 'This preparation belongs to an older workspace generation. Inspect the current host context before continuing.'],
+    PREPARATION_CONFLICT: ['preparation-conflict', 'Another preparation owns this workspace generation. Inspect its saved result before requesting further preparation.'],
+    MATERIAL_LIMIT: ['budget-or-capacity', 'The material exceeds its permitted bound. Report incomplete coverage instead of claiming the whole source was read.'],
+    MATERIAL_ENCODING: ['unsupported-material', 'This content is not supported as text. Report the unsupported material or request a host-provided text representation.'],
+  }[error?.code];
+  if (typed) return { error: 'Host rejected this tool call; inspect scope, capabilities and current state.', category: typed[0], hint: typed[1] };
   const detail = String(error?.message ?? error);
   const category = /budget|capacity/i.test(detail) ? 'budget-or-capacity' : /scope|path|workspace/i.test(detail) ? 'scope' : /identity|unknown/i.test(detail) ? 'unknown-identity' : /invalid|must be|required/i.test(detail) ? 'invalid-arguments' : 'unavailable';
   const hint = category === 'invalid-arguments' ? 'Check required fields and types in the tool schema. Command profiles take only profileId; optional child text uses the trusted profile instruction.'
@@ -103,6 +120,14 @@ export async function openDshToolBridge(input, {sessionId,options,redact}) {
       if(Object.keys(request).some(key=>!['sessionId','callId','name','arguments'].includes(key))||request.sessionId!==sessionId||!ID.test(request.callId??'')||!definitions.some(def=>def.name===request.name)||!request.arguments||typeof request.arguments!=='object'||Array.isArray(request.arguments))throw new Error('Invalid bridge identity');
       const signature=JSON.stringify([request.name,request.arguments]),previous=calls.get(request.callId);
       if(previous&&previous.signature!==signature||!previous&&calls.size>=128)throw new Error('Tool call identity conflict or budget exhausted');
+      // Durable business receipts are idempotent, but their authorization can
+      // change during a live turn. The HTTP cache must not bypass that check.
+      if (previous?.completed && business?.definitions.some(def => def.name === request.name)) {
+        const value = await business.call({callId:dshHostCallId(sessionId,input.runId,request.callId),name:request.name,arguments:request.arguments,sessionId,turnId:input.runId});
+        const serialized = redact(JSON.stringify(value));
+        if (Buffer.byteLength(serialized) > 60000) throw new Error('Tool result exceeds budget');
+        res.writeHead(200, {'content-type':'application/json'}); res.end(serialized); return;
+      }
       const task=previous?.task??Promise.resolve().then(async()=>{
         if(!active||input.signal?.aborted)throw new Error('Bridge is closed');
         const callId=dshHostCallId(sessionId,input.runId,request.callId);
@@ -137,7 +162,7 @@ export async function openDshToolBridge(input, {sessionId,options,redact}) {
         await input.recordHostTool?.({callId,name:request.name,arguments:request.arguments,result:JSON.parse(serialized),sessionId,turnId:input.runId});
         return serialized;
       });
-      if(!previous){calls.set(request.callId,{signature,task});pending.add(task);task.then(()=>pending.delete(task),()=>pending.delete(task));}
+      if(!previous){const entry={signature,task,completed:false};calls.set(request.callId,entry);pending.add(task);task.then(()=>{entry.completed=true;pending.delete(task);},()=>pending.delete(task));}
       const result=await task;res.writeHead(200,{'content-type':'application/json'});res.end(result);
     }catch(error){res.writeHead(403,{'content-type':'application/json'});res.end(JSON.stringify(rejection(error)));}
   });

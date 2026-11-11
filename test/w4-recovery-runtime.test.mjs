@@ -29,6 +29,8 @@ test('W4 evidence rejects unknown results and retry schedules are bounded with a
   assert.equal(first.nextAt,'1970-01-01T00:00:01.010Z');
   const exhausted=nextRecoveryPlan({...first,status:'resuming',attempt:2},{settings:{autoResume:true,maxAttempts:2},evidence,runId:'next',now:2000});
   assert.equal(exhausted.status,'exhausted');
+  const prepared=nextRecoveryPlan({...first,status:'superseded',reason:'material-preparation',attempt:2},{settings:{autoResume:true,maxAttempts:2},evidence,runId:'prepared',now:2000});
+  assert.equal(prepared.status,'exhausted');assert.equal(prepared.attempt,2);
 });
 
 test('W4 native transient retry preserves session and attempts across reopen, with a new recovery instruction',async t=>{

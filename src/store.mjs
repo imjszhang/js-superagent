@@ -44,7 +44,7 @@ export class Store {
     try {
       this.db.exec('PRAGMA busy_timeout = 5000');
       const version = Number(this.db.prepare('PRAGMA user_version').get().user_version);
-      if (version > 14) throw new Error(`Unsupported state schema: ${version}`);
+      if (version > 15) throw new Error(`Unsupported state schema: ${version}`);
       // A v1 process must still be able to open its database and cancel work after refusal.
       // Do this before changing the schema or creating a migration backup.
       if (version === 1 && !readOnly) {
@@ -106,7 +106,7 @@ export class Store {
   assertWritable() {
     if (this.readOnly) throw Object.assign(new Error('Project identity requires explicit relocation or reinitialization; state is read-only'), { code: 'PROJECT_IDENTITY_CONFLICT' });
     const version = Number(this.db.prepare('PRAGMA user_version').get().user_version);
-    if (version > 14) throw new Error(`Unsupported state schema: ${version}`);
+    if (version > 15) throw new Error(`Unsupported state schema: ${version}`);
     assertDatabaseAvailable(this.path); this.beforeWrite?.();
   }
   atomic(fn) {

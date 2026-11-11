@@ -183,7 +183,7 @@ function patrolWorkBlock(projectRoot) {
   try {
     if(!safeFile(path,false))return 'project-state-unavailable';
     assertDatabaseAvailable(path);db=new DatabaseSync(path,{readOnly:true});db.exec('PRAGMA query_only=ON');
-    if(db.prepare('PRAGMA user_version').get().user_version!==14)return 'project-version-needs-inspection';
+    if(![14,15].includes(Number(db.prepare('PRAGMA user_version').get().user_version)))return 'project-version-needs-inspection';
     for(const row of db.prepare('SELECT data FROM domain_tickets').all())if(!JSON.parse(row.data).ended)return 'unfinished-tickets';
     if(db.prepare('SELECT 1 FROM effects WHERE owner IS NOT NULL LIMIT 1').get())return 'host-effect-unsettled';
     if(db.prepare("SELECT 1 FROM receipts WHERE status='pending' LIMIT 1").get())return 'outgoing-reply-unsettled';

@@ -29,19 +29,36 @@ try {
   const project = join(scratch, 'python-project'); mkdirSync(project);
   writeFileSync(join(consumer, 'smoke.mjs'), `
     import assert from 'node:assert/strict';
+    import { writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
     import { createProjectAgent, createHarnessRegistry } from 'js-superagent';
     const registry = createHarnessRegistry({adapters:[{id:'package-fixture',version:'1',roles:['worker'],validate:o=>o,
       createDriver:()=>({reportVersion:2, async run(){return {version:2,state:'ready',summary:'Installed SDK contract verified'};}})}]});
     assert.deepEqual(registry.list().slice(0,3).map(x=>x.id),['codex-app-server','dsh-sdk','cursor-agent']);
     const system = createProjectAgent({projectRoot:process.argv[2],harnessRegistry:registry,execution:{driver:'package-fixture'}}).init();
-    try {const ticket=system.submit({text:'Verify local package contract'});await system.runNext();assert.equal(system.get(ticket.id).status,'completed');}
+    try {
+      const ticket=system.submit({text:'Verify local package contract'});await system.runNext();assert.equal(system.get(ticket.id).status,'completed');
+      assert.equal(system.materialCapabilities().schemaVersion,15);
+      const actor={source:'local',id:'operator'};
+      system.configureMaterials({entries:[{id:'project',project:'self',include:['README.md'],views:['current','snapshot'],readers:[actor],destinations:[actor]}]},{expectedRevision:0});
+      writeFileSync(join(process.argv[2],'README.md'),'Uncommitted package material');
+      const snapshot=system.createMaterialSnapshot({sourceId:'project'});
+      assert.equal(typeof snapshot.digest,'string');
+      const frozen=system.submit({text:'Inspect a frozen material source',materials:{sources:[{id:'project',view:{kind:'snapshot',snapshotId:snapshot.id}}]}});
+      const detail=system.getDetailed(frozen.id);
+      assert.equal(detail.materialBinding.sources[0].view.snapshotId,snapshot.id);
+      assert.deepEqual(detail.materialObservations,[]);
+      assert.deepEqual(detail.workspaceHistory,[]);
+    }
     finally {await system.stop();system.close();}
   `);
   run(process.execPath, [join(consumer, 'smoke.mjs'), project], consumer);
   const cli = join(installed, 'bin/js-superagent.mjs');
   const list = JSON.parse(run(process.execPath, [cli, '--project', project, 'status'], consumer));
-  assert.equal(list.length, 1); assert.equal(list[0].status, 'completed');
+  assert.equal(list.length, 2); assert.ok(list.some(ticket=>ticket.status==='completed'));
+  const materialStatus=JSON.parse(run(process.execPath,[cli,'--project',project,'materials','status'],consumer));
+  assert.equal(materialStatus.capabilities.schemaVersion,15);assert.equal(materialStatus.settings.revision,1);
   const harnesses = JSON.parse(run(process.execPath, [cli, 'harness', 'list'], consumer));
   assert.ok(JSON.stringify(harnesses).includes('dsh-sdk'));
-  console.log('Clean package: CLI/SDK, registered adapter, history, independence passed; no native model or service started.');
+  console.log('Clean package: CLI/SDK, material configuration/snapshots, registered adapter, history, independence passed; no native model or service started.');
 } finally { rmSync(scratch, { recursive: true, force: true }); }

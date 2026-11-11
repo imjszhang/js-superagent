@@ -4,7 +4,7 @@
 
 支持通过注册表接入 Codex、DSH 和 Cursor 等执行端。状态保存在项目独立的 SQLite 数据库中；初始化不会自动启动执行或后台服务。
 
-当前版本为 **0.14.0-alpha.1**，已于 2026-11-10 发布至 npm 的 `alpha` 渠道。本仓库从 x-pkm-research 的同名包独立导出；应用层的 longrun 业务系统不在本仓库。历史设计和验收文档记录各自当时的状态，不代表用户安装后的部署状态。
+当前源码版本为 **0.15.0-alpha.0**，正在实现项目材料与执行工作区分离；此处不代表已经发布 npm。本仓库从 x-pkm-research 的同名包独立导出；应用层的 longrun 业务系统不在本仓库。历史设计和验收文档记录各自当时的状态，不代表用户安装后的部署状态。
 
 ```bash
 git clone https://github.com/imjszhang/js-superagent.git
@@ -131,7 +131,11 @@ Codex 与 DSH 都通过同一注册表创建适配器。扩展接口只接受现
 | API | 用途 |
 |---|---|
 | `init()` | 打开项目，按需备份和迁移旧工单，检查中断执行 |
-| `submit({ text, scope?, attentionSnapshotPaths?, operatorNotifications?, managedJobs? })` | 建立本地事件、授权、领域工单与派工 |
+| `submit({ text, scope?, attentionSnapshotPaths?, operatorNotifications?, managedJobs?, materials? })` | 建立本地事件、授权、领域工单与派工；可绑定可信材料约束 |
+| `materialCapabilities()` / `getMaterialSettings()` / `configureMaterials(settings, {expectedRevision})` | 查询版本化材料能力与来源授权；停机后保存配置 |
+| `createMaterialSnapshot({sourceId, actor?, view?})` | 固定允许范围内的材料并返回宿主快照回执 |
+| `workspacePreparationStatus(id)` / `requestWorkspacePreparation(id, request)` | 查询／请求受控工作区准备，不创建第二张工单 |
+| `previewMaterialApplication(id, {paths})` / `applyMaterialChanges(id, {plan, operationId})` | 审阅并回写相对导入基线的 Worker 增量 |
 | `list()` / `get(id)` | 读取兼容格式的工单视图 |
 | `getDomainTicket(id)` | 按公开工单 ID 查看当前领域工单、授权、输入和派工 |
 | `getSession(id)` | 读取持久化的执行端名称及原生会话 ID |
@@ -159,6 +163,8 @@ Codex 与 DSH 都通过同一注册表创建适配器。扩展接口只接受现
 本地业务任务可在提交时传 `operatorNotifications: false`，关闭该工单的操作者卡片及 Worker 完成／失败私信；默认仍为 true。`managedJobs: false` 禁止该工单获得受管子任务工具和配置，默认仍为 true。两者均为宿主提交时校验并持久化的布尔值，只缩小单工单能力，不修改项目设置，不授予其他执行权限。`0.14.0-alpha.1` 修复了 DSH 项目启用受管子任务、单工单禁用时的配置衔接：执行与恢复使用相同的工单有效配置，禁用工单不会加载 jobs 工具或索取可信任务目录。没有宿主快照文件时省略 `attentionSnapshotPaths`，不要传空数组。
 
 ## 状态与授权边界
+
+需要调查当前项目（包括未提交内容）时，显式配置 `current` 材料入口。Worker 的读取来源与执行工作区分别记录；旧的 `workspace.mode: auto` 选择保持原语义。材料配置不由协调者文字推断，也不会因安装新包自动授予。配置、只读执行器要求、快照、准备、增量回写和 schema 15 升级边界见[项目材料指南](docs/project-materials.md)。
 
 公开工单继续使用 `queued`、`running`、`waiting`、`completed`、`failed`、`cancelled`、`interrupted`，由领域工单、派工、执行所有权与队列推导。代码 ready 但当前 PR 仍开放时增加 `awaitingReview: true`，界面显示“等待审阅”，保留旧 `completed` 状态的兼容性；现行政策允许的审阅反馈仍可续作。`getDomainTicket()` 返回更完整的上游领域对象；两种 `Ticket` 类型不能直接互换。
 

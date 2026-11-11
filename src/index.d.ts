@@ -285,6 +285,50 @@ export interface DriverRunInput {
 }
 export type WorkspaceMode = 'in-place' | 'auto' | 'worktree' | 'copy';
 export interface WorkspaceConfig { mode: WorkspaceMode; baseRef?: string; exclude?: string[] }
+export interface MaterialIdentity { source:string; id:string }
+export interface MaterialProjectIdentity { root:string; projectId:string; instanceId:string }
+export type MaterialView = {kind:'current'}|{kind:'commit';sha:string}|{kind:'snapshot';snapshotId:string};
+export interface MaterialEntry {
+  id:string;project:'self'|MaterialProjectIdentity;include:string[];exclude?:string[];
+  views:Array<MaterialView['kind']>;readers:MaterialIdentity[];destinations:MaterialIdentity[];
+}
+/** Trusted host constraint. Paths and source identities come from configured entries, never Worker arguments. */
+export interface MaterialBindingRequest {
+  version?:1;access?:'host-only'|'native';sources:Array<{id:string;view:MaterialView}>;
+  allowPreparation?:boolean;allowApply?:boolean;
+  owner?:{kind:'operator'|'longrun';id?:string;contractHash?:string};
+  /** Explicit initial copy source. Requires native access and allowPreparation. */
+  workspaceSourceId?:string;
+}
+export interface MaterialSettings {version?:1;entries:MaterialEntry[];defaults?:MaterialBindingRequest}
+export interface ResolvedMaterialSource extends Omit<MaterialEntry,'project'|'views'> {project:MaterialProjectIdentity;view:MaterialView;exclude:string[]}
+export interface MaterialBinding extends Omit<MaterialBindingRequest,'sources'> {
+  version:1;access:'host-only'|'native';allowPreparation:boolean;allowApply:boolean;
+  revision:number;configurationDigest:string;project:MaterialProjectIdentity;actor:MaterialIdentity;sources:ResolvedMaterialSource[];
+}
+export interface MaterialSnapshotSource extends MaterialProjectIdentity {entryId:string;view:MaterialView}
+export interface MaterialSnapshotReceipt {id:string;digest:string;source:MaterialSnapshotSource;observedAt:string}
+export interface MaterialReferenceDescriptor {sourceId:string;kind:'status'|'directory'|'file';path:string}
+export interface MaterialObservation {
+  version:1;bindingDigest:string;id:string;descriptor:MaterialReferenceDescriptor;valueVersion:string;observedAt:string;
+  references:MaterialReferenceDescriptor[];runId?:string|null;workspaceProvisionId?:string|null;workspaceGeneration?:number|null;
+}
+export interface MaterialFreshness {version:1;fresh:boolean;changed:string[];observedRecords:number;checkedAt:string;runId?:string|null;workspaceProvisionId?:string|null}
+export interface WorkspacePreparation {
+  version:1;id:string;ticketId:string;materialId:string;previousProvisionId:string;previousSessionId:string|null;
+  bindingDigest:string;sourceRunId:string|null;status:'queued'|'preparing'|'ready'|'blocked'|'cancelled';reason:string;
+  createdAt:string;updatedAt:string;workspace?:Workspace;error?:{code:string;message:string};
+}
+export interface MaterialFileState {type:'file';sha256:string;size:number;mode:number}
+export interface MaterialApplicationPlan {
+  version:1;kind:'local-application';ticketId:string;workspaceProvisionId:string;generation:number;source:MaterialSnapshotSource;
+  materialSnapshotDigest:string;sourceSnapshotDigest:string;paths:string[];digest:string;
+  changes:Array<{path:string;status:string;before:MaterialFileState|null;after:MaterialFileState|null}>;
+}
+export interface MaterialApplicationRecord {
+  version:1;id:string;kind:'local-application';ticketId:string;plan:MaterialApplicationPlan;
+  status:'preparing'|'prepared'|'applying'|'applied'|'interrupted'|'recovering'|'rolled-back';[key:string]:unknown;
+}
 export interface ExecutionConfig {
   driver: 'codex-app-server'; executable?: string; model?: string; timeoutMs?: number; killGraceMs?: number;
 }
@@ -460,7 +504,20 @@ export declare class ProjectRuntime {
   machineStatus(): RuntimeMachineStatus;
   githubBindingStatus(): { repository: string | null; bindings: GitHubRepositoryOwnership[] };
   releaseGitHubBinding(options?: { apply?: boolean; repository?: string }): { repository?: string; safe: boolean; bindings: GitHubRepositoryOwnership[]; reason: string | null; released?: boolean };
-  submit(input: { text: string; scope?: string; attentionSnapshotPaths?: string[]; operatorNotifications?: boolean; managedJobs?: boolean }): Ticket;
+  submit(input: { text: string; scope?: string; attentionSnapshotPaths?: string[]; operatorNotifications?: boolean; managedJobs?: boolean; materials?:MaterialBindingRequest }): Ticket;
+  materialCapabilities():{version:1;boundedReadsVersion:1;workspacePreparationVersion:1;localApplicationVersion:1;schemaVersion:15};
+  getMaterialSettings():MaterialSettings & {version:1;revision:number};
+  configureMaterials(settings:MaterialSettings,options:{expectedRevision:number}):ReturnType<ProjectRuntime['getMaterialSettings']>;
+  createMaterialSnapshot(input:{sourceId:string;actor?:MaterialIdentity;view?:MaterialView}):MaterialSnapshotReceipt;
+  requestWorkspacePreparation(id:string,input:{materialId:string;provisionId:string;reason:string}):WorkspacePreparation;
+  workspacePreparationStatus(id:string):WorkspacePreparation|null;
+  retryWorkspacePreparation(id:string):WorkspacePreparation;
+  previewMaterialApplication(id:string,input:{paths:string[]}):MaterialApplicationPlan;
+  applyMaterialChanges(id:string,input:{plan:MaterialApplicationPlan;operationId:string}):Promise<MaterialApplicationRecord>;
+  materialApplicationStatus(id:string,operationId:string):MaterialApplicationRecord;
+  materialApplicationStatus(id:string):MaterialApplicationRecord[];
+  /** Trusted operator rollback may reconcile the journal's unchanged writes after pause/cancellation; it never resumes execution. */
+  recoverMaterialApplication(id:string,input:{operationId:string;mode:'rollback'|'finish'}):Promise<MaterialApplicationRecord>;
   list(): Ticket[];
   /** Advisory cross-process state invalidation. Coalesced, serialized, not a durable event feed.
    * Re-read current state, reconcile once on startup, and retain periodic recovery.
@@ -575,7 +632,7 @@ export declare class ProjectRuntime {
   /** Local receipt and queue state only; excludes body bytes, signatures and secret values. */
   githubWebhookStatus(): GitHubWebhookStatus;
   flushNotifications(): Promise<number>;
-  upgradeRuntime(): {schemaVersion:14;coordination:RuntimeMachineStatus};
+  upgradeRuntime(): {schemaVersion:15;coordination:RuntimeMachineStatus};
   isPaused(): boolean;
   pause(reason?: string): ReturnType<ProjectRuntime["status"]>;
   resume(): ReturnType<ProjectRuntime["status"]>;
@@ -618,6 +675,7 @@ export interface DshDriverOptions {
   model:string;
   backend:{auth:'api-key';provider:'deepseek-official';protocol:'anthropic-messages';baseURL:string;apiKeyEnv:string};
   permission?:'read-only'|'workspace-write';
+  materialAccess?:'native'|'host-only';
   timeoutMs?:number;killGraceMs?:number;prompt?:string;contextLimits?:ContextLimits;
   enableAgentTools?:boolean;enableManagedJobs?:boolean;
 }
@@ -645,7 +703,7 @@ export function stateHome(env?:Record<string,string|undefined>):string;
 export function projectStateDirectory(projectRoot:string, env?:Record<string,string|undefined>):string;
 
 export type HarnessRole = 'worker'|'child'|'coordinator';
-export type HarnessCapability = 'structuredProgress'|'sessionResume'|'realtimeInput'|'inputAcknowledgements'|'backgroundTasks'|'subagents'|'agentTools'|'nativeBackgroundOwnership';
+export type HarnessCapability = 'structuredProgress'|'sessionResume'|'realtimeInput'|'inputAcknowledgements'|'backgroundTasks'|'subagents'|'agentTools'|'nativeBackgroundOwnership'|'boundedMaterialReadsVersion'|'workspacePreparationVersion';
 export interface HarnessExecution {
   driver:string;adapterVersion?:string;requiredCapabilities?:HarnessCapability[];
   executable?:string;model?:string;timeoutMs?:number;killGraceMs?:number;prompt?:string;
@@ -785,6 +843,8 @@ export interface DriverCapabilities {
   nativeBackgroundOwnership?: boolean;
   /** Absent retains the legacy complete-input contract; 1 uses explicit delivered record receipts. */
   boundedContextVersion?: 1;
+  boundedMaterialReadsVersion?:1;
+  workspacePreparationVersion?:1;
 }
 export interface DriverReportV2 {
   version: 2; state: 'progress' | 'waiting' | 'ready' | 'blocked' | 'failed' | 'dropped';
@@ -889,6 +949,9 @@ export interface TicketDetails {
   nativeFacts?:(Record<string,unknown>&{policy?:WorkerPolicyObservation;nativeHandoffSupported?:boolean})|null;
   policyStatus?:{status:'ready'|'legacy-unresolved';reason:string|null;desiredRevision:number;selectedRevision:number|null;selectedAt:string;runId:string;recovering:boolean}|null;
   executionObservation?:ExecutionObservation|null;
+  materials?:MaterialBinding|null;materialBinding?:MaterialBinding|null;materialObservations?:MaterialObservation[];materialFreshness?:MaterialFreshness|null;
+  workspace?:Workspace|null;workspacePreparation?:WorkspacePreparation|null;
+  workspaceHistory?:Array<{preparationId:string;workspace:Workspace}>;
   nativeResultRecoveredFrom?:string|null;
   interrupted: boolean; reports: Array<DriverReportV2 & {runId:string;at:string}>; capabilities?: DriverCapabilities;
 }
