@@ -34,23 +34,23 @@ test('W14 schema5 query remains compatible, explicit upgrade snapshots and stage
   assert.equal(readdirSync(f.directory).filter(file => file.endsWith('.backup')).length, 0);
   assert.throws(() => f.runtime.configureCoordinator({ workflowMode: 'unknown' }, { expectedRevision: 0 }), /workflowMode/);
   assert.equal(inspectDatabase(f.path).schemaVersion, 5);
-  assert.equal(f.runtime.upgradeRuntime().schemaVersion, 14);
-  assert.equal(f.store.getMeta('runtime:minimum-version'), '0.13.0-alpha.0');
+  assert.equal(f.runtime.upgradeRuntime().schemaVersion, 15);
+  assert.equal(f.store.getMeta('runtime:minimum-version'), '0.15.0-alpha.0');
   assert.equal(f.runtime.coordinationStatus().pending, 0);
   assert.equal(f.store.getMeta('coordination:event:legacy-failed').status, 'failed');
   assert.equal(f.store.getMeta('coordination:event:legacy-failed').cycleAttempts, 2);
   assert.equal(f.store.getMeta('coordinator:settings')?.workRetry?.autoRetry ?? false, false);
   assert.equal(f.store.getMeta('ticket:old-recovery').recovery.deadlineAt, '2026-01-01T00:10:00.000Z');
-  assert.throws(() => openPreviousReader(f.path), /Unsupported state schema: 14/);
+  assert.throws(() => openPreviousReader(f.path), /Unsupported state schema: 15/);
   const [name] = readdirSync(f.directory).filter(file => file.endsWith('.backup'));
   const backupPath = join(f.directory, name), manifest = JSON.parse(readFileSync(`${backupPath}.json`, 'utf8'));
-  assert.equal(manifest.schemaVersion, 5); assert.equal(manifest.targetVersion, 14);
+  assert.equal(manifest.schemaVersion, 5); assert.equal(manifest.targetVersion, 15);
   const restored = await prepareDatabaseRestore({ path: f.path, backupPath, expectedVersion: 5, assertStopped: () => true,
     reconciliation: { backupId: manifest.id, note: 'Isolated fixture only; no external actions occurred.' } });
   const legacy = openPreviousReader(restored.path);
   try { assert.deepEqual(JSON.parse(legacy.prepare('SELECT data FROM kv WHERE key=?').get('coordination:event:legacy-failed').data), f.failed); }
   finally { legacy.close(); }
-  assert.equal(inspectDatabase(f.path).schemaVersion, 14); // Preparing rollback never installs it.
+  assert.equal(inspectDatabase(f.path).schemaVersion, 15); // Preparing rollback never installs it.
 });
 
 test('W14 live ownership and rejected configuration leave legacy schema and backups untouched', t => {

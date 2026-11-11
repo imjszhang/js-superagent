@@ -3,7 +3,7 @@ import { reconcilePendingReviewDestination } from './runtime/github-review-deliv
 
 /** Durable receipts; network delivery occurs only outside storage transactions. */
 export class Outbox {
-  constructor(store, effects, { deliver } = {}) { this.store = store; this.effects = effects; this.delivery = deliver; }
+  constructor(store, effects, { deliver, authorize } = {}) { this.store = store; this.effects = effects; this.delivery = deliver; this.authorize = authorize; }
   send(message) {
     this.store.atomic(() => {
       if (this.status(message.id) !== undefined) return;
@@ -49,6 +49,8 @@ export class Outbox {
       return message;
     });
     if (!message) return;
+    const authorization = this.authorize?.(message);
+    if (authorization?.then) await authorization;
     let delivery;
     if (message.channel.source !== 'local') {
       if (!this.delivery) throw new Later('No channel adapter installed for this source');

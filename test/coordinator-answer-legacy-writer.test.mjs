@@ -39,8 +39,8 @@ test('a preopened legacy reply dispatcher leaves new-schema coordinator answers 
   // v0.9's dispatcher registered only this message kind. Keep this contract fixed
   // instead of reading git or loading a second package during the test.
   const legacyHandlers = { reply() { legacySends++; } };
-  assert.equal(runtime.upgradeRuntime().schemaVersion, 14);
-  assert.equal(legacyStore.db.prepare('PRAGMA user_version').get().user_version, 14);
+  assert.equal(runtime.upgradeRuntime().schemaVersion, 15);
+  assert.equal(legacyStore.db.prepare('PRAGMA user_version').get().user_version, 15);
   runtime.receiveGitHubEvent({ kind: 'comment', id: `github:${repository}:comment:11`, repository,
     issueNumber: 7, issueId: 7, issueState: 'open', actor: { login: 'alice', id: 10, type: 'User' },
     text: '/js-superagent Is a Worker active for this question?', createdAt: new Date().toISOString() });

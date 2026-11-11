@@ -23,7 +23,7 @@ test('CLI exposes trace, session replacement and revision-checked prompt/recover
   const { root, run, executable, mode } = fixture(t);
   const json = (...args) => { const result=run(...args);assert.equal(result.status,0,result.stderr);return JSON.parse(result.stdout); };
   const file = (name,value) => { const path=join(root,name);writeFileSync(path,JSON.stringify(value));return path; };
-  json('init');assert.equal(json('upgrade').schemaVersion,14);
+  json('init');assert.equal(json('upgrade').schemaVersion,15);
   const ticket=json('submit','Inspect this task and wait for a reply');mode('waiting');json('run','--codex-path',executable);
   const session=json('session','inspect',ticket.id);assert.ok(session.session.id);
   const trace=json('trace',ticket.id,file('trace-page.json',{limit:1}));assert.equal(trace.items.length,1);assert.ok(trace.nextCursor);
@@ -122,6 +122,19 @@ function fixture(t) {
   };
   return { root, run, executable, start, mode: value => writeFileSync(join(root, 'mode.txt'), value) };
 }
+
+test('CLI material application status treats the operation as an identity, not a JSON file', t => {
+  const f = fixture(t);
+  assert.equal(f.run('init').status, 0);
+  const created = f.run('submit', 'Application status fixture');
+  assert.equal(created.status, 0, created.stderr);
+  const ticket = JSON.parse(created.stdout);
+  const result = f.run('materials', 'apply-status', ticket.id, 'missing-operation');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /local-applications/);
+  assert.doesNotMatch(result.stderr, /Invalid command or arguments/);
+  assert.equal(f.run('materials', 'apply-status', ticket.id).status, 1);
+});
 
 async function until(check) {
   const deadline = Date.now() + 8000;
@@ -632,7 +645,7 @@ console.log('[]');
 
 test('W30 W31 W34 CLI exposes scoped review and preview commands without executing workers', t => {
   const {root,run}=fixture(t);
-  const help=run('--help');assert.match(help.stdout,/review request/);assert.match(help.stdout,/github bot-review/);assert.match(help.stdout,/native-preview/);assert.match(help.stdout,/schema 14/);
+  const help=run('--help');assert.match(help.stdout,/review request/);assert.match(help.stdout,/github bot-review/);assert.match(help.stdout,/native-preview/);assert.match(help.stdout,/schema 15/);
   for(const args of [['review','request','ticket'],['native-preview','renew','ticket','lease','job','1.5'],['native-preview','close','ticket','lease','job','1000'],['github','bot-review','set','12','0','file'],['status','--github-app-pr-reviews','true']])assert.equal(run(...args).status,1,args.join(' '));
   assert.equal(existsSync(stateDir(root)),false);
   const init=run('init','--github-repo','owner/repo','--github-actor','alice','--github-app-id','1','--github-installation-id','2','--github-private-key-env','APP_KEY','--github-app-pr-reviews','true');assert.equal(init.status,0,init.stderr);

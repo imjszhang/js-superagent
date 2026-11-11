@@ -39,8 +39,23 @@ const enhanced=createProjectAgent({projectRoot:'/example'});
 enhanced.configureExecutor({driver:'codex-app-server',enableAgentTools:true,enableManagedJobs:true,contextLimits:{initialBytes:32768,pageBytes:8192,maxReads:16,readBytes:131072}},{expectedRevision:0});
 createCodexAppServerDriver({enableAgentTools:true});
 const persistentSettings:ManagedJobsSettings={...settings,lifecycle:'assignment',childWorkspace:'parent-snapshot',profiles:{preview:{kind:'command',id:'preview',version:'1',command:'node',args:['server.mjs'],environment:'host',allowHostExecution:true,preview:{url:'http://127.0.0.1:3000',ttlMs:1800000}}}};
-const schema:14=enhanced.upgradeRuntime().schemaVersion;
+const schema:15=enhanced.upgradeRuntime().schemaVersion;
 const configSchema:3=enhanced.getConfigV2().schemaVersion;
+function materialActions() {
+  const actor = {source:'local',id:'operator'};
+  enhanced.configureMaterials({entries:[{id:'project',project:'self',include:['README.md'],views:['current','snapshot'],readers:[actor],destinations:[actor]}]},{expectedRevision:0});
+  const snapshot=enhanced.createMaterialSnapshot({sourceId:'project'});
+  const ticket=enhanced.submit({text:'Read frozen material',materials:{access:'native',allowPreparation:true,workspaceSourceId:'project',sources:[{id:'project',view:{kind:'snapshot',snapshotId:snapshot.id}}]}});
+  const sourceId:string|undefined=enhanced.getDetailed(ticket.id).materialBinding?.sources[0]?.id;
+  const bounded:1=enhanced.materialCapabilities().boundedReadsVersion;
+  enhanced.configureExecutor({driver:'dsh-sdk',requiredCapabilities:['boundedMaterialReadsVersion','workspacePreparationVersion']},{expectedRevision:0});
+  const plan=enhanced.previewMaterialApplication(ticket.id,{paths:['README.md']});
+  void enhanced.applyMaterialChanges(ticket.id,{plan,operationId:'operator-review-1'});
+  const application=enhanced.materialApplicationStatus(ticket.id,'operator-review-1');
+  const appliedTicket:string=application.plan.ticketId;
+  void appliedTicket;
+  void sourceId;void bounded;
+}
 // These consumer examples are typechecked only; they never execute a runtime.
 function workflowActions() {
   enhanced.configureDelivery({mode:'draft-pr',review:{ready:true,requestReviewers:true,resolveThreads:true,reviewers:['alice'],teams:['maintainers']}},{expectedRevision:0});

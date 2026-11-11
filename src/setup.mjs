@@ -54,7 +54,7 @@ export async function checkProjectSetup({ projectRoot, checkConnections = false 
         const meta=key=>{const row=db.prepare('SELECT data FROM kv WHERE key=?').get(key);return row?JSON.parse(row.data):null;};
         config.execution=meta('executor:settings')?.execution??config.execution;
       }
-      add('database','local',schema===14?'passed':'blocked',`Project database schema: ${schema}.`,schema===14?undefined:'Stop this project and use upgrade; do not bypass an unsupported schema.');
+      add('database','local',[14,15].includes(schema)?'passed':'blocked',`Project database schema: ${schema}.`,[14,15].includes(schema)?undefined:'Stop this project and use upgrade; do not bypass an unsupported schema.');
     }catch {add('database','local','blocked','Project database cannot be inspected safely.','Inspect project state and maintenance records before continuing.');}
     finally{db?.close();}
   }else add('database','local','blocked','Project database is missing.','Run init to prepare local state without starting work.');

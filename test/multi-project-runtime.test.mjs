@@ -90,7 +90,7 @@ test('legacy state requires explicit adoption before execution',async t=>{
   unlinkSync(join(stateDir(a.projectRoot), 'instance.json'));
   a.submit({text:'legacy local work'});
   await assert.rejects(a.runNext(),error=>error.code==='PROJECT_IDENTITY_ADOPTION_REQUIRED');
-  assert.equal(a.upgradeRuntime().schemaVersion,14);
+  assert.equal(a.upgradeRuntime().schemaVersion,15);
   assert.equal((await a.runNext()).status,'completed');
 });
 

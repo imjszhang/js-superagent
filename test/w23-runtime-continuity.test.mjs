@@ -72,12 +72,12 @@ test('Schema 6 queries stay read-only; explicit schema 8 upgrade backs up and pr
   const before=r.getDomainTicket(ticket.id),saved=db.getMeta(`ticket:${ticket.id}`);
   r.getDetailed(ticket.id);r.githubStatus();r.ticketTrace(ticket.id);
   assert.equal(inspectDatabase(path).schemaVersion,6);
-  assert.equal(r.upgradeRuntime().schemaVersion,14);
+  assert.equal(r.upgradeRuntime().schemaVersion,15);
   assert.deepEqual(r.getDomainTicket(ticket.id),before);assert.deepEqual(db.getMeta(`ticket:${ticket.id}`),saved);
   assert.equal(r.getRecoverySettings().autoResume,false);
   const directory=stateDir(r.projectRoot),manifests=readdirSync(directory).filter(name=>name.endsWith('.backup.json')).map(name=>JSON.parse(readFileSync(join(directory,name),'utf8')));
-  assert.ok(manifests.some(manifest=>manifest.schemaVersion===6&&manifest.targetVersion===14));
+  assert.ok(manifests.some(manifest=>manifest.schemaVersion===6&&manifest.targetVersion===15));
   const oldReader=new DatabaseSync(path,{readOnly:true});
-  try {assert.throws(()=>{const version=Number(oldReader.prepare('PRAGMA user_version').get().user_version);if(version>6)throw new Error(`Unsupported state schema: ${version}`);},/Unsupported state schema: 14/);}
+  try {assert.throws(()=>{const version=Number(oldReader.prepare('PRAGMA user_version').get().user_version);if(version>6)throw new Error(`Unsupported state schema: ${version}`);},/Unsupported state schema: 15/);}
   finally{oldReader.close();}
 });

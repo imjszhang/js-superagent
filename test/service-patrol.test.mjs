@@ -69,6 +69,16 @@ test('unknown native work and unfinished tickets forbid recovery without changin
   f.advance(20_000);assert.equal(f.manager.patrol({recover:true}).reason,'native-input-needs-inspection');assert.equal(f.signals.length,0);
 });
 
+test('patrol recognizes material schema but still refuses unfinished material work', t => {
+  const f = fixture(t); f.start(); f.stale();
+  f.mutate(db => { db.exec('PRAGMA user_version=15'); db.prepare('INSERT INTO domain_tickets VALUES(?,?)').run('material-work', JSON.stringify({ id: 'material-work' })); });
+  assert.equal(f.manager.patrol({ recover: true }).reason, 'unfinished-tickets');
+  assert.equal(f.signals.length, 0);
+  f.mutate(db => db.exec('DELETE FROM domain_tickets'));
+  f.advance(20_000);
+  assert.notEqual(f.manager.patrol({ recover: true }).reason, 'project-version-needs-inspection');
+});
+
 test('the first refused recovery explains its safety reason once even after the unchanged fault was already reported',t=>{
   const f=fixture(t);f.start();f.pulse({modelWaits:1});f.stale();assert.equal(f.manager.patrol().notify,true);assert.equal(f.manager.patrol().notify,false);
   const refused=f.manager.patrol({recover:true});assert.equal(refused.reason,'business-needs-attention');assert.equal(refused.notify,true);

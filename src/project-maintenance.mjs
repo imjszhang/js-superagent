@@ -73,6 +73,7 @@ function stoppedFacts(root) { return stoppedDatabaseFacts(dbPath(root)); }
 function stoppedDatabaseFacts(database) {
   if (!existsSync(database)) return { owners: [], blockers: [] };
   const facts = inspectDatabase(database), blockers = facts.owners.filter(owner => owner.state !== 'dead').map(owner => ({ code: 'PROJECT_EXECUTION_ACTIVE', resource: owner.name }));
+  if (facts.schemaVersion > 15) blockers.push({ code: 'PROJECT_MAINTENANCE_SCHEMA', resource: database });
   readDb(database, db => {
     for (const row of rows(db, 'managed-job:')) if (['pending', 'running'].includes(row.value.status)) blockers.push({ code: 'PROJECT_JOB_UNSETTLED', resource: row.key });
     if (table(db, 'receipts')) for (const row of db.prepare("SELECT id,data,status FROM receipts WHERE status<>'sent'").all()) {
@@ -233,7 +234,7 @@ export async function reinitializeProject({ projectRoot, apply = false } = {}, d
       const temporary = join(entry.backup.directory, 'new-state.sqlite');
       if (!existsSync(dbPath(root))) {
         const store = new Store(temporary);
-        try { store.setMeta('instance:identity', { instanceId: identity.instanceId, stateId: identity.stateId }); store.setMeta('runtime:minimum-version', '0.13.0-alpha.0'); store.db.exec('PRAGMA user_version=14'); } finally { store.close(); }
+        try { store.setMeta('instance:identity', { instanceId: identity.instanceId, stateId: identity.stateId }); store.setMeta('runtime:minimum-version', '0.15.0-alpha.0'); store.db.exec('PRAGMA user_version=15'); } finally { store.close(); }
         renameSync(temporary, dbPath(root));
       }
       createMachineCoordinator({ projectRoot: root, projectId: next.projectId }, dependencies).register();
@@ -290,7 +291,9 @@ function rewriteState(root, from, entry, workspaceUpdates) {
     if (!db.prepare('SELECT 1 FROM kv WHERE key=?').get(archiveKey)) save.run(archiveKey, JSON.stringify(sessions));
     save.run('project:relocation', JSON.stringify({ id: entry.id, fromRoot: from, toRoot: root, requiresInspection: inspections.length > 0, tickets: inspections, at: new Date().toISOString() }));
     save.run('runtime:pause', JSON.stringify({ paused: true, reason: 'project-relocated-inspect-before-resuming', at: new Date().toISOString() }));
-    save.run('runtime:minimum-version', JSON.stringify('0.13.0-alpha.0')); db.exec('PRAGMA user_version=14; COMMIT');
+    // Relocation changes identity/path facts, never downgrades the source schema
+    // or its minimum writer version. Material grants remain bound to the old root.
+    db.exec('COMMIT');
     return inspections;
   } catch (error) { try { db.exec('ROLLBACK'); } catch {} throw error; } finally { db.close(); }
 }

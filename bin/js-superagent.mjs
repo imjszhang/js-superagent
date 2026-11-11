@@ -22,7 +22,7 @@ const help = `js-superagent --project <directory> <command>
   --help, -h             Show this help
 
   init                   Initialize project-local configuration and SQLite state
-  upgrade                Back up and upgrade stopped project state to schema 14
+  upgrade                Back up and upgrade stopped project state to schema 15
   doctor                 Inspect installation (no model call)
   setup check            Unified read-only project setup report; --check-connections probes metadata/account reads
   diagnostics events [file]  Read event routing and delivery facts; optional JSON filters
@@ -60,6 +60,13 @@ const help = `js-superagent --project <directory> <command>
   session replace <id> <file>  Replace session using reviewed JSON identity/reason
   prompts status        Inspect prompt revisions, assembly and default differences
   prompts set <file> <revision>  Save team sections and prompt overrides
+  materials status      Inspect source grants and versioned capabilities
+  materials set <file> <revision>  Configure authorized project materials while stopped
+  materials snapshot <file>  Capture {sourceId,view?,actor?} as an immutable host snapshot
+  materials prepare <ticket> <file>  Request {materialId,provisionId,reason}
+  materials prepare-status|prepare-retry <ticket>  Inspect or retry workspace preparation
+  materials apply-preview|apply|apply-recover <ticket> <file>  Preview/apply/recover an explicit local write
+  materials apply-status <ticket> <operation>  Read the durable local application receipt
   recovery status       Inspect bounded automatic recovery settings
   recovery set <file> <revision>  Save trusted recovery settings
   incidents list        Inspect persisted business incidents
@@ -303,6 +310,7 @@ try {
     const reviewAction = command === 'review' && (args[0] === 'status' && [1,2].includes(args.length) || args[0] === 'request' && args.length === 3 || args[0] === 'run' && args.length === 2);
     const nativePreviewAction = command === 'native-preview' && (args[0] === 'close' && args.length === 4 || args[0] === 'renew' && [4,5].includes(args.length));
     const deliveryAction = ['delivery','scheduler','executor','jobs','repository','prompts','recovery'].includes(command) && ((args.length === 1 && args[0] === 'status') || (args.length === 3 && args[0] === 'set'));
+    const materialAction = command === 'materials' && (args[0] === 'status' && args.length === 1 || args[0] === 'set' && args.length === 3 || args[0] === 'snapshot' && args.length === 2 || ['prepare-status','prepare-retry'].includes(args[0]) && args.length === 2 || ['prepare','apply-preview','apply','apply-recover','apply-status'].includes(args[0]) && args.length === 3);
     const traceAction = command === 'trace' && [1, 2].includes(args.length);
     const sessionAction = command === 'session' && (args[0] === 'inspect' && args.length === 2 || args[0] === 'replace' && args.length === 3);
     const incidentAction = command === 'incidents' && (args[0] === 'list' && args.length === 1 || args[0] === 'ack' && args.length === 3);
@@ -320,7 +328,7 @@ try {
     const projectAction = command === 'project' && args.length === 1 && ['inspect', 'reinitialize', 'relocate', 'migrate-state'].includes(args[0]);
     const maintenanceAction = projectAction && args[0] !== 'inspect';
     const bindingRelease = githubAction && args[0] === 'binding' && args[1] === 'release';
-    if (!diagnosticAction && !setupAction && !controlAction && !machineAction && !projectsAction && !projectAction && !reviewAction && !nativePreviewAction && !configSet && !configShow && !githubAction && !serviceAction && !coordinatorAction && !coordinationAction && !deliveryAction && !traceAction && !sessionAction && !incidentAction && !jobAction && !adoptionAction && !harnessAction && (!(command in arity) || args.length !== arity[command])) throw new Error('Invalid command or arguments. Use --help; quote task text.');
+    if (!materialAction && !diagnosticAction && !setupAction && !controlAction && !machineAction && !projectsAction && !projectAction && !reviewAction && !nativePreviewAction && !configSet && !configShow && !githubAction && !serviceAction && !coordinatorAction && !coordinationAction && !deliveryAction && !traceAction && !sessionAction && !incidentAction && !jobAction && !adoptionAction && !harnessAction && (!(command in arity) || args.length !== arity[command])) throw new Error('Invalid command or arguments. Use --help; quote task text.');
     if (values.plan !== undefined || values.apply !== undefined) {
       if (!(maintenanceAction || bindingRelease) || Boolean(values.plan) === Boolean(values.apply)) throw new Error('Use exactly one of --plan or --apply with project maintenance or github binding release.');
     } else if (maintenanceAction || bindingRelease) throw new Error('Choose --plan to inspect or --apply to perform this operation.');
@@ -516,6 +524,17 @@ try {
         case 'trace': result = runtime.ticketTrace(args[0], args[1] ? JSON.parse(readFileSync(resolve(args[1]), 'utf8')) : undefined); break;
         case 'session': result = args[0] === 'inspect' ? runtime.sessionStatus(args[1]) : await runtime.replaceSession(args[1], JSON.parse(readFileSync(resolve(args[2]), 'utf8'))); break;
         case 'prompts': result = args[0] === 'status' ? runtime.promptStatus() : runtime.configurePrompts(JSON.parse(readFileSync(resolve(args[1]), 'utf8')), {expectedRevision:Number(args[2]),origin:'cli'}); break;
+        case 'materials': {
+          const input = index => JSON.parse(readFileSync(resolve(args[index]), 'utf8'));
+          if (args[0] === 'status') result = {capabilities:runtime.materialCapabilities(),settings:runtime.getMaterialSettings()};
+          else if (args[0] === 'set') result = runtime.configureMaterials(input(1), {expectedRevision:Number(args[2])});
+          else if (args[0] === 'snapshot') result = runtime.createMaterialSnapshot(input(1));
+          else if (args[0] === 'prepare-status') result = runtime.workspacePreparationStatus(args[1]);
+          else if (args[0] === 'prepare-retry') result = runtime.retryWorkspacePreparation(args[1]);
+          else if (args[0] === 'apply-status') result = runtime.materialApplicationStatus(args[1], args[2]);
+          else result = await runtime[{'prepare':'requestWorkspacePreparation','apply-preview':'previewMaterialApplication','apply':'applyMaterialChanges','apply-recover':'recoverMaterialApplication'}[args[0]]](args[1], input(2));
+          break;
+        }
         case 'recovery': result = args[0] === 'status' ? runtime.getRecoverySettings() : runtime.configureRecovery(JSON.parse(readFileSync(resolve(args[1]), 'utf8')), {expectedRevision:Number(args[2])}); break;
         case 'incidents': result = args[0] === 'list' ? runtime.getIncidents() : runtime.acknowledgeIncident(args[1], {expectedRevision:Number(args[2])}); break;
         case 'reevaluate': result = runtime.reevaluate(args[0]); break;

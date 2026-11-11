@@ -80,6 +80,17 @@ test('relocation preserves ticket and repository identity, pauses work and requi
   assert.equal(existsSync(join(stateDir(f.from), 'state.sqlite.maintenance-lock')), false);
 });
 
+test('relocation preserves material schema and minimum writer fence', async t => {
+  const f = fixture(t), source = new Store(join(stateDir(f.from), 'state.sqlite'));
+  source.db.exec('PRAGMA user_version=15'); source.setMeta('runtime:minimum-version', '0.15.0-alpha.0'); source.close();
+  f.copy();
+  await relocateProject({ projectRoot: f.to, fromRoot: f.from, apply: true }, f.deps);
+  const db = new DatabaseSync(join(stateDir(f.to), 'state.sqlite'), { readOnly: true });
+  try { assert.equal(Number(db.prepare('PRAGMA user_version').get().user_version), 15); }
+  finally { db.close(); }
+  assert.equal(f.meta(f.to, 'runtime:minimum-version'), '0.15.0-alpha.0');
+});
+
 test('interrupted relocation remains fenced and can resume or roll back without deleting the original', async t => {
   const f = fixture(t); f.copy();
   await assert.rejects(relocateProject({ projectRoot: f.to, fromRoot: f.from, apply: true }, { ...f.deps, afterStep: phase => { if (phase === 'rewritten') throw new Error('injected interruption'); } }), /injected/);

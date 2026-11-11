@@ -35,19 +35,19 @@ test('W35 schema8 queries stay unchanged; explicit schema9 upgrade backs up, mar
   assert.equal(readdirSync(f.directory).filter(name=>name.endsWith('.backup')).length,0);
   const cli=spawnSync(process.execPath,[join(packageRoot,'bin/js-superagent.mjs'),'--project',f.root,'review','status'],{encoding:'utf8'});
   assert.equal(cli.status,0,cli.stderr);assert.deepEqual(JSON.parse(cli.stdout),[]);assert.equal(inspectDatabase(f.path).schemaVersion,8);
-  assert.equal(f.runtime.upgradeRuntime().schemaVersion,14);assert.equal(f.store.getMeta('runtime:minimum-version'),'0.13.0-alpha.0');
-  const facts=inspectDatabase(f.path);assert.equal(facts.schemaVersion,14);assert.equal(facts.migrations.at(-1).id,'host-alignment-v13');
+  assert.equal(f.runtime.upgradeRuntime().schemaVersion,15);assert.equal(f.store.getMeta('runtime:minimum-version'),'0.15.0-alpha.0');
+  const facts=inspectDatabase(f.path);assert.equal(facts.schemaVersion,15);assert.equal(facts.migrations.at(-1).id,'project-materials-v14');
   const budget=new BotReviewBudget(f.store);assert.equal(budget.get(f.binding,'42').historicalUnknown,true);
   assert.equal(budget.inspect(f.binding,{id:'review:1',kind:'review',reviewId:'1',actor:{id:'42'}}).reason,'bot-review-history-unknown');
   assert.throws(()=>previousWriter(f.path),/Unsupported state schema: 9/);
   const backups=readdirSync(f.directory).filter(name=>name.endsWith('.backup'));assert.equal(backups.length,1);
   const backupPath=join(f.directory,backups[0]),manifest=JSON.parse(readFileSync(`${backupPath}.json`,'utf8'));
-  assert.equal(manifest.schemaVersion,8);assert.equal(manifest.targetVersion,14);assert.equal(inspectDatabase(backupPath).schemaVersion,8);
-  assert.equal(f.runtime.upgradeRuntime().schemaVersion,14);assert.equal(readdirSync(f.directory).filter(name=>name.endsWith('.backup')).length,1);
+  assert.equal(manifest.schemaVersion,8);assert.equal(manifest.targetVersion,15);assert.equal(inspectDatabase(backupPath).schemaVersion,8);
+  assert.equal(f.runtime.upgradeRuntime().schemaVersion,15);assert.equal(readdirSync(f.directory).filter(name=>name.endsWith('.backup')).length,1);
   const options={path:f.path,backupPath,expectedVersion:8,assertStopped:()=>true};
   await assert.rejects(prepareDatabaseRestore(options),/reconciliation/);
   const staged=await prepareDatabaseRestore({...options,reconciliation:{backupId:manifest.id,note:'Temporary fixture only; no external effects occurred.'}});
-  assert.equal(staged.installRequired,true);assert.equal(staged.oldPackageRequired,true);assert.equal(inspectDatabase(f.path).schemaVersion,14);
+  assert.equal(staged.installRequired,true);assert.equal(staged.oldPackageRequired,true);assert.equal(inspectDatabase(f.path).schemaVersion,15);
   const old=previousWriter(staged.path);try{assert.equal(old.prepare('SELECT data FROM kv WHERE key=?').get('runtime:minimum-version').data,'"0.7.0-alpha.0"');
     assert.equal(old.prepare('SELECT data FROM kv WHERE key=?').get(legacyReviewBudgetKey(f.binding)),undefined);}finally{old.close();}
 });
