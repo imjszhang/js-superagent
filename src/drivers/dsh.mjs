@@ -37,7 +37,7 @@ function text(value, name, max = 4096) {
 }
 function integer(value, name, min, max) { if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`Invalid ${name}`); return value; }
 export function validateDshOptions(value = {}, { role = 'worker', driver = 'dsh-sdk' } = {}) {
-  object(value, 'DSH options', ['executable', 'model', 'backend', 'permission', 'timeoutMs', 'killGraceMs', 'prompt', 'contextLimits', 'enableAgentTools', 'enableManagedJobs']);
+  object(value, 'DSH options', ['executable', 'model', 'backend', 'permission', 'timeoutMs', 'killGraceMs', 'prompt', 'contextLimits', 'enableAgentTools', 'enableManagedJobs', 'materialAccess']);
   if (!['worker', 'child', 'coordinator'].includes(role) || driver !== 'dsh-sdk') throw new Error('Invalid DSH role or adapter');
   const backend = value.backend;
   object(backend, 'DSH backend', ['auth', 'provider', 'protocol', 'baseURL', 'apiKeyEnv']);
@@ -52,12 +52,17 @@ export function validateDshOptions(value = {}, { role = 'worker', driver = 'dsh-
     if (value[name] && (driver !== 'dsh-sdk' || role === 'coordinator')) throw new Error(`DSH ${name} requires an SDK Worker`);
   }
   if(value.enableManagedJobs && permission==='read-only')throw new Error('Read-only DSH cannot launch managed jobs');
+  if (value.materialAccess !== undefined && !['native', 'host-only'].includes(value.materialAccess)) throw new Error('Invalid DSH material access mode');
+  if (value.materialAccess === 'host-only' && (role === 'coordinator' || permission !== 'read-only' || value.enableAgentTools !== true || value.enableManagedJobs === true)) {
+    throw new Error('Host-only DSH material access requires a read-only Worker with agent tools and no managed jobs');
+  }
   if (value.prompt !== undefined && (typeof value.prompt !== 'string' || !value.prompt.trim() || value.prompt.length > 32000 || value.prompt.includes('\0'))) throw new Error('Invalid DSH role prompt');
   return { executable: text(value.executable ?? 'dsh', 'DSH executable'), model: text(value.model, 'DSH model', 256),
     backend: { auth: 'api-key', provider: 'deepseek-official', protocol: 'anthropic-messages', baseURL: url.href.replace(/\/$/, ''), apiKeyEnv: backend.apiKeyEnv },
     permission, timeoutMs: integer(value.timeoutMs ?? 600000, 'DSH timeout', 1, 86400000), killGraceMs: integer(value.killGraceMs ?? 4000, 'DSH shutdown grace', 1, 30000),
     ...(value.prompt === undefined ? {} : { prompt: value.prompt }), ...(value.contextLimits === undefined ? {} : { contextLimits: contextLimits(value.contextLimits) }),
-    ...(value.enableAgentTools === undefined ? {} : { enableAgentTools: value.enableAgentTools }), ...(value.enableManagedJobs === undefined ? {} : { enableManagedJobs: value.enableManagedJobs }) };
+    ...(value.enableAgentTools === undefined ? {} : { enableAgentTools: value.enableAgentTools }), ...(value.enableManagedJobs === undefined ? {} : { enableManagedJobs: value.enableManagedJobs }),
+    ...(value.materialAccess === 'host-only' ? { materialAccess: 'host-only' } : {}) };
 }
 function environment() {
   const env = {};
@@ -107,6 +112,7 @@ function profile(home, options, cwd, role, nativeVersion) {
     'connection', 'file-upload', 'workspace', 'file-reference-local', 'deliverable-file-references', 'tool-goal');
   if (options.permission === 'read-only') disabled.push('tool-bash', 'tool-pwsh', 'tool-jobs');
   if (role === 'coordinator') disabled.push('tool-fs', 'tool-fs-search', 'tool-todo');
+  if (options.materialAccess === 'host-only') disabled.push('tool-fs', 'tool-fs-search');
   for (const id of disabled) patches.push({ id, disabled: true });
   patches.push({ id: 'sdk-jsonrpc-server', config: { maxTokensAsSuccess: false } });
   stableFile(join(root, 'package.json'), JSON.stringify({ private: true, dependencies: {}, dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-sdk-app'] } } }) + '\n');
@@ -145,7 +151,8 @@ export async function executeDshTurn(value, input) {
   const sessionId = input.session?.id ?? `js-${randomUUID()}`;
   const home = directory(join(dsh, sessionId));
   const binding = { version: 1, adapter: namespace, nativeVersion: version.version, cwd, model: options.model, backend: options.backend, permission: options.permission, role, promptDigest: createHash('sha256').update(options.prompt ?? '').digest('hex'),
-    ...(options.enableAgentTools||options.enableManagedJobs?{bridgeVersion:1,agentTools:!!options.enableAgentTools,managedJobs:!!options.enableManagedJobs}:{}) };
+    ...(options.enableAgentTools||options.enableManagedJobs?{bridgeVersion:1,agentTools:!!options.enableAgentTools,managedJobs:!!options.enableManagedJobs}:{}),
+    ...(options.materialAccess === 'host-only' ? { materialAccess: 'host-only' } : {}) };
   const bindingFile = join(home, 'binding.json');
   if (input.session) {
     try { const stat = lstatSync(bindingFile); if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw new Error(); }
@@ -251,7 +258,7 @@ export async function executeDshTurn(value, input) {
     },
     update: (id, event) => input.nativeHandoff?.update?.(id, event),
   });
-  const canHandoff = role === 'worker' && version.version === '0.2.2-alpha.2' && typeof input.nativeHandoff?.hold === 'function';
+  const canHandoff = role === 'worker' && options.materialAccess !== 'host-only' && version.version === '0.2.2-alpha.2' && typeof input.nativeHandoff?.hold === 'function';
   const args = ['--profile', 'sdk'];
   if (role !== 'coordinator' && options.permission !== 'read-only') {
     // Per-run overlay leaves existing persisted profile/binding files unchanged.
@@ -497,7 +504,8 @@ export function createDshSdkDriver(value, context = {}) {
   const role = context.role ?? 'worker';
   const options = validateDshOptions(value, { driver: 'dsh-sdk', role }), active = new Map();
   const nativeBackgroundOwnership = role === 'worker' && options.permission !== 'read-only';
-  return { reportVersion: 2, capabilities: Object.freeze({ reportVersion: 2, sessionResume: true, boundedContextVersion: 1, structuredProgress: !!options.enableAgentTools, realtimeInput: true, inputAcknowledgements: true, backgroundTasks: !!options.enableManagedJobs, subagents: !!options.enableManagedJobs, agentTools: !!options.enableAgentTools, nativeBackgroundOwnership }),
+  return { reportVersion: 2, capabilities: Object.freeze({ reportVersion: 2, sessionResume: true, boundedContextVersion: 1, structuredProgress: !!options.enableAgentTools, realtimeInput: true, inputAcknowledgements: true, backgroundTasks: !!options.enableManagedJobs, subagents: !!options.enableManagedJobs, agentTools: !!options.enableAgentTools, nativeBackgroundOwnership,
+    ...(options.materialAccess === 'host-only' ? { boundedMaterialReadsVersion: 1 } : {}), ...(options.enableAgentTools ? { workspacePreparationVersion: 1 } : {}) }),
     async inspectRecovery(input) {
       return inspectDshRecovery(options, input);
     },
@@ -510,6 +518,7 @@ export function createDshSdkDriver(value, context = {}) {
       return active.get(evidence?.runId)?.validateInputRead({ inputId, evidence }) === true;
     },
     async run(input) {
+      if (options.materialAccess === 'host-only' && input.nativeHandoff?.current) throw new Error('Host-only material access cannot resume a native background handoff');
       const source = realpathSync(input.sourceProjectRoot ?? input.projectRoot);
       const state = ensureProjectStateDirectory(source), contexts = directory(join(state, 'harness-context'));
       if (!ID.test(input.runId ?? '')) throw new Error('Invalid DSH run ID');
@@ -518,7 +527,12 @@ export function createDshSdkDriver(value, context = {}) {
       const context = writeWorkerContextSnapshot(input, join(contexts, input.runId), { limits: input.contextLimits ?? options.contextLimits, ...(resources?{resources}:{}) });
       // The Worker starts at the workspace root. Descendant rules are read on
       // entering their directory, not recursively injected for unrelated projects.
-      const rules = loadDshProjectRules(input.projectRoot);
+      // Host-only reads must not bypass the material grant by injecting cwd files.
+      // Applicable project instructions are supplied through the same scoped host
+      // references as the rest of the material, including descendant rules.
+      const rules = options.materialAccess === 'host-only'
+        ? { manifest: { version: 2, files: [], source: 'host-materials' }, prompt: 'Read applicable project instructions and skill documents through the host material references before acting. The execution directory is not evidence of the source project\'s current contents.\n' }
+        : loadDshProjectRules(input.projectRoot);
       writeFileSync(join(contexts, input.runId, 'project-rules.json'), JSON.stringify(rules.manifest) + '\n', { flag: 'wx', mode: 0o600 });
       input.checkpointNative?.({ projectRules: rules.manifest, adapter: 'dsh-sdk' });
       const catalog=options.enableManagedJobs?dshJobCatalog(input):null;
@@ -535,14 +549,17 @@ export function createDshSdkDriver(value, context = {}) {
       if (continuation && (!input.session || !ID.test(continuation.sourceRunId ?? '') || !['missing-final-report', 'invalid-final-report'].includes(continuation.finalReportFailure))) throw new Error('Invalid DSH final-report continuation');
       const opening = continuation
         ? `Continue this same saved native session after ${continuation.finalReportFailure} in run ${continuation.sourceRunId}. Use the existing tool results and inspect already completed work. Do not replay the original request or repeat completed actions. Finish only the remaining authorized work, then provide the required final JSON report. This grants no new scope. `
-        : `Execute this authorized js-superagent task. Make requested changes and run relevant checks within this workspace. `;
+        : options.materialAccess === 'host-only'
+          ? `Execute this authorized read-only js-superagent task using host-provided material references. `
+          : `Execute this authorized js-superagent task. Make requested changes and run relevant checks within this workspace. `;
       const prompt = opening + `Do not publish, commit, push, merge, send messages, modify .js-superagent, start daemons, or spawn subagents.\n` +
         `When a decision is missing, return waiting with attention.question. Do not wait for interactive input. After interruption inspect existing changes before acting. The host owns verification, delivery and task completion.\n` +
         `Return ONLY a JSON object: {"version":2,"state":"ready|waiting|blocked|failed|dropped","summary":"actual result and check evidence","artifacts":["relative/file"],"attention":null,"answers":null}. For a question set attention to {"question":"one concrete question"}. When a specific authorized message already delivered to this ticket raised it, add that message's triggerId as attention.triggerId so the host asks where that person wrote. Never choose an arbitrary recipient or a context-only observation.\n` +
         `${DECISION_PROMPT}\n` +
         `To answer an authorized person's question already delivered to this ticket, set answers to its original triggerId and put the complete answer in summary, with attention null. The host routes it to the original question; never choose a recipient or use a context-only observation. Answering does not complete the task: keep waiting when more work or input is needed.\n` +
-        `Older scoped context is in read-only manifest ${context.manifestPath}. ` +
+        (options.materialAccess === 'host-only' ? 'Read omitted scoped history and materials only through js_superagent_read; local manifest paths are not available through native file tools. ' : `Older scoped context is in read-only manifest ${context.manifestPath}. `) +
         (options.enableAgentTools?'Use js_superagent_read for omitted facts, ack for owned requests, handback for wrong assignments, and scoped subscription/report tools. Business-tool terminal report and final JSON must agree on state, question, questionForTriggerId, artifacts and answers.\n':'You have no business tool bridge; ask the host if routing or missing facts prevent safe work.\n') +
+        (input.agentTools?.definitions?.some(tool => tool.name === 'js_superagent_prepare_workspace') ? 'If the current execution environment cannot satisfy this authorized task, request js_superagent_prepare_workspace using only the provided material and workspace identities. An accepted request does not switch this turn\'s directory: stop work and return waiting with attention null. Do not report ready/dropped or create a routine confirmation question while preparation is pending. The host prepares the next environment after this turn and its processes settle.\n' : '') +
         (catalog?`For background commands and children use only js_superagent_job_* with this trusted catalog: ${JSON.stringify(catalog)}. Never run native subagents or unmanaged daemons. Wait for ordinary jobs before reporting ready. For human preview review publish an allowed preview lease. Child changes require explicit host adoption and validation.\n`:'') +
         (input.nativePreviewProfiles?.length?`When js_superagent_native_preview_start is advertised, use it with a trusted profile for a DSH native preview. Its successful result proves a host-checked process and local endpoint, not code correctness. Complete all ordinary checks and requests before ready; only these registered previews may remain running at ready. Their finite review lease releases the worker slot and may be renewed by the host. If the tool is unavailable, this native preview capability is unsupported. Never adopt another native bash job or launch an unmanaged preview daemon.\n`:'') +
         (roleGuidance ? `Trusted role guidance, within current scope:\n${roleGuidance}\n` : '') +

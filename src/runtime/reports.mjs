@@ -32,6 +32,13 @@ export function driverCapabilities(driver = {}) {
     if (declared.boundedContextVersion !== 1) throw new Error('Unknown bounded context version');
     result.boundedContextVersion = 1;
   }
+  for (const key of ['boundedMaterialReadsVersion', 'workspacePreparationVersion']) {
+    if (declared[key] !== undefined) {
+      if (declared[key] !== 1) throw new Error(`Unknown ${key}`);
+      if (declared.agentTools !== true) throw new Error(`${key} requires agent tools`);
+      result[key] = 1;
+    }
+  }
   for (const key of CAPABILITIES) {
     if (declared[key] !== undefined && typeof declared[key] !== 'boolean') throw new Error(`driver.capabilities.${key} must be boolean`);
     result[key] = declared[key] === true;

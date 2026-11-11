@@ -11,8 +11,11 @@ async function call(bridge, value = payload, authorization) {
   return { status: response.status, body: await response.json() };
 }
 test('DSH bridge binds authorization and identity, deduplicates exact calls and preserves UTF-8', async () => {
-  const calls = [];
-  const bridge = await openDshToolBridge({ runId: 'run-1', agentTools: { version: 1, definitions: [definition], call: async value => { calls.push(value); return { text: value.arguments.text }; } } }, { sessionId: 'session-1', options: { enableAgentTools: true }, redact: value => value });
+  const calls = [], receipts = new Map();
+  const bridge = await openDshToolBridge({ runId: 'run-1', agentTools: { version: 1, definitions: [definition], call: async value => {
+    if (!receipts.has(value.callId)) { calls.push(value); receipts.set(value.callId, { text: value.arguments.text }); }
+    return receipts.get(value.callId);
+  } } }, { sessionId: 'session-1', options: { enableAgentTools: true }, redact: value => value });
   try {
     assert.equal((await call(bridge, payload, 'Bearer wrong')).status, 403);
     assert.equal((await call(bridge, { ...payload, sessionId: 'another' })).status, 403);
@@ -70,5 +73,37 @@ test('a rejected command launch tells the model which fields to send, without ho
     assert.match(rejected.body.hint, /Command profiles take only profileId/);
     assert.doesNotMatch(JSON.stringify(rejected.body), /extra fields are rejected/);
     assert.equal((await call(bridge, { ...payload, callId: 'id-only', name: 'js_superagent_job_start', arguments: { profileId: 'fetch' } })).status, 200);
+  } finally { await bridge.close(); }
+});
+test('material and preparation failures preserve actionable categories without disclosing private diagnostics', async () => {
+  const bridge = await openDshToolBridge({ runId: 'run-1', agentTools: { version: 1, definitions: [definition], call(value) {
+    throw Object.assign(new Error('private /home/credentials/source diagnostic'), { code: value.arguments.code });
+  } } }, { sessionId: 'session-1', options: { enableAgentTools: true }, redact: value => value });
+  try {
+    for (const [code, category, hint] of [
+      ['MATERIAL_CHANGED', 'source-changed', /new call/],
+      ['MATERIAL_BINDING_CHANGED', 'authorization-changed', /Stop using old references/],
+      ['PREPARATION_CONFLICT', 'preparation-conflict', /saved result/],
+      ['MATERIAL_LIMIT', 'budget-or-capacity', /incomplete coverage/],
+      ['MATERIAL_SNAPSHOT', 'source-changed', /do not fall back/],
+    ]) {
+      const response = await call(bridge, { ...payload, callId: code, arguments: { code } });
+      assert.equal(response.status, 403); assert.equal(response.body.category, category); assert.match(response.body.hint, hint);
+      assert.doesNotMatch(JSON.stringify(response.body), /private|credentials|diagnostic/);
+    }
+  } finally { await bridge.close(); }
+});
+test('completed business receipts still recheck host authorization through the live bridge', async () => {
+  let authorized = true, visits = 0;
+  const bridge = await openDshToolBridge({ runId: 'run-1', agentTools: { version: 1, definitions: [definition], call() {
+    visits++;
+    if (!authorized) throw Object.assign(new Error('Private authorization details'), { code: 'MATERIAL_BINDING_CHANGED' });
+    return { text: 'durable historical receipt' };
+  } } }, { sessionId: 'session-1', options: { enableAgentTools: true }, redact: value => value });
+  try {
+    assert.equal((await call(bridge)).status, 200);
+    authorized = false;
+    const replay = await call(bridge);
+    assert.equal(replay.status, 403); assert.equal(replay.body.category, 'authorization-changed'); assert.equal(visits, 2);
   } finally { await bridge.close(); }
 });

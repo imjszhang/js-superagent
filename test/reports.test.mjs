@@ -2,6 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { driverCapabilities, normalizeDriverReport, publicTicketReport, domainReport, detailedTicketView, sameBusinessReport } from '../src/runtime/reports.mjs';
 
+test('material and preparation capabilities require an explicit supported version and tool bridge', () => {
+  const capabilities = driverCapabilities({ capabilities: { agentTools: true, boundedMaterialReadsVersion: 1, workspacePreparationVersion: 1 } });
+  assert.equal(capabilities.boundedMaterialReadsVersion, 1);
+  assert.equal(capabilities.workspacePreparationVersion, 1);
+  for (const key of ['boundedMaterialReadsVersion', 'workspacePreparationVersion']) {
+    assert.throws(() => driverCapabilities({ capabilities: { agentTools: true, [key]: 2 } }), /Unknown/);
+    assert.throws(() => driverCapabilities({ capabilities: { [key]: 1 } }), /requires agent tools/);
+  }
+});
+
 test('retired v1 reports are rejected while ticket status projection stays readable', () => {
   const capabilities = driverCapabilities({ reportVersion: 2, run() {} });
   assert.equal(capabilities.reportVersion, 2);

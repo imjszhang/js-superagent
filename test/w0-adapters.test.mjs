@@ -27,7 +27,7 @@ test('W0 exposes the native adapters and requires registered modern extensions',
   const listed = registry.list();
   assert.deepEqual(listed.map(item => item.id).sort(), ['codex-app-server', 'cursor-agent', 'dsh-sdk']);
   assert.equal(listed.find(item => item.id === 'codex-app-server').label, 'Codex');
-  assert.deepEqual(listed.find(item => item.id === 'dsh-sdk').settingsFields, ['backend', 'permission', 'contextMode']);
+  assert.deepEqual(listed.find(item => item.id === 'dsh-sdk').settingsFields, ['backend', 'permission', 'contextMode', 'materialAccess']);
   assert.deepEqual(listed.find(item => item.id === 'codex-app-server').preserveOnSave, ['executable']);
   for (const driver of ['codex', 'dsh-headless']) assert.throws(() => registry.createDriver({ driver }), /migrat|retired|removed/i);
   registry.register({ ...adapter(async () => ({ status: 'completed', summary: 'old' })), createDriver: () => ({ run() {} }) });

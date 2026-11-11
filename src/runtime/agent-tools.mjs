@@ -12,6 +12,7 @@ const string = (value, key, limit = 4000) => {
 const schema = (properties, required = Object.keys(properties)) => ({ type: 'object', additionalProperties: false, properties, required });
 const field = { type: 'string' };
 const commands = {
+  prepare_workspace: { description: 'Request a host-prepared copy of an authorized material for this ticket. Use only a host-provided materialId and the current provisionId; never supply paths, commands or permissions. After acceptance, end this turn with waiting and no question. The host switches the environment only after the current execution is settled.', inputSchema: schema({ materialId: field, provisionId: field, reason: field }) },
   review: { description: 'Queue a configured PR review action after host verification and delivery. request is JSON with kind ready/requestReviewers/finding (legacy resolveThread means fixed), optional pullNumber, reviewers/teams, or original commentId/triggerId/reason and disposition fixed/declined/unresolved. Fixed findings resolve quietly; declined findings receive one original-thread explanation, then only bot threads resolve; unresolved findings stay open. This never authorizes merging or arbitrary GitHub writes.', inputSchema: schema({request:field}) },
   ack: { description: 'Acknowledge that this assignment owns one human request. This does not mark transport input read or grant new scope.', inputSchema: schema({ triggerId: field, text: field }) },
   handback: { description: 'Return an input owned by this ticket to coordination when it asks for unrelated or broader work. Preserve its original identity and give the concrete reason.', inputSchema: schema({ triggerId: field, reason: field }) },
@@ -108,9 +109,6 @@ export function createWorkerToolHost({ store, identity, assertActive, sessionId,
       authorize(request);
       const requestedLimit = request.arguments.limit ?? limits.pageBytes;
       if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 256 || requestedLimit > limits.pageBytes) throw new Error('Invalid context page limit');
-      prepared = remoteReads.prepare({ ...structuredClone(request.arguments), limit: requestedLimit });
-      if (prepared?.then || !prepared || typeof prepared !== 'object' || contextBytes(prepared) > 32_000) throw new Error('Remote context preparation must be bounded and synchronous');
-      validateRemote(prepared);
       const previous = store.getMeta(key);
       if (previous) {
         if (previous.signature !== signature || previous.sessionId !== request.sessionId || previous.turnId !== request.turnId) throw new Error('Agent tool call identity conflict');
@@ -121,6 +119,12 @@ export function createWorkerToolHost({ store, identity, assertActive, sessionId,
           return;
         }
       }
+      // A completed call is a historical receipt, not a new observation. Only
+      // authorization is rechecked above; current content must not be prepared
+      // again before replaying the saved bytes.
+      prepared = remoteReads.prepare({ ...structuredClone(request.arguments), limit: requestedLimit });
+      if (prepared?.then || !prepared || typeof prepared !== 'object' || contextBytes(prepared) > 32_000) throw new Error('Remote context preparation must be bounded and synchronous');
+      validateRemote(prepared);
       const budget = store.getMeta(budgetKey) ?? { reads: 0, bytes: 0, calls: 0 };
       const reserve = Math.min(requestedLimit + 4096, limits.readBytes - budget.bytes - (budget.reservedBytes ?? 0));
       if (budget.calls >= 128 || budget.reads >= limits.maxReads || reserve < requestedLimit) throw new Error('Agent remote context budget exhausted');

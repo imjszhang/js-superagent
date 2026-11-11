@@ -4,7 +4,7 @@ import { jsonAssessmentPrompt, parseAssessmentReport } from '../../runtime/asses
 import { createTurnAssessor } from '../../runtime/turn-assessor.mjs';
 
 function stripCoordinatorTools(execution) {
-  const { enableAgentTools, enableManagedJobs, requiredCapabilities, permission, ...settings } = execution;
+  const { enableAgentTools, enableManagedJobs, requiredCapabilities, permission, materialAccess, ...settings } = execution;
   return settings;
 }
 export const dshAssessmentPrompt = jsonAssessmentPrompt;
@@ -36,9 +36,9 @@ export function createDshAssessor(options = {}) {
 }
 export const dshSdkAdapter = {
   id: 'dsh-sdk', version: '1', label: 'DSH', roles: ['worker', 'child', 'coordinator'],
-  capabilities: { reportVersion: 2, sessionResume: true, boundedContextVersion: 1, structuredProgress: true, realtimeInput: true, inputAcknowledgements: true, backgroundTasks: true, subagents: true, agentTools: true },
-  supervised: true, defaultExecutable: 'dsh', settingsFields: ['backend', 'permission', 'contextMode'],
-  preserveOnSave: ['executable', 'backend', 'permission', 'contextMode'],
+  capabilities: { reportVersion: 2, sessionResume: true, boundedContextVersion: 1, boundedMaterialReadsVersion: 1, workspacePreparationVersion: 1, structuredProgress: true, realtimeInput: true, inputAcknowledgements: true, backgroundTasks: true, subagents: true, agentTools: true },
+  supervised: true, defaultExecutable: 'dsh', settingsFields: ['backend', 'permission', 'contextMode', 'materialAccess'],
+  preserveOnSave: ['executable', 'backend', 'permission', 'contextMode', 'materialAccess'],
   serviceLaunch(execution) {
     return { executable: execution.executable ?? 'dsh', environment: {}, credentialEnvNames: [execution.backend.apiKeyEnv] };
   },
