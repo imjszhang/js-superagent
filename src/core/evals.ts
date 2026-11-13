@@ -157,8 +157,9 @@ export class Evals extends EnginePart {
     return this.decideEval(thread, evaluation, outcome)
   }
   /**
-   * End one input without lending it the batch's authority or deciding its other inputs. An unavailable result can record
-   * why this input could not be handled even after its admission or worker ownership changed; it never changes that worker.
+   * End one input without lending it the batch's authority or deciding its other inputs. Ignore may close an unadmitted
+   * retained input with no worker owner. Unavailable can record why an input could not be handled even after its admission
+   * or worker ownership changed; it never changes that worker.
    * The source Eval must still be current under the same Policy. A repeated or superseded result cannot settle a new Eval.
    */
   decideTrigger(triggerId: string, outcome: TriggerOutcome): Decision {
@@ -181,10 +182,9 @@ export class Evals extends EnginePart {
         return current?.evaluating?.id === evaluation.id ? { ...current, evaluating: undefined } : current
       },
     } })
-    if (outcome.kind === 'ignore') {
-      if (!gate.admissible) throw new UserError('notAdmissible', { reason: gate.reason })
-      if (owners.length) throw new UserError('workerDecides', { tickets: owners.join(', ') })
-    }
+    // Ignoring a retained batch input grants no work authority. Its own gate is
+    // still recorded below; only an actual worker owner can prevent this close.
+    if (outcome.kind === 'ignore' && owners.length) throw new UserError('workerDecides', { tickets: owners.join(', ') })
     const strength = gate.admissible ? gate.strength : 'inferred'
     const unassessed = outcome.kind === 'ignore' && strength !== 'explicit' && !outcome.audit ? [{ code: 'ignoredFromCard' }] : []
     const decision = this.record(thread, {

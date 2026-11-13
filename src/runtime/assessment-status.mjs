@@ -1,5 +1,6 @@
 import { followupOwners } from '../../dist/core/index.js';
 import { createHash } from 'node:crypto';
+import { CONTEXT_REFRESH_EXHAUSTED } from './assessment-refresh.mjs';
 
 const receiptDigest = message => createHash('sha256').update(JSON.stringify(message)).digest('hex');
 const RECEIPT_TEMPLATE = 'assessment-ticket-status-v1';
@@ -16,7 +17,7 @@ export function verifyAssessmentTicketReceipt(message, proof, record, publicId =
       record.evalId !== proof.evalId || !record.triggerIds?.includes(proof.triggerId) || message.kind !== 'reply' ||
       Object.keys(message).some(key => !['id', 'kind', 'ticketId', 'channel', 'text'].includes(key)) ||
       message.id !== `assessment-result:${proof.evalId}:${proof.triggerId}` || proof.messageDigest !== receiptDigest(message)) return false;
-  if (proof.status === 'failed') return record.status === 'failed' && isMaterialBindingDenied(record) && !proof.ticketId && !message.ticketId && message.text === assessmentFailureMessage(record);
+  if (proof.status === 'failed') return record.status === 'failed' && (isMaterialBindingDenied(record) || record.code === CONTEXT_REFRESH_EXHAUSTED && record.failedTriggerIds?.includes(proof.triggerId)) && !proof.ticketId && !message.ticketId && message.text === assessmentFailureMessage(record);
   if (record.status !== 'finished' || !record.result?.applied || !proof.ticketId || message.ticketId !== proof.ticketId) return false;
   const result = record.result;
   if (proof.status === 'accepted' && (result.kind !== 'accept' || publicId(result.decision?.ticketId) !== proof.ticketId || !result.decision.triggerIds?.includes(proof.triggerId))) return false;
@@ -50,6 +51,7 @@ export function assessmentStatus(store, triggerId, { includeOwners = true } = {}
 }
 
 export function assessmentFailureMessage(record) {
+  if (record.code === CONTEXT_REFRESH_EXHAUSTED) return '建单评估的上下文持续变化，已用尽两次自动刷新。请求已保留，尚未开始执行；可重新评估原请求。';
   if (record.code === 'MATERIAL_ACCESS_DENIED') return '建单未完成：请求者没有所选项目材料的读取权限。请求已保留，尚未开始执行；请核对材料读取授权与评估配置，再重新评估原请求。';
   if (record.code === 'MATERIAL_DESTINATION_DENIED') return '建单未完成：当前回复位置未获准接收所选项目材料的结果。请求已保留，尚未开始执行；请核对材料输出授权与评估配置，再重新评估原请求。';
   const kind = publicAssessmentFailure(record).failureKind;

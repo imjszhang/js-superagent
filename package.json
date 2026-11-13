@@ -1,6 +1,6 @@
 {
   "name": "js-superagent",
-  "version": "0.15.0-alpha.5",
+  "version": "0.15.0-alpha.6",
   "description": "Project-local, driver-independent agent task runtime.",
   "type": "module",
   "license": "MIT",
@@ -53,6 +53,7 @@
     "release:prepare": "npm run check && npm run release:pack"
   },
   "devDependencies": {
+    "@larksuiteoapi/node-sdk": "1.76.0",
     "@types/node": "22.20.0",
     "typescript": "6.0.3",
     "vitest": "4.1.12"

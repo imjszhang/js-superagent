@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { AssessmentContextChanged } from './assessment-refresh.mjs';
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const rowVersion = row => digest({ value: row.value, card: row.card });
 const RESOURCES = ['tickets', 'threads', 'triggers', 'decisions', 'requests'];
@@ -45,7 +46,8 @@ export function createCoordinationReader(store, { ticketCard, ticketValue = (_me
     if (request.cursor != null) {
       if (typeof request.cursor !== 'string' || request.cursor.length > 2048) throw new Error('Invalid coordination search cursor');
       let cursor; try { cursor = JSON.parse(Buffer.from(request.cursor, 'base64url')); } catch { throw new Error('Invalid coordination search cursor'); }
-      if (cursor.resource !== resource || cursor.query !== normalized || cursor.version !== version || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0) throw new Error('Context record changed; restart the search');
+      if (cursor.resource !== resource || cursor.query !== normalized || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0) throw new Error('Invalid coordination search cursor');
+      if (cursor.version !== version) throw new AssessmentContextChanged('search-version');
       offset = cursor.offset;
     }
     const selected = matches.slice(offset, offset + 10);
@@ -67,7 +69,7 @@ export function createCoordinationReader(store, { ticketCard, ticketValue = (_me
       return structuredClone(result);
     },
     verify() {
-      for (const item of readSet) if (calculate(item.request, false).version !== item.version) throw new Error('Coordination context or policy changed; reassessment required');
+      for (const item of readSet) if (calculate(item.request, false).version !== item.version) throw new AssessmentContextChanged('read-set-version');
       return true;
     },
     tickets() { return [...tickets.values()]; },

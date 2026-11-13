@@ -72,4 +72,11 @@ test('optional long connection routes authenticated SDK events to durable recept
   const received = []; assert.equal(started, 0);
   await connection.start({ receive: raw => received.push(raw) }); await handler(message()); assert.equal(received.length, 1);
   await connection.stop(); assert.equal(closed, 1);
+  await assert.rejects(handler(message()), /stopped/);
+  assert.equal(received.length, 1, 'a late SDK callback cannot receive after stop');
+  const previousHandler = handler;
+  await connection.start({ receive: raw => received.push(raw) });
+  await assert.rejects(previousHandler(message()), /stopped/);
+  await handler(message()); assert.equal(received.length, 2);
+  await connection.stop(); assert.equal(closed, 2);
 });

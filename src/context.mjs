@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { AssessmentContextChanged } from './runtime/assessment-refresh.mjs';
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function clip(value, limit) { return typeof value === 'string' && value.length > limit ? `${value.slice(0, limit)}\n[truncated]` : value; }
@@ -74,7 +75,7 @@ export function readContextRecord(store, resource, id, { version, offset = 0, li
   const row = store.db.prepare(`SELECT data FROM ${tables[resource]} WHERE id = ?`).get(id);
   if (!row) return null;
   const current = digest(JSON.parse(row.data));
-  if (version && version !== current) throw new Error('Context record changed; reread its current version');
+  if (version && version !== current) throw new AssessmentContextChanged('record-version');
   return { resource, id, version: current, offset, text: row.data.slice(offset, offset + limit),
     nextOffset: offset + limit < row.data.length ? offset + limit : null, length: row.data.length };
 }

@@ -22,6 +22,7 @@ import { CoordinationInbox, normalizeWorkRetry, coordinationFailure } from './ru
 import { normalizeUIEvidence, uiTree, uiEvidenceRequired, captureUIEvidence, validateUIEvidence, readUIEvidencePNG } from './runtime/ui-evidence.mjs';
 import { managementRevision, normalizeManagementIntent, managementCommand } from './runtime/operator-management.mjs';
 import { assessmentFailure } from './runtime/assessment.mjs';
+import { AssessmentContextChanged, isAssessmentContextChanged, CONTEXT_REFRESH_EXHAUSTED, refreshState, resetRefreshCycle, recordContextRefresh } from './runtime/assessment-refresh.mjs';
 import { assessmentStatus, assessmentFailureMessage, isMaterialBindingDenied, assessmentTicketReceiptProof, verifyAssessmentTicketReceipt } from './runtime/assessment-status.mjs';
 import { createCoordinationReader } from './runtime/coordination-context.mjs';
 import { feedbackDisposition } from './runtime/feedback.mjs';
@@ -77,7 +78,7 @@ import { migrateLegacy } from './migration.mjs';
 import { DEFAULT_EXECUTION_DRIVER, initializeProjectConfig, readProjectConfig, mergeProjectConfig, writeProjectConfig, validateProjectOptions } from './config.mjs';
 import { prepareWorkspace, prepareChildWorkspaceSnapshot, prepareContinuationWorkspace, inspectContinuationWorkspace, inspectWorkspace as inspectProjectWorkspace } from './workspaces.mjs';
 import { createHarnessRegistry } from './harness/registry.mjs';
-import { validatePolicyConfig, normalizeGitHubActorTrigger } from './policy.mjs';
+import { validatePolicyConfig, normalizeGitHubActorTrigger, retainedFeishuSupplementAllowed } from './policy.mjs';
 import { observeGitHubCi } from './runtime/github-ci-observation.mjs';
 import { createGitHubChannel, isGitHubReceipt } from './channels/github.mjs';
 import { createFeishuConnection, readFeishuAppSecret, FEISHU_TOPIC_HORIZON_MS } from './channels/feishu.mjs';
@@ -137,8 +138,8 @@ export function createProjectAgent(options) { return new ProjectRuntime(options)
 export class ProjectRuntime {
   #store; #engine; #effects; #outbox; #executionOverride; #overrides; #harnessRegistry;
   #githubChannel; #channelCache; #syncing; #flushing; #cycle; #linking; #webhooks; #ingress; #coordinator; #basePolicy; #assessing; #assessmentAbort; #operation; #operationAbort; #sources; #lane = 0; #children = []; #externalSources; #activeDriver; #liveSending;
-  #busy = false; #retainLock = false; #runError; #inflight; #controller; #timer; #loop; #stopping = false; #lastError; #loopToken;
-  #repositoryRequest; #repositorySourceId; #feishuSDK; #feishuConnection; #feishuSourceId; #feishuState = 'stopped';
+  #busy = false; #retainLock = false; #runError; #inflight; #controller; #timer; #loop; #stopping = false; #stopPromise; #lastError; #loopToken;
+  #repositoryRequest; #repositorySourceId; #feishuSDK; #feishuConnection; #feishuConnecting; #feishuGeneration = 0; #feishuSourceId; #feishuState = 'stopped';
   #jobSweep; #machine; #machineDependencies; #machineHeld = false; #machineWrapped = false; #machineReady = false; #machineRetryAt = 0; #machinePreparing; #guardChannels = new WeakMap(); #guardianIdentities = new Map();
   #controlMethods = new Map(); #controlsDrain; #changeWatches = new Set();
   constructor({ projectRoot, driver, harnessRegistry, workspace, execution, github, githubChannel, repositoryRequest, assessor, sources = [], feishuSDK, [WORKER_LANE]: lane = 0, [MACHINE_DEPENDENCIES]: machineDependencies, [MACHINE_GUARD]: machineGuard } = {}) {
@@ -514,13 +515,14 @@ export class ProjectRuntime {
   }
   #ensureMachineReady() {
     if (this.#machineReady && this.#machine.isReady()) return Promise.resolve();
-    this.#machinePreparing ??= this.#machine.ready().then(() => { this.#machineReady = true; }).finally(() => { this.#machinePreparing = undefined; });
+    this.#machinePreparing ??= this.#machine.ready().then(() => { if (!this.#stopping) this.#machineReady = true; }).finally(() => { this.#machinePreparing = undefined; });
     return this.#machinePreparing;
   }
   async prepareExecution() {
+    if (this.#stopping) throw new Error('Runtime is stopping; await stop() before preparing execution');
     if (!this.#machineHeld) { this.#machine.hold(); this.#machineHeld = true; }
-    try { await this.#ensureMachineReady(); await this.#connectFeishu(); return this.machineStatus(); }
-    catch(error) { if (!this.#loop) { this.#machineHeld=false; this.#machine.unhold(); } throw error; }
+    try { await this.#ensureMachineReady(); await this.#connectFeishu(); if (this.#stopping) throw new Error('Runtime stopped during preparation'); return this.machineStatus(); }
+    catch(error) { if (!this.#loop && !this.#stopping) { this.#machineHeld=false; this.#machine.unhold(); } throw error; }
   }
   machineStatus() { this.#db(); return { ...this.#machine.status(), readOnly: this.#store.readOnly, ready: this.#machineReady && this.#machine.isReady() }; }
   githubBindingStatus() {
@@ -582,7 +584,7 @@ export class ProjectRuntime {
     });
   }
   registerSource(adapter) { this.#db(); this.#sources.register(adapter); return this; }
-  receiveSourceEvent(id, event) { this.#advanceSchema(9); return this.#sources.ingest(id, event); }
+  receiveSourceEvent(id, event) { if (this.#stopping) throw new Error('Runtime is stopping; source intake is closed'); this.#advanceSchema(9); return this.#sources.ingest(id, event); }
   sourceStatus() {
     this.#db();
     return this.#sources.status().map(source => source.id === this.#feishuSourceId ? { ...source, connection: this.#feishuState } : source);
@@ -597,11 +599,16 @@ export class ProjectRuntime {
     this.#feishuState = state;
     try { this.#store?.setMeta('feishu:connection', { state, at: this.#now() }); } catch { /* Read-only inspection must not drop the live socket. */ }
   }
-  async #connectFeishu() {
-    if (this.#lane !== 0 || this.#feishuConnection || this.#stopping) return;
+  #connectFeishu() {
+    if (this.#feishuConnecting) return this.#feishuConnecting;
+    if (this.#lane !== 0 || this.#feishuConnection || this.#stopping) return Promise.resolve();
     const config = this.#config().feishu;
-    if (!config || config.enabled === false) return;
+    if (!config || config.enabled === false) return Promise.resolve();
+    const generation = ++this.#feishuGeneration;
+    const current = () => !this.#stopping && this.#feishuGeneration === generation;
+    const connecting = (async () => { try {
     const sdk = this.#feishuSDK ?? await import('@larksuiteoapi/node-sdk');
+    if (!current()) return;
     const connection = await createFeishuConnection({ ...config, appSecret: readFeishuAppSecret(config), scopes: config.chats, sdk, id: 'feishu',
       operatorChatId: () => this.#store.getMeta(OPERATOR_CHAT_KEY)?.chatId,
       trackedThreads: () => {
@@ -621,25 +628,31 @@ export class ProjectRuntime {
           return [{ chatId, rootId, since, lastAt, ...(origin ? { threadId: origin.meta.threadId } : {}) }];
         });
       } });
+    if (!current()) { await connection.stop(); return; }
     this.#sources.register(connection.source);
     this.#feishuSourceId = connection.source.id;
     this.#feishuConnection = connection;
     this.#setFeishuState('starting');
     await connection.start({
-      receive: data => { this.receiveSourceEvent('feishu', data); },
-      ...(config.operator ? { cardAction: data => this.receiveFeishuCardAction(data) } : {}),
-      onState: state => this.#setFeishuState(state),
-      onError: () => this.#setFeishuState('error'),
+      receive: data => { if (!current()) throw new Error('Feishu connection is stopped'); return this.receiveSourceEvent('feishu', data); },
+      ...(config.operator ? { cardAction: data => { if (!current()) throw new Error('Feishu connection is stopped'); return this.receiveFeishuCardAction(data); } } : {}),
+      onState: state => { if (current()) this.#setFeishuState(state); },
+      onError: () => { if (current()) this.#setFeishuState('error'); },
     });
+    if (!current()) await connection.stop();
+    } catch (error) { if (current()) this.#setFeishuState('error'); throw error; }
+    })().finally(() => { if (this.#feishuConnecting === connecting) this.#feishuConnecting = undefined; });
+    this.#feishuConnecting = connecting;
+    return connecting;
   }
   async #disconnectFeishu() {
     const connection = this.#feishuConnection;
-    this.#feishuConnection = undefined;
-    if (connection) await connection.stop().catch(() => {});
+    if (connection) await connection.stop();
     if (this.#feishuSourceId && this.#sources) {
-      try { this.#sources.unregister(this.#feishuSourceId); } catch { /* A poll still owns the adapter; stop() releases it before close. */ }
+      this.#sources.unregister(this.#feishuSourceId);
       this.#feishuSourceId = undefined;
     }
+    this.#feishuConnection = undefined;
     // Only the process that held the connection may report it stopped; inspection clients never connected.
     if (connection) this.#setFeishuState('stopped');
   }
@@ -724,6 +737,16 @@ export class ProjectRuntime {
     }
     if (!admission.admissible) {
       if (deliverContext().delivered) return 'stored';
+      if (['observation-disabled', 'admission-disabled'].includes(admission.reason) &&
+          retainedFeishuSupplementAllowed(this.#policy(), this.#config().feishu, trigger)) {
+        // Keep the original input for the existing thread Eval. Retention never
+        // promotes its authority or bypasses per-ticket delivery checks.
+        const result = this.#engine.receive(trigger, { ticketIds: [] });
+        if (result === 'stored') this.#store.setMeta(`feishu:retained:${trigger.id}`, {
+          version: 1, digest: createHash('sha256').update(JSON.stringify(this.#store.triggers.get(trigger.id))).digest('hex'),
+        });
+        return result;
+      }
       if (!this.#botReviewGate(trigger).allowed) trigger.meta.botReview = this.#botReviewGate(trigger, { reserve: true });
       this.#store.triggers.save(trigger);
       this.#store.triggers.saveDisposition(trigger.id, {filtered:{code:admission.reason},fanout:[],
@@ -1299,7 +1322,7 @@ export class ProjectRuntime {
     else if (status.ticketId) reason = 'already-owned';
     else if (['pending', 'evaluating', 'correcting'].includes(status.status)) reason = 'in-progress';
     else if (status.status !== 'failed') reason = 'not-failed';
-    else if (!['format', 'transient', 'timeout'].includes(status.failureKind)) reason = 'inspection-required';
+    else if (!['format', 'transient', 'timeout'].includes(status.failureKind) && status.code !== CONTEXT_REFRESH_EXHAUSTED) reason = 'inspection-required';
     const allowed = reason === null;
     const assessmentProvenance=this.#materialProvenance({projectionVersion:assessment?.materialProjectionVersion,
       ticketIds:assessment?.materialSources??[],freshTicketIds:assessment?.materialFreshSources,metadataTicketIds:assessment?.materialMetadataSources??[],contentVersions:assessment?.materialContentVersions});
@@ -1699,8 +1722,9 @@ export class ProjectRuntime {
   }
   #assessmentReceipt(candidate, record) {
     for (const trigger of candidate.triggers) {
+      if (record.code === CONTEXT_REFRESH_EXHAUSTED && !record.failedTriggerIds?.includes(trigger.id)) continue;
       const event = this.#assessmentOrigin(trigger.id);
-      const groupFailure = !event && record.status === 'failed' && isMaterialBindingDenied(record) && this.#materialFailureReplyAllowed(trigger);
+      const groupFailure = !event && record.status === 'failed' && (isMaterialBindingDenied(record) || record.code === CONTEXT_REFRESH_EXHAUSTED) && this.#materialFailureReplyAllowed(trigger);
       if (!groupFailure && (!event || !this.#assessmentOriginAllowed(trigger.id))) continue;
       const status = assessmentStatus(this.#store, trigger.id);
       if (record.status !== 'failed' && !['accepted', 'attached', 'ignore', 'unavailable', 'stop'].includes(status.status)) continue;
@@ -1743,6 +1767,19 @@ export class ProjectRuntime {
       .finally(() => { this.#assessing = undefined; });
     return this.#assessing;
   }
+  #assertRetainedFeishuInputs(candidate) {
+    for (const input of candidate.triggers) {
+      const retained = this.#store.getMeta(`feishu:retained:${input.id}`);
+      if (!retained) continue;
+      const trigger = this.#store.triggers.get(input.id);
+      if (retained.version !== 1 || retained.digest !== createHash('sha256').update(JSON.stringify(trigger ?? null)).digest('hex') ||
+          !retainedFeishuSupplementAllowed(this.#policy(), this.#config().feishu, trigger)) {
+        throw Object.assign(new Error('Retained Feishu supplement is no longer authorized in its original topic'), {
+          triggerId: input.id, failureKind: 'authority', code: 'assessment_authority', retryable: false,
+        });
+      }
+    }
+  }
   async #assess(candidate) {
     if (this.#stopping || this.isPaused()) throw new Later('Coordination is paused or stopping');
     const settings = this.#coordinator.current();
@@ -1762,16 +1799,29 @@ export class ProjectRuntime {
       for (const trigger of candidate.triggers) this.#store.setMeta(`assessment-trigger:${trigger.id}`, { evalId: candidate.evalId });
     });
     this.#assessmentAbort = new AbortController();
-    let materialSession,materialEvents;
+    let materialSession,materialEvents,authorization,inputProvenance;
+    const authorizationStamp = () => materialDigest({ policy: this.#policy().version, coordinator: this.#coordinator.current().version,
+      materialRevision: this.getMaterialSettings().revision, feishu: this.#config().feishu, github: this.#config().github,
+      origins: candidate.triggers.map(trigger => ({ trigger: this.#store.triggers.get(trigger.id), origin: this.#assessmentOrigin(trigger.id)?.actor })),
+      routes: materialEvents?.map(event => ({ channel: this.#materialEventChannel(event), route: this.#materialEventRoute(event) })) });
     const guard = fn => this.#store.atomic(() => {
       const owner = this.#store.getMeta('coordinator:owner');
       if (owner?.token !== token || this.#assessmentAbort.signal.aborted || this.#policy().version !== candidate.policyVersion) throw new Error('Stale coordinator callback');
-      if(materialSession!==undefined && this.#materialSessionScope(materialEvents)!==materialSession)throw new Error('Coordination context or policy changed; reassessment required');
+      const held = this.#engine.candidate(candidate.triggers[0].id);
+      if (held?.evalId !== candidate.evalId) throw new Later('Assessment evaluation has been superseded');
+      const evaluation = this.#store.threads.get(candidate.thread.key)?.evaluating;
+      if (evaluation?.delivered && evaluation.deadline <= this.#now()) throw new Later('Assessment deadline expired');
+      // Preserve the exact rejected supplemental input before a batch-wide
+      // authorization fingerprint can attribute its failure to the primary.
+      this.#assertRetainedFeishuInputs(candidate);
+      if (authorization !== undefined && authorization !== authorizationStamp()) throw Object.assign(new Error('Assessment authorization changed'), { code: 'assessment_authority', failureKind: 'authority', retryable: false });
+      if(materialSession!==undefined && this.#materialSessionScope(materialEvents)!==materialSession)throw new AssessmentContextChanged('material-session');
       return fn(owner);
     });
     let outcome, progress = {};
     const recordBase = { runId, evalId: candidate.evalId, policyVersion: candidate.policyVersion, triggerIds: candidate.triggers.map(trigger => trigger.id) };
     try {
+      this.#assertRetainedFeishuInputs(candidate);
       assessor = assessorOptions && this.#machine.driver(this.#harnessRegistry.createAssessor(assessorOptions), 'coordinator');
       if (!assessor) throw Object.assign(new Error('No semantic assessor configured'), { code: 'assessment_configuration' });
       if (candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id)))
@@ -1785,7 +1835,8 @@ export class ProjectRuntime {
           throw Object.assign(new Error('Original material request belongs to a previous coordination identity'), { failureKind: 'authority', code: 'assessment_authority', retryable: false });
       }
       materialSession = this.#materialSessionScope(materialEvents);
-      const inputProvenance=this.#materialProvenance(...materialEvents.map(event=>this.#materialEventProvenance(event)));
+      authorization = authorizationStamp();
+      inputProvenance=this.#materialProvenance(...materialEvents.map(event=>this.#materialEventProvenance(event)));
       for(const event of materialEvents)this.#assertMaterialDisclosure([...inputProvenance.ticketIds,...inputProvenance.metadataTicketIds],materialDestination(this.#materialEventChannel(event)),{fresh:false});
       if(materialEvents.some(event=>this.#materialEventProjection(event).stale))throw materialError('MATERIAL_CHANGED','Earlier request context is no longer current; inspect it before reassessment');
       const materialAllowed = meta => materialEvents.every(event => this.#materialContextAllowed(meta, event));
@@ -1803,7 +1854,8 @@ export class ProjectRuntime {
       const materialReader = materialSession && createCoordinationReader(this.#store, {allowTicket:materialAllowed,allowSharedRecords:false,
         ticketCard:(meta,domain)=>this.#coordinationTicketCard(meta,domain,materialEvents[0]),
         ticketValue:(meta,domain,value)=>this.#materialTicketValue(meta,domain,value,materialEvents[0]),maxReads:64,maxBytes:320000});
-      const sessionKey=`coordinator:session:${settings.version}${promptAssembly?`:${promptAssembly.version}`:''}${materialSession ? `:candidate${materialSession}` : ''}`;
+      const refreshed = candidate.triggers.some(trigger => { const state = refreshState(this.#store, trigger.id); return state.refreshesUsed > 0 || state.cycle !== 'initial'; });
+      const sessionKey=`coordinator:session:${settings.version}${promptAssembly?`:${promptAssembly.version}`:''}${materialSession ? `:candidate${materialSession}` : ''}${refreshed ? `:refresh:${runId}` : ''}`;
       const rememberMaterials = () => {
         if (!materialSession) return this.#materialProvenance();
         const provenance=this.#materialProvenance(inputProvenance,
@@ -1830,7 +1882,7 @@ export class ProjectRuntime {
             if (!materialReader || resource==='triggers' && candidate.triggers.some(trigger=>trigger.id===id)) return this.readContextRecord(resource,id,options);
             const value=materialReader.read({resource,recordId:id,offset:options?.offset??0});
             if(value.missing)throw materialError('MATERIAL_ACCESS_DENIED','This context record is outside the material disclosure scope');
-            if(options?.version && options.version!==value.version)throw new Error('Context record changed; reread its current version');
+            if(options?.version && options.version!==value.version)throw new AssessmentContextChanged('record-version');
             rememberMaterials();return value;
           }));
           assertAssessment();
@@ -1852,8 +1904,9 @@ export class ProjectRuntime {
         return result;
       };
       const result = guard(()=>{
+        this.#assertRetainedFeishuInputs(candidate);
         links.verify();
-        if(this.#materialSessionScope(materialEvents)!==materialSession)throw new Error('Coordination context or policy changed; reassessment required');
+        if(this.#materialSessionScope(materialEvents)!==materialSession)throw new AssessmentContextChanged('material-session');
         if(materialReader)materialReader.verify();
         const provenance=rememberMaterials(),materialSources=provenance.ticketIds,metadataSources=provenance.metadataTicketIds;
         if (candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id)))
@@ -1896,15 +1949,42 @@ export class ProjectRuntime {
       if (error instanceof Later) throw error;
       if (this.isPaused() || this.#stopping) throw new Later('Assessment is waiting for resume');
       if (this.#store.getMeta('coordinator:owner')?.token !== token || this.#assessmentAbort.signal.aborted) throw new Later('Assessment ownership changed');
+      if (isAssessmentContextChanged(error)) {
+        const refreshed = this.#store.atomic(() => {
+          const held = this.#engine.candidate(candidate.triggers[0].id);
+          if (held?.evalId !== candidate.evalId || this.#policy().version !== candidate.policyVersion) return { waiting: true };
+          try { this.#assertRetainedFeishuInputs(candidate); }
+          catch (error) { return { denied: true, error }; }
+          if (authorization === undefined || authorization !== authorizationStamp() ||
+              candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id))) return { denied: true };
+          if (materialEvents.some(event => this.#materialEventProjection(event).stale)) return { denied: true };
+          try {
+            for (const event of materialEvents) this.#assertMaterialDisclosure([...inputProvenance.ticketIds,...inputProvenance.metadataTicketIds], materialDestination(this.#materialEventChannel(event)));
+          } catch { return { denied: true }; }
+          // A delivered input is no longer an unowned candidate's work to retry.
+          if (candidate.triggers.some(trigger => assessmentStatus(this.#store, trigger.id).ticketId)) return { waiting: true };
+          const result = recordContextRefresh(this.#store, candidate.triggers.map(trigger => trigger.id), { runId, evalId: candidate.evalId, reason: error.reason, at: this.#now() });
+          const record = { ...recordBase, ...progress, ...assessmentFailure(error), phase: 'refreshing', status: 'running', contextRefreshes: result.refreshesUsed,
+            refreshReason: error.reason, at: this.#now() };
+          this.#store.setMeta(`assessment-attempt:${runId}`, record);
+          if (!result.exhausted.length) this.#store.setMeta(`assessment:${candidate.evalId}`, record);
+          return result;
+        });
+        if (refreshed.waiting || !refreshed.denied && !refreshed.exhausted.length) throw new Later('Assessment is waiting for a fresh context snapshot');
+        error = refreshed.denied
+          ? refreshed.error ?? Object.assign(new Error('Assessment context authorization changed; automatic refresh is not allowed'), { code: 'assessment_authority', failureKind: 'authority', retryable: false })
+          : Object.assign(new Error('Assessment context kept changing after two automatic refreshes'), { code: CONTEXT_REFRESH_EXHAUSTED, failureKind: 'context', retryable: true, exhausted: true, triggerId: refreshed.exhausted[0] });
+      }
       const failedTrigger = candidate.triggers.find(trigger => trigger.id === error.triggerId) ?? candidate.triggers.find(trigger => trigger.id === outcome?.triggerId) ?? candidate.triggers[0];
       const held = this.#engine.candidate(failedTrigger.id);
       this.#store.atomic(() => {
         const current = held?.evalId === candidate.evalId && this.#policy().version === candidate.policyVersion && !this.isPaused();
         const failure = assessmentFailure(error);
         if (coordinationFailure(error) === 'transient') Object.assign(failure, { failureKind: 'transient', retryable: true });
-        const record = { ...recordBase, ...progress, ...failure, status: 'failed', at: this.#now() };
+        const record = { ...recordBase, ...progress, ...failure, status: 'failed', failedTriggerIds: [failedTrigger.id], at: this.#now() };
         if (current) this.#engine.decideTrigger(failedTrigger.id, { kind: 'unavailable', reason: assessmentFailureMessage(record), evalId: candidate.evalId });
         this.#store.setMeta(`assessment:${candidate.evalId}`, record);
+        this.#store.setMeta(`assessment-attempt:${runId}`, record);
         if (current) this.#assessmentReceipt({ ...candidate, triggers: [failedTrigger] }, record);
       });
     } finally {
@@ -2543,7 +2623,10 @@ export class ProjectRuntime {
       if (status.ticketId || conversation && ['pending', 'evaluating', 'correcting'].includes(status.status)) return false;
     }
     if (trigger && !this.#assessmentOriginAllowed(triggerId)) throw new Error('Original operator authority is no longer configured');
-    return this.#engine.reevaluate(triggerId);
+    const before = trigger && assessmentStatus(this.#store, triggerId);
+    const accepted = this.#engine.reevaluate(triggerId);
+    if (accepted && before && !before.ticketId && !['pending', 'evaluating', 'correcting'].includes(before.status)) resetRefreshCycle(this.#store, triggerId);
+    return accepted;
   }); }
   requestStatus(id) { return this.#db().atomic(()=>this.#engine.requestStatus(this.#meta(id).domainId)); }
   getExecutorSettings() { return this.#db().getMeta('executor:settings') ?? { revision: 0, execution: null }; }
@@ -5637,7 +5720,7 @@ export class ProjectRuntime {
     this.#children = Array.from({length: capacity - 1}, (_, index) => new ProjectRuntime({ projectRoot: this.projectRoot,
       execution: this.#executionOverride, harnessRegistry: this.#harnessRegistry, ...this.#overrides, githubChannel: this.#githubChannel, [MACHINE_GUARD]: this.#machine, [WORKER_LANE]: index + 1 }).init());
     const failed = error => { this.#lastError = String(error?.message ?? error); const owner=this.#store?.getMeta('runtime:loop'); if(owner?.token===this.#loopToken)this.#store.setMeta('runtime:loop',{...owner,lastError:this.#lastError}); };
-    void this.#connectFeishu().catch(error => { this.#setFeishuState('error'); failed(error); });
+    void this.#connectFeishu().catch(error => { if (!this.#stopping) failed(error); });
     const tick = () => {
       if (this.#stopping) return;
       try { this.#machine.assert(); } catch(error) { failed(error); this.#controller?.abort(); this.#assessmentAbort?.abort(); return; }
@@ -5672,18 +5755,36 @@ export class ProjectRuntime {
       throw error;
     }
   }
-  async stop() {
-    if(this.#store?.readOnly)return;
+  stop() {
+    if(this.#store?.readOnly)return Promise.resolve();
+    if(this.#stopPromise)return this.#stopPromise;
     clearInterval(this.#loop); this.#loop = undefined;
-    this.#machineReady = false; this.#stopping = true; this.#controller?.abort(); this.#assessmentAbort?.abort(); this.#operationAbort?.abort();
-    try { await Promise.all([this.#controlsDrain, this.#inflight, this.#cycle, this.#syncing, this.#flushing, this.#linking, this.#webhooks, this.#ingress, this.#assessing, this.#operation, this.#sources.stop(), ...this.#children.map(worker => worker.stop())]); await this.#disconnectFeishu(); await this.#sweepManaged(); await this.#sweepNative(); } finally { this.#releaseLoop(); if(this.#machineHeld){this.#machineHeld=false;this.#machine.unhold();} this.#machine.releaseIdle(); this.#stopping = false; }
+    this.#machineReady = false; this.#stopping = true; this.#feishuGeneration++;
+    this.#controller?.abort(); this.#assessmentAbort?.abort(); this.#operationAbort?.abort();
+    // Close ingress and cancel reads immediately, before waiting on any executor or outbound response.
+    const connectionStop = this.#feishuConnection?.stop();
+    this.#stopPromise = (async () => {
+      const drained = await Promise.allSettled([connectionStop, this.#feishuConnecting, this.#machinePreparing,
+        this.#controlsDrain, this.#inflight, this.#cycle, this.#syncing, this.#flushing, this.#linking, this.#webhooks, this.#ingress,
+        this.#assessing, this.#operation, this.#sources?.stop(), ...this.#children.map(worker => worker.stop())]);
+      const failures = drained.filter(result => result.status === 'rejected').map(result => result.reason);
+      if (failures.length) throw new AggregateError(failures, 'Runtime stop did not complete; inspect active ownership before restarting');
+      await this.#disconnectFeishu();
+      const cleaned = await Promise.allSettled([this.#sweepManaged(), this.#sweepNative()]);
+      const cleanupFailures = cleaned.filter(result => result.status === 'rejected').map(result => result.reason);
+      if (cleanupFailures.length) throw new AggregateError(cleanupFailures, 'Runtime cleanup did not complete; inspect ownership before restarting');
+      this.#releaseLoop();
+      if(this.#machineHeld){this.#machineHeld=false;this.#machine.unhold();}
+      this.#machine?.releaseIdle(); this.#machineReady = false; this.#stopping = false;
+    })().finally(() => { this.#stopPromise = undefined; });
+    return this.#stopPromise;
   }
   #releaseLoop() {
     if(this.#store && this.#loopToken) this.#store.atomic(()=>{if(this.#store.getMeta('runtime:loop')?.token===this.#loopToken)this.#store.deleteMeta('runtime:loop');});
     this.#loopToken=undefined;
   }
   close() {
-    if (this.#busy || this.#cycle || this.#syncing || this.#flushing || this.#linking || this.#webhooks || this.#ingress || this.#assessing || this.#operation || this.#controlsDrain || (this.#store && this.sourceStatus().some(source => source.active))) throw new Error('Cancel active work and await runNext()/syncGitHub()/stop() before closing');
+    if (this.#stopping || this.#stopPromise || this.#feishuConnecting || this.#busy || this.#cycle || this.#syncing || this.#flushing || this.#linking || this.#webhooks || this.#ingress || this.#assessing || this.#operation || this.#controlsDrain || (this.#store && this.sourceStatus().some(source => source.active))) throw new Error('Cancel active work and await runNext()/syncGitHub()/stop() before closing');
     if(this.#nativePool().size)throw new Error('Await stop() to close native background ownership before closing');
     if(this.#jobsPool().size)throw new Error('Await stop() to close assignment-owned background jobs before closing');
     for (const unsubscribe of this.#changeWatches) unsubscribe();

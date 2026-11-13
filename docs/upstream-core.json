@@ -29,8 +29,8 @@
       "source": "src/core/evals.ts",
       "target": "src/core/evals.ts",
       "sourceSha256": "38916de24ec6e1a27118dd5d7a7efa67bf7a2dfdbab26fb59d377516269e2fc8",
-      "targetSha256": "885ee3d3470533f2ab4c95bf4a58ae5b43c38611dc8c118e7df243b555b314af",
-      "localModification": "decideTrigger records a per-input ignore/unavailable decision only for a matching current evaluation under the same policy version. It rechecks target admission and actual worker ownership without borrowing batch authority, audits source evaluation and gate results, and queues remaining inputs without mutating worker state. Unavailable can record denied input failures; original decide retains whole-batch behavior."
+      "targetSha256": "026ca96b63513b427cbf6d7fd0e8d2b2cc26066915231ef70233624ce6d5af1a",
+      "localModification": "decideTrigger records a per-input ignore/unavailable decision only for a matching current evaluation under the same policy version. It audits the input's actual gate and strength without borrowing batch authority, permits ignore of retained unadmitted inputs only when no worker owns them, and queues remaining inputs without mutating worker state. Unavailable can record denied input failures; the narrow API cannot accept, attach or stop work, and original decide retains whole-batch behavior."
     },
     {
       "source": "src/core/ids.ts",

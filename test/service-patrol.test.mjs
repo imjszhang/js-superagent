@@ -19,12 +19,12 @@ function fixture(t) {
   let now=100_000,job=false,alive=true,hook,signalHook;const calls=[],signals=[];
   const deps={platform:'darwin',uid:501,coordinationDirectory:join(base,'machine'),now:()=>now,ownerState:()=>alive?'alive':'dead',patrolGraceMs:0,
     signalProcess(pid,signal){signals.push({pid,signal});if(signalHook)signalHook();else alive=false;},
-    launchctl(args){calls.push(args);if(args[0]==='print'){if(!job)throw Object.assign(new Error('missing'),{stderr:'Could not find service'});return 'state = running\npid = 100\n';}
+    launchctl(args){calls.push(args);if(args[0]==='print'){if(!job)throw Object.assign(new Error('missing'),{stderr:'Could not find service'});return `state = ${alive?'running':'waiting'}\npid = 100\n`;}
       if(args[0]==='bootstrap'||args[0]==='kickstart'){job=true;alive=true;}if(args[0]==='bootout')job=false;hook?.(args);return '';}};
   const manager=createServiceManager({projectRoot:root,homeDirectory:home},deps);
   const write=(name,value)=>writeFileSync(join(directory,name),JSON.stringify(value),{mode:0o600});
   const pulse=(patch={})=>{
-    write('runtime.json',{healthProtocol:1,runId,pid:100,childPid:101,owner:{pid:100,birth:'parent',bootId:'boot'},childOwner:{pid:101,birth:'child',bootId:'boot'},startedAt:new Date(0).toISOString()});
+    write('runtime.json',{healthProtocol:1,runId,pid:100,childPid:101,owner:{host:'fixture',pid:100,birth:'parent',bootId:'boot'},childOwner:{host:'fixture',pid:101,birth:'child',bootId:'boot'},startedAt:new Date(0).toISOString()});
     write('startup.json',{schemaVersion:1,state:'ready',retryCount:0,pid:100,childPid:101});
     write('heartbeat.json',{schemaVersion:1,runId,sequence:1,pid:100,childPid:101,receivedAt:new Date(now).toISOString(),business:{available:true,observedAt:new Date(now).toISOString(),machineReady:true,paused:false,active:false,activeIncidents:0,modelWaits:0,sources:[],...patch}});
   };
@@ -46,7 +46,7 @@ test('healthy patrols stay quiet and persistent notifications change only with m
   assert.equal(f.manager.patrol().changed,false);
   f.pulse({sources:[{id:'github',state:'degraded'}]});assert.equal(f.manager.patrol().notify,true);assert.equal(f.manager.patrol().notify,false);
   f.pulse({sources:[{id:'github',state:'healthy'}]});const recovered=f.manager.patrol();assert.equal(recovered.changed,true);assert.equal(recovered.notify,true);assert.equal(f.manager.patrol().notify,false);
-  f.manager.stop();assert.equal(f.manager.patrol({recover:true}).health.state,'stopped');assert.equal(f.signals.length,0);
+  f.manager.stop();assert.equal(f.manager.patrol({recover:true}).health.state,'stopped');assert.deepEqual(f.signals,[{pid:100,signal:'SIGTERM'}]);
   const stateDb=new DatabaseSync(join(f.directory,'patrol.sqlite'),{readOnly:true});try{assert.equal(stateDb.prepare('SELECT COUNT(*) AS count FROM state').get().count,1);}finally{stateDb.close();}
 });
 

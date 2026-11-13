@@ -13,7 +13,7 @@ import { acceptServiceHeartbeat, evaluateServiceHealth, startServiceHeartbeat } 
 const runId = 'f77c172b-b594-4138-a8f6-a6201fac31d3';
 const now = 100000;
 const status = { installed: true, running: true, ready: true, pid: 100, childPid: 101 };
-const runtime = { healthProtocol: 1, runId, pid: 100, childPid: 101, owner: { pid: 100 }, childOwner: { pid: 101 }, startedAt: new Date(now - 1000).toISOString() };
+const runtime = { healthProtocol: 1, runId, pid: 100, childPid: 101, owner: { host: 'fixture', pid: 100, birth: 'wrapper', bootId: 'boot' }, childOwner: { host: 'fixture', pid: 101, birth: 'child', bootId: 'boot' }, startedAt: new Date(now - 1000).toISOString() };
 const business = { available: true, observedAt: new Date(now).toISOString(), machineReady: true, paused: false, active: false, activeIncidents: 0, modelWaits: 0, sources: [{ id: 'github:explicit', state: 'healthy', lastSuccess: new Date(now).toISOString() }] };
 const message = { type: 'js-superagent:heartbeat', runId, sequence: 1, business };
 const heartbeat = acceptServiceHeartbeat(message, { runId, pid: 100, childPid: 101, now });
@@ -65,10 +65,10 @@ test('business pause, provider/source faults and stopped states remain distinct 
   assert.equal(withBusiness({ machineReady: false }).reason, 'runtime-preparation-unavailable');
   assert.equal(withBusiness({ available: false }).reason, 'business-snapshot-unavailable');
   const stopped = { ...status, running: false, ready: false, startupState: 'stopped' };
-  assert.equal(health({ status: stopped, ownerState: () => { throw new Error('must not probe stopped service'); } }).state, 'stopped');
+  assert.equal(health({ status: stopped, ownerState: () => 'dead' }).state, 'stopped');
   assert.equal(health({ status: { ...stopped, installed: false } }).state, 'not-installed');
-  assert.equal(health({ status: { ...stopped, startupState: 'blocked', blocked: { code: 'SERVICE_CONFIGURATION' } } }).state, 'setup-blocked');
-  assert.equal(health({ status: { ...stopped, startupState: 'retrying' } }).state, 'retrying');
+  assert.equal(health({ status: { ...stopped, startupState: 'blocked', blocked: { code: 'SERVICE_CONFIGURATION' } }, ownerState: () => 'dead' }).state, 'setup-blocked');
+  assert.equal(health({ status: { ...stopped, startupState: 'retrying' }, ownerState: () => 'dead' }).state, 'retrying');
 });
 
 test('wrapper only accepts fresh sequence from its run and persists a bounded diagnostic whitelist', () => {
@@ -101,6 +101,7 @@ test('service manager health observes the actual wrapper heartbeat and does not 
   const deps = { platform: 'darwin', uid: 501, coordinationDirectory: join(base, 'machine'), ownerState: () => 'alive', launchctl(args) { calls.push(args); if (args[0] === 'print') { if (!loaded) throw Object.assign(new Error('missing'), { stderr: 'Could not find service', status: 113 }); return `state = running\npid = ${loaded.pid}`; } return ''; } };
   const manager = createServiceManager({ projectRoot: root, homeDirectory: home, cliPath }, deps); manager.install();
   assert.equal(manager.health().state, 'stopped');
+  manager.start();
   const run = spawnSync(process.execPath, [fileURLToPath(new URL('../src/service.mjs', import.meta.url)), 'run', root], { timeout: 5000, encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr);
   const directory = join(stateDir(root), 'service'), recorded = JSON.parse(readFileSync(join(directory, 'runtime.json'))), pulse = JSON.parse(readFileSync(join(directory, 'heartbeat.json')));
@@ -109,6 +110,6 @@ test('service manager health observes the actual wrapper heartbeat and does not 
   writeFileSync(join(directory, 'startup.json'), JSON.stringify({ schemaVersion: 1, retryCount: 0, state: 'ready', pid: recorded.pid, childPid: recorded.childPid }));
   assert.equal(manager.health().state, 'paused');
   loaded = null; const before = calls.length;
-  assert.equal(manager.health().state, 'stopped');
+  assert.equal(manager.health().reason, 'service-stop-incomplete');
   assert.equal(calls.slice(before).some(args => ['enable','bootstrap','kickstart','bootout'].includes(args[0])), false);
 });

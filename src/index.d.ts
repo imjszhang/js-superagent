@@ -28,7 +28,9 @@ export interface ServiceStatus {
   running: boolean;
   /** Receipt from the current live CLI after listener and runtime startup. */
   ready: boolean;
-  startupState: 'starting' | 'ready' | 'retrying' | 'blocked' | 'stopped';
+  startupState: 'starting' | 'ready' | 'retrying' | 'blocked' | 'stopping' | 'stopped';
+  /** An owned process is still alive or its exit cannot be verified, even if launchd is unloaded. */
+  stopPending: boolean;
   blocked: { code: string; message: string } | null;
   retryCount: number;
   webhookEndpoint: { host: string; port: number } | null;
