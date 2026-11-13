@@ -1,6 +1,16 @@
 # Changelog
 
-## 0.15.0-alpha.5 — Unreleased
+## 0.15.0-alpha.6 — Unreleased
+
+- Retain authorized human Feishu topic supplements before ticket creation in the existing pending/evaluation flow, without granting independent work authority or replaying previously filtered messages.
+- Permit the existing single-input ignore command to close an unadmitted batch input without borrowing the batch's authority or altering worker ownership.
+- Refresh host-verified stale assessment snapshots at most twice per original request, retaining the evaluation deadline and durable allowance across restarts. Recheck authority, isolate model sessions and report exhaustion only for the affected original request.
+- Cancel Feishu history/context reads at the actual SDK transport, fence late connection callbacks during shutdown, and retain in-flight write receipts.
+- Confirm both owned service processes have exited before reporting a stop or allowing replacement; do not kill unknown processes or force-stop active work.
+
+Scope, invariants and acceptance: [Feishu continuity and reliability plan](docs/feishu-continuity-reliability-plan.md).
+
+## 0.15.0-alpha.5 — Released 2026-11-13
 
 - Recover configured Feishu group messages and active/subscribed topic replies through bounded, resumable history scans, preserving admission rules and existing ticket associations.
 - Validate returned message/container identities, retain platform thread routing metadata, and deduplicate live and historical intake transactionally.
