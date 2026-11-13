@@ -14,6 +14,15 @@ const transportCodes = new Set([
 const timeoutCodes = new Set(['ETIMEDOUT', 'ERR_SOCKET_CONNECTION_TIMEOUT', 'ERR_TLS_HANDSHAKE_TIMEOUT']);
 const object = value => value !== null && (typeof value === 'object' || typeof value === 'function');
 const field = (value, key) => { try { return value?.[key]; } catch { return undefined; } };
+function axiosHttpTimeout(error) {
+  // Axios's Node HTTP timer constructs ECONNABORTED directly. Wrapped socket errors
+  // carry a cause, while XHR aborts have no Node request methods. Do not infer from text.
+  const timeout = field(field(error, 'config'), 'timeout'), request = field(error, 'request');
+  return field(error, 'code') === 'ECONNABORTED' && field(error, 'isAxiosError') === true &&
+    field(error, 'cause') === undefined && field(error, 'response') === undefined &&
+    typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0 &&
+    typeof field(request, 'setTimeout') === 'function' && typeof field(request, 'on') === 'function';
+}
 
 /** A shared, bounded allowlist for source persistence, health and service summaries. */
 export function sanitizeFeishuDiagnostic(value) {
@@ -40,7 +49,7 @@ export function getFeishuTransportErrorDiagnostic(error) {
   const status = field(field(error, 'response'), 'status');
   const statusCode = Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
   const reason = statusCode !== undefined ? 'http' : transportCode === 'ERR_CANCELED' ? 'cancelled'
-    : timeoutCodes.has(transportCode) ? 'timeout'
+    : timeoutCodes.has(transportCode) || axiosHttpTimeout(error) ? 'timeout'
       : transportCode && !['FEISHU_READ_TIMEOUT', 'FEISHU_STOPPED'].includes(transportCode) ? 'network' : 'unknown';
   return sanitizeFeishuDiagnostic({ reason, transportCode, statusCode });
 }

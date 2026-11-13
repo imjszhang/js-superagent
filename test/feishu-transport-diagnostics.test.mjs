@@ -11,14 +11,16 @@ const deferred = () => { let resolve, reject; const promise = new Promise((yes, 
 let sequence = 0;
 const send = (res, body, status = 200) => { res.writeHead(status, { 'content-type': 'application/json', connection: 'close' }); res.end(JSON.stringify(body)); };
 const success = res => send(res, { code: 0, data: { items: [], has_more: false } });
-async function fixture(t, handle, readTimeoutMs = 200) {
+async function fixture(t, handle, readTimeoutMs = 200, { base = sdk.defaultHttpInstance, requestTimeoutMs } = {}) {
   const server = createServer(handle), sockets = new Set();
   server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  const transport = createFeishuTransport(sdk.defaultHttpInstance, { readTimeoutMs });
+  const transport = createFeishuTransport(base, { readTimeoutMs });
   t.after(async () => { for (const socket of sockets) socket.destroy(); await transport.stop(); await new Promise(resolve => server.close(resolve)); });
   const url = `http://127.0.0.1:${server.address().port}`;
-  const client = new sdk.Client({ appId: `cli_diag_${++sequence}`, appSecret: 'fixture-app-secret', domain: url, logger: quiet, httpInstance: transport.httpInstance });
+  const httpInstance = requestTimeoutMs === undefined ? transport.httpInstance : { ...transport.httpInstance,
+    request: options => transport.httpInstance.request({ ...options, timeout: requestTimeoutMs }) };
+  const client = new sdk.Client({ appId: `cli_diag_${++sequence}`, appSecret: 'fixture-app-secret', domain: url, logger: quiet, httpInstance });
   const list = (chat = 'oc_fixture', options) => transport.read(() => client.im.message.list({ params: { container_id_type: 'chat', container_id: chat } }), options);
   return { transport, list, url };
 }
@@ -28,7 +30,7 @@ function checkTime(value) {
   assert.ok(Number.isInteger(value.elapsedMs) && value.elapsedMs >= 0 && value.elapsedMs <= 86_400_000);
 }
 
-test('actual SDK deadline diagnoses its hidden abort reason while an independent read succeeds', { timeout: 5000 }, async t => {
+test('actual SDK competing read timers report timeout while an independent read succeeds', { timeout: 5000 }, async t => {
   let slowRequests = 0;
   const { transport, list } = await fixture(t, (req, res) => {
     if (req.url.includes('/auth/')) return token(res);
@@ -38,12 +40,51 @@ test('actual SDK deadline diagnoses its hidden abort reason while an independent
   await list();
   const [slow, fast] = await Promise.allSettled([list('oc_slow'), list('oc_fast')]);
   assert.equal(fast.status, 'fulfilled'); assert.equal(fast.value.code, 0);
-  assert.equal(slow.status, 'rejected'); assert.equal(slow.reason.code, 'ERR_CANCELED');
+  assert.equal(slow.status, 'rejected'); assert.ok(['ERR_CANCELED', 'ECONNABORTED'].includes(slow.reason.code));
   const diagnostic = getFeishuReadDiagnostic(slow.reason);
-  assert.equal(diagnostic.reason, 'timeout'); assert.equal(diagnostic.transportCode, 'ERR_CANCELED');
-  assert.equal(diagnostic.cancellationSource, 'deadline'); assert.equal(diagnostic.phase, 'request'); checkTime(diagnostic);
+  assert.equal(diagnostic.reason, 'timeout'); assert.equal(diagnostic.transportCode, slow.reason.code);
+  assert.equal(diagnostic.cancellationSource, slow.reason.code === 'ERR_CANCELED' ? 'deadline' : undefined);
+  assert.equal(diagnostic.phase, 'request'); checkTime(diagnostic);
   assert.ok(diagnostic.elapsedMs >= 150); assert.equal(slowRequests, 1, 'diagnostics add no retry');
   assert.ok(Object.isFrozen(diagnostic)); await transport.stop();
+});
+
+test('actual SDK AbortSignal deadline preserves the canceled error and trusted deadline source', { timeout: 5000 }, async t => {
+  let original, requests = 0;
+  const base = { post: (...args) => sdk.defaultHttpInstance.post(...args),
+    request(options) {
+      // Isolate the wrapper timer in this test; the real SDK still receives the original signal.
+      return sdk.defaultHttpInstance.request({ ...options, timeout: 0 }).catch(error => { original = error; throw error; });
+    } };
+  const { list } = await fixture(t, (req, res) => {
+    if (req.url.includes('/auth/')) return token(res);
+    requests++;
+  }, 200, { base });
+  await assert.rejects(list(), error => {
+    assert.equal(error, original); assert.equal(error.code, 'ERR_CANCELED');
+    const diagnostic = getFeishuReadDiagnostic(error);
+    assert.equal(diagnostic.reason, 'timeout'); assert.equal(diagnostic.cancellationSource, 'deadline');
+    assert.equal(diagnostic.transportCode, 'ERR_CANCELED'); checkTime(diagnostic); return true;
+  });
+  assert.equal(requests, 1);
+});
+
+test('actual SDK HTTP timer preserves ECONNABORTED without inventing scope cancellation', { timeout: 5000 }, async t => {
+  let original, requests = 0;
+  const base = { post: (...args) => sdk.defaultHttpInstance.post(...args),
+    request: options => sdk.defaultHttpInstance.request(options).catch(error => { original = error; throw error; }) };
+  const { list } = await fixture(t, (req, res) => {
+    if (req.url.includes('/auth/')) return token(res);
+    requests++;
+  }, 2000, { base, requestTimeoutMs: 50 });
+  await assert.rejects(list(), error => {
+    assert.equal(error, original); assert.equal(error.code, 'ECONNABORTED');
+    assert.equal(error.config.signal.aborted, false, 'the independent read deadline did not fire');
+    const diagnostic = getFeishuReadDiagnostic(error);
+    assert.equal(diagnostic.reason, 'timeout'); assert.equal(diagnostic.transportCode, 'ECONNABORTED');
+    assert.equal(diagnostic.cancellationSource, undefined); checkTime(diagnostic); return true;
+  });
+  assert.equal(requests, 1);
 });
 
 for (const source of ['caller', 'stop', 'request']) test(`actual SDK ${source} cancellation is not diagnosed as a deadline`, { timeout: 5000 }, async t => {
@@ -118,6 +159,14 @@ test('diagnostic allowlist drops arbitrary codes, response bodies, signal text a
   assert.deepEqual(getFeishuTransportErrorDiagnostic(sensitive), { reason: 'unknown' });
   assert.deepEqual(getFeishuTransportErrorDiagnostic({ code: 'ERR_CANCELED', config: sensitive.config }), { reason: 'cancelled', transportCode: 'ERR_CANCELED' });
   assert.deepEqual(getFeishuTransportErrorDiagnostic({ cause: { code: 'ENOTFOUND' } }), { reason: 'network', transportCode: 'ENOTFOUND' });
+  const nodeTimeout = { code: 'ECONNABORTED', isAxiosError: true, config: { timeout: 50 }, request: { setTimeout() {}, on() {} } };
+  assert.deepEqual(getFeishuTransportErrorDiagnostic(nodeTimeout), { reason: 'timeout', transportCode: 'ECONNABORTED' });
+  for (const ambiguous of [{ code: 'ECONNABORTED' }, { ...nodeTimeout, cause: new Error('socket abort') },
+    { ...nodeTimeout, request: {} }, { ...nodeTimeout, isAxiosError: false }, { ...nodeTimeout, config: { timeout: 0 } }]) {
+    assert.deepEqual(getFeishuTransportErrorDiagnostic(ambiguous), { reason: 'network', transportCode: 'ECONNABORTED' });
+  }
+  assert.deepEqual(getFeishuTransportErrorDiagnostic({ ...nodeTimeout, response: { status: 503 } }),
+    { reason: 'http', transportCode: 'ECONNABORTED', statusCode: 503 });
   assert.deepEqual(sanitizeFeishuDiagnostic({ reason: 'secret', transportCode: 'SECRET_TOKEN', statusCode: 1000, elapsedMs: -1,
     phase: 'private path', cancellationSource: 'private value', failedAt: '2026-02-30T00:00:00.000Z', ...sensitive }), {});
   assert.deepEqual(sanitizeFeishuDiagnostic({ elapsedMs: 86_400_001, failedAt: '2026-11-13T00:00:00Z' }), {});
