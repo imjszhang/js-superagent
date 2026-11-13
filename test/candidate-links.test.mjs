@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/store.mjs';
 import { createRuntimePolicy } from '../src/policy.mjs';
 import { createCandidateLinks } from '../src/runtime/candidate-links.mjs';
+import { AssessmentContextChanged, isAssessmentContextChanged } from '../src/runtime/assessment-refresh.mjs';
 
 const repository = 'fixture/links', at = '2026-11-03T01:00:00.000Z';
 function fixture(t, { text = 'Please attach this to #1', pull = false, extra = [], original = false } = {}) {
@@ -44,7 +45,7 @@ function fixture(t, { text = 'Please attach this to #1', pull = false, extra = [
     changeTicket(id, change) { const value = store.tickets.get(id); change(value); store.tickets.save(value); },
     changeThread(key, change) { const value = store.threads.get(key); change(value); store.threads.save(value); } };
 }
-const refused = (call, reason, triggerId) => assert.throws(call, error => error.code === 'CANDIDATE_LINKS_REJECTED' && error.reason === reason && (triggerId === undefined || error.triggerId === triggerId));
+const refused = (call, reason, triggerId) => assert.throws(call, error => !isAssessmentContextChanged(error) && error.code === 'CANDIDATE_LINKS_REJECTED' && error.reason === reason && (triggerId === undefined || error.triggerId === triggerId));
 
 test('explicit Issue links discover saved Issue/PR owners without mutating domain records', t => {
   const f = fixture(t, { text: `Please route #1 and https://github.com/${repository}/pull/2#discussion_r42 here.` });
@@ -114,21 +115,151 @@ test('existing targets retain their original route but selected input still need
   assert.deepEqual(links.candidate.ticketReferences, []); assert.equal(links.verify(f.target.id), true);
   refused(() => links.verify('arbitrary-ticket', f.input.id), 'target-outside-candidate', f.input.id);
   f.changeTicket(f.target.id, value => { value.ended = { by: 'human', outcome: 'stopped', at }; });
-  refused(() => links.verify(f.target.id), 'target-missing-or-changed');
+  refused(() => links.verify(f.target.id), 'target-no-longer-routeable');
 });
 
 test('verification rejects changed target, origin, referenced ownership and source snapshots', t => {
-  for (const mode of ['ticket', 'origin', 'thread', 'source', 'source-thread', 'disposition']) {
+  for (const mode of ['missing-ticket', 'origin', 'thread', 'source', 'source-thread', 'disposition']) {
     const f = fixture(t), links = f.create();
-    if (mode === 'ticket') f.changeTicket(f.target.id, value => { value.title = 'Changed task'; });
+    if (mode === 'missing-ticket') f.store.db.prepare('DELETE FROM domain_tickets WHERE id=?').run(f.target.id);
     if (mode === 'origin') f.store.db.prepare('DELETE FROM domain_triggers WHERE id=?').run(f.target.origin.triggerId);
     if (mode === 'thread') f.changeThread(`github:${repository}#1`, value => { value.context = [f.target.id]; });
     if (mode === 'source') { const value = f.store.triggers.get(f.input.id); value.text = '#2 instead'; f.store.triggers.save(value); }
     if (mode === 'source-thread') f.changeThread(f.candidate.thread.key, value => { value.subscriptions.push(f.target.id); });
     if (mode === 'disposition') f.store.triggers.saveDisposition(f.input.id, { fanout: [f.target.id], at });
-    const reasons = { ticket: 'target-missing-or-changed', origin: 'target-source-missing-or-changed', thread: 'referenced-thread-changed',
+    const reasons = { 'missing-ticket': 'target-missing', origin: 'target-source-missing-or-changed', thread: 'referenced-thread-changed',
       source: 'source-missing-or-changed', 'source-thread': 'source-thread-changed', disposition: 'source-disposition-changed' };
     refused(() => links.verify(), reasons[mode], ['source', 'source-thread', 'disposition'].includes(mode) ? f.input.id : undefined);
+  }
+});
+
+test('ordinary target updates invalidate the whole card with typed, body-free snapshot evidence', t => {
+  for (const original of [false, true]) for (const mode of ['input', 'assignment', 'completed', 'title']) {
+    const f = fixture(t, { original }), links = f.create();
+    f.changeTicket(f.target.id, value => {
+      if (mode === 'input') value.inputs.push({ id: 'new-input', kind: 'text', text: 'private-supplement-body', at });
+      if (mode === 'assignment') value.assignments.push({ id: 'active-assignment', state: 'running', report: { summary: 'private-worker-report' } });
+      if (mode === 'completed') value.ended = { by: 'executor', outcome: 'completed', at };
+      if (mode === 'title') value.title = 'private-updated-title';
+    });
+    assert.equal(links.verifyAuthority(f.target.id, f.input.id), true);
+    for (const verify of [() => links.verify(), () => links.verify(f.target.id, f.input.id)]) assert.throws(verify, error => {
+      assert.ok(error instanceof AssessmentContextChanged);
+      assert.equal(error.reason, 'candidate-target-snapshot');
+      assert.deepEqual(Object.keys(error.targetSnapshot).sort(), ['changeKind', 'currentVersion', 'previousVersion', 'ticketId']);
+      assert.equal(error.targetSnapshot.ticketId, f.target.id);
+      assert.equal(error.targetSnapshot.changeKind, 'ticket-snapshot');
+      assert.match(error.targetSnapshot.previousVersion, /^[a-f\d]{64}$/);
+      assert.match(error.targetSnapshot.currentVersion, /^[a-f\d]{64}$/);
+      assert.notEqual(error.targetSnapshot.previousVersion, error.targetSnapshot.currentVersion);
+      assert.doesNotMatch(JSON.stringify(error), /private-/);
+      return true;
+    });
+    // Only a newly captured candidate can become current; the hard-only check
+    // above did not update or waive the old card's whole-ticket fingerprint.
+    if (original) f.candidate.tickets = [f.store.tickets.get(f.target.id)];
+    assert.equal(f.create().verify(f.target.id, f.input.id), true);
+  }
+});
+
+test('authority, identity and reply-route changes never qualify as snapshot refreshes', t => {
+  for (const original of [false, true]) for (const mode of ['stopped', 'revoked', 'scope', 'origin', 'channel', 'identity', 'missing-origin']) {
+    const f = fixture(t, { original }), links = f.create();
+    f.changeTicket(f.target.id, value => {
+      value.inputs.push({ id: 'simultaneous-input', kind: 'text', text: 'new state', at });
+      if (mode === 'stopped') value.ended = { by: 'human', outcome: 'stopped', at };
+      if (mode === 'revoked') value.mandate.actor.id = 'outsider';
+      if (mode === 'scope') value.mandate.scope = 'A different task';
+      if (mode === 'origin') value.origin.triggerId = f.pr.origin.triggerId;
+      if (mode === 'channel') value.channels.push({ source: 'local', address: { user: 'someone-else' } });
+      if (mode === 'identity') value.decisionId = 'replacement-decision';
+    });
+    if (mode === 'missing-origin') f.store.db.prepare('DELETE FROM domain_triggers WHERE id=?').run(f.target.origin.triggerId);
+    const reason = ['stopped', 'revoked'].includes(mode) ? 'target-no-longer-routeable'
+      : mode === 'missing-origin' ? 'target-source-missing-or-changed' : 'target-authority-or-route-changed';
+    refused(() => links.verifyAuthority(), reason);
+    refused(() => links.verify(f.target.id, f.input.id), reason);
+  }
+});
+
+test('a different target hard refusal wins over an earlier target snapshot change', t => {
+  for (const mode of ['missing', 'stopped', 'revoked', 'origin']) {
+    const f = fixture(t, { text: '#1 and #2' }), links = f.create();
+    f.changeTicket(f.target.id, value => { value.title = 'An ordinary update'; });
+    if (mode === 'missing') f.store.db.prepare('DELETE FROM domain_tickets WHERE id=?').run(f.pr.id);
+    if (mode === 'stopped') f.changeTicket(f.pr.id, value => { value.ended = { by: 'human', outcome: 'stopped', at }; });
+    if (mode === 'revoked') f.changeTicket(f.pr.id, value => { value.mandate.actor.id = 'outsider'; });
+    if (mode === 'origin') f.store.db.prepare('DELETE FROM domain_triggers WHERE id=?').run(f.pr.origin.triggerId);
+    refused(() => links.verify(f.target.id, f.input.id), mode === 'missing' ? 'target-missing'
+      : mode === 'origin' ? 'target-source-missing-or-changed' : 'target-no-longer-routeable');
+  }
+});
+
+test('source and selected attachment refusals outrank simultaneous target updates', t => {
+  for (const mode of ['source', 'membership', 'handback', 'outside', 'not-referenced', 'not-explicit']) {
+    const f = fixture(t, { extra: [{ text: 'A separate request' }, { text: '#1', actor: { source: 'github', id: 'robot' }, human: false }] }), links = f.create();
+    f.changeTicket(f.target.id, value => { value.title = 'Updated during assessment'; });
+    if (mode === 'source') { const value = f.store.triggers.get(f.input.id); value.text = 'Edited request'; f.store.triggers.save(value); }
+    if (mode === 'membership') f.changeThread(`github:${repository}#1`, value => { value.context.push(f.target.id); });
+    if (mode === 'handback') f.store.triggers.saveDisposition(f.input.id, { fanout: [], handbacks: [{ ticketId: f.target.id, reason: 'not mine', at }], at });
+    const reason = { source: 'source-missing-or-changed', membership: 'referenced-thread-changed', handback: 'source-disposition-changed',
+      outside: 'target-outside-candidate', 'not-referenced': 'target-not-referenced-by-trigger', 'not-explicit': 'selected-trigger-not-explicit' }[mode];
+    refused(() => links.verify(mode === 'outside' ? 'outside-ticket' : f.target.id,
+      mode === 'not-referenced' ? 'request-2' : mode === 'not-explicit' ? 'request-3' : f.input.id), reason);
+  }
+});
+
+test('stable stopped, revoked and context-only original tickets remain ordinary context, not attachment authority', t => {
+  for (const mode of ['stopped', 'revoked', 'context']) {
+    const f = fixture(t, { original: true, text: 'A separate new request' });
+    if (mode === 'stopped') f.changeTicket(f.target.id, value => { value.ended = { by: 'human', outcome: 'stopped', at }; });
+    if (mode === 'revoked') f.changeTicket(f.target.id, value => { value.mandate.actor.id = 'outsider'; });
+    if (mode === 'context') f.changeThread(f.candidate.thread.key, value => { value.context.push(f.target.id); });
+    f.candidate.tickets = [f.store.tickets.get(f.target.id)];
+    f.candidate.thread = f.store.threads.get(f.candidate.thread.key);
+    const links = f.create();
+    assert.equal(links.verify(), true); assert.equal(links.verifyAuthority(), true);
+    if (mode !== 'context') refused(() => links.verify(f.target.id, f.input.id), 'target-no-longer-routeable');
+    f.changeTicket(f.target.id, value => { value.title = 'Changed, but no refresh authority'; });
+    refused(() => links.verify(), 'target-no-longer-routeable');
+  }
+});
+
+test('loss of a previously valid mandate is hard even when ticket bytes and policy version stay the same', t => {
+  const f = fixture(t, { original: true }), links = f.create();
+  f.setPolicy({ ...f.makePolicy(), revalidate: () => false });
+  refused(() => links.verifyAuthority(), 'target-no-longer-routeable');
+  refused(() => links.verify(), 'target-no-longer-routeable');
+});
+
+test('a target origin change is hard even when the original ticket bytes did not change', t => {
+  for (const mode of ['edited', 'missing']) {
+    const f = fixture(t, { original: true }), links = f.create();
+    if (mode === 'missing') f.store.db.prepare('DELETE FROM domain_triggers WHERE id=?').run(f.target.origin.triggerId);
+    else { const origin = f.store.triggers.get(f.target.origin.triggerId); origin.text = 'Changed original authorization'; f.store.triggers.save(origin); }
+    refused(() => links.verifyAuthority(), 'target-source-missing-or-changed');
+    refused(() => links.verify(), 'target-source-missing-or-changed');
+  }
+  const f = fixture(t, { original: true });
+  f.store.db.prepare('DELETE FROM domain_triggers WHERE id=?').run(f.target.origin.triggerId);
+  const links = f.create();
+  assert.equal(links.verify(), true); // A stable historical context record remains context.
+  f.changeTicket(f.target.id, value => { value.title = 'Changed but missing origin proof'; });
+  refused(() => links.verify(), 'target-source-missing-or-changed');
+});
+
+test('a prior handback for one input does not revoke another input’s existing route', t => {
+  for (const original of [false, true]) {
+    const f = fixture(t, { original, extra: [{ text: '#1 please continue' }] });
+    f.store.triggers.saveDisposition(f.input.id, { fanout: [f.target.id], handbacks: [{ ticketId: f.target.id, reason: 'different scope', at }], evalId: 'eval-1', at });
+    const links = f.create();
+    assert.equal(links.verify(), true);
+    assert.equal(links.verify(f.target.id, 'request-2'), true);
+    refused(() => links.verify(f.target.id, f.input.id), 'target-no-longer-routeable');
+    f.changeTicket(f.target.id, value => { value.title = 'New worker snapshot'; });
+    assert.equal(links.verifyAuthority(f.target.id, 'request-2'), true);
+    assert.throws(() => links.verify(f.target.id, 'request-2'), AssessmentContextChanged);
+    refused(() => links.verify(f.target.id, f.input.id), 'target-no-longer-routeable');
   }
 });
 

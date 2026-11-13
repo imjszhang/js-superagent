@@ -26,8 +26,8 @@ function fixture(t) {
       async run() { return { version: 2, state: 'waiting', summary: 'Waiting within the approved scope', artifacts: [], attention: null }; } },
     assessor: { async assess(input) {
       attempts.push(input); input.checkpoint({ driver: 'fixture-assessor', id: `attempt-${attempts.length}` });
-      await change(input, attempts.length);
-      return { kind: 'accept', title: 'Inspect current orchard notes', scope: 'Read authorized notes only', reason: 'Explicit request', rules: [] };
+      const result = await change(input, attempts.length);
+      return result ?? { kind: 'accept', title: 'Inspect current orchard notes', scope: 'Read authorized notes only', reason: 'Explicit request', rules: [] };
     } } };
   let runtime = createProjectAgent(options).init();
   process.env.REFRESH_FEISHU_SECRET = 'fixture-secret';
@@ -51,6 +51,190 @@ function fixture(t) {
   return { root, get runtime() { return runtime; }, store, attempts, sent, network, receive, tick, setChange: fn => { change = fn; },
     async reopen() { await runtime.stop(); runtime.close(); runtime = createProjectAgent(options).init(); await runtime.prepareExecution(); } };
 }
+
+async function pendingSupplement(f) {
+  await f.runtime.prepareExecution();
+  f.setChange(() => { f.receive('om_pending', 'om_request', false); });
+  f.receive(); await f.tick();
+  const ticket = f.runtime.list()[0], triggerId = 'feishu:tenant:om_pending';
+  assert.equal(f.runtime.list().length, 1);
+  assert.equal(f.runtime.getDomainTicket(ticket.id).inputs.some(input => input.triggerId === triggerId), false);
+  const attach = input => {
+    const domainId = f.runtime.getDomainTicket(ticket.id).id;
+    assert.ok(input.candidate.tickets.some(item => item.id === domainId), 'the existing ticket is in the host-provided candidate');
+    return { kind: 'attach', triggerId, ticketId: domainId,
+      note: 'Keep the pending supplemental requirement on its original work.', reason: 'Same authorized investigation', rules: [] };
+  };
+  return { ticket, triggerId, attach };
+}
+
+for (const handling of ['commit', 'copied', 'swallowed']) test(`concurrent same-topic input refreshes the original supplement (${handling})`, async t => {
+  const f = fixture(t), { ticket, triggerId, attach } = await pendingSupplement(f);
+  const deadlines = [];
+  f.setChange(async (input, attempt) => {
+    deadlines.push(f.store.threads.get(input.candidate.thread.key).evaluating.deadline);
+    if (attempt === 2) {
+      f.receive('om_active', 'om_request', false);
+      assert.equal(f.runtime.getDomainTicket(ticket.id).inputs.filter(item => item.triggerId === 'feishu:tenant:om_active').length, 1);
+      if (handling !== 'commit') {
+        let caught;
+        try { await input.readContextRecord('triggers', triggerId); } catch (error) { caught = error; }
+        assert.ok(caught instanceof AssessmentContextChanged);
+        if (handling === 'copied') throw new Error(caught.message);
+      }
+    }
+    return attach(input);
+  });
+  await f.tick();
+  assert.equal(assessmentStatus(f.store, triggerId).status, 'evaluating');
+  assert.equal(refreshState(f.store, triggerId).refreshesUsed, 1);
+  assert.equal(f.runtime.getDomainTicket(ticket.id).inputs.some(item => item.triggerId === triggerId), false);
+  await f.tick();
+  const supplementAttempts = f.attempts.slice(1);
+  assert.equal(supplementAttempts.length, 2);
+  assert.equal(supplementAttempts[0].candidate.evalId, supplementAttempts[1].candidate.evalId);
+  assert.notEqual(supplementAttempts[0].runId, supplementAttempts[1].runId);
+  assert.equal(supplementAttempts[1].session, undefined);
+  assert.deepEqual(deadlines, [deadlines[0], deadlines[0]]);
+  assert.ok(supplementAttempts[1].timeoutMs < supplementAttempts[0].timeoutMs);
+  assert.equal(assessmentStatus(f.store, triggerId).status, 'attached');
+  assert.equal(assessmentStatus(f.store, triggerId).ticketId, ticket.id);
+  assert.equal(f.runtime.list().length, 1);
+  assert.equal(f.runtime.getDomainTicket(ticket.id).inputs.filter(item => item.triggerId === triggerId).length, 1);
+});
+
+test('two material refreshes then a target snapshot change exhaust the original supplement and allow explicit recovery once', async t => {
+  const f = fixture(t), { ticket, triggerId, attach } = await pendingSupplement(f);
+  const deadlines = [];
+  f.setChange((input, attempt) => {
+    deadlines.push(f.store.threads.get(input.candidate.thread.key).evaluating.deadline);
+    if (attempt <= 3) {
+      const meta = f.store.getMeta(`ticket:${ticket.id}`);
+      f.store.setMeta(`ticket:${ticket.id}`, { ...meta, runId: `concurrent-material-run-${attempt}` });
+    } else f.receive('om_active', 'om_request', false);
+    return attach(input);
+  });
+  for (let index = 1; index <= 2; index++) {
+    await f.tick();
+    assert.equal(refreshState(f.store, triggerId).refreshesUsed, index);
+    assert.equal(refreshState(f.store, triggerId).reason, 'material-session');
+  }
+  for (let index = 0; index < 3; index++) await f.tick();
+  assert.equal(f.attempts.length, 4, 'one root assessment and the unchanged initial plus two refresh attempts');
+  assert.equal(refreshState(f.store, triggerId).refreshesUsed, 2);
+  const status = assessmentStatus(f.store, triggerId);
+  assert.equal(status.status, 'failed');
+  assert.equal(status.code, 'assessment_context_stale_exhausted');
+  assert.equal(status.retryable, true);
+  assert.equal(new Set(f.attempts.slice(1).map(input => input.candidate.evalId)).size, 1);
+  assert.deepEqual(deadlines, Array(3).fill(deadlines[0]));
+  assert.equal(f.runtime.list().length, 1);
+  assert.equal(f.runtime.getDomainTicket(ticket.id).inputs.some(item => item.triggerId === triggerId), false);
+  assert.equal(f.runtime.getDomainTicket(ticket.id).inputs.filter(item => item.triggerId === 'feishu:tenant:om_active').length, 1);
+  const failedRecord = f.store.getMeta(`assessment:${status.evalId}`);
+  assert.deepEqual(failedRecord.failedTriggerIds, [triggerId]);
+  assert.equal(failedRecord.targetSnapshot.ticketId, f.runtime.getDomainTicket(ticket.id).id);
+  assert.equal(failedRecord.targetSnapshot.changeKind, 'ticket-snapshot');
+  assert.deepEqual(Object.keys(failedRecord.targetSnapshot).sort(), ['changeKind', 'currentVersion', 'previousVersion', 'ticketId']);
+  for (const key of ['previousVersion', 'currentVersion']) assert.match(failedRecord.targetSnapshot[key], /^[a-f\d]{64}$/);
+  assert.notEqual(failedRecord.targetSnapshot.previousVersion, failedRecord.targetSnapshot.currentVersion);
+
+  await f.reopen();
+  assert.equal(refreshState(f.store, triggerId).refreshesUsed, 2);
+  f.setChange(input => attach(input));
+  assert.equal(f.runtime.reevaluate(triggerId), true);
+  assert.equal(refreshState(f.store, triggerId).refreshesUsed, 0);
+  await f.tick();
+  assert.equal(assessmentStatus(f.store, triggerId).status, 'attached');
+  assert.equal(assessmentStatus(f.store, triggerId).ticketId, ticket.id);
+  assert.equal(f.runtime.list().length, 1);
+  assert.equal(f.runtime.getDomainTicket(ticket.id).inputs.filter(item => item.triggerId === triggerId).length, 1);
+  assert.equal(f.receive('om_pending', 'om_request', false).status, 'duplicate');
+  assert.equal(f.runtime.reevaluate(triggerId), false);
+  await f.tick();
+  assert.equal(f.runtime.getDomainTicket(ticket.id).inputs.filter(item => item.triggerId === triggerId).length, 1);
+  const attached = f.store.listMeta('assessment:').map(item => item.value).filter(record => record.status === 'finished' && record.result?.kind === 'attach' && record.result.triggerId === triggerId);
+  assert.equal(attached.length, 1);
+});
+
+for (const materialChanged of [false, true]) test(`a changed candidate target that is then human-stopped is refused without consuming refresh allowance (materials=${materialChanged})`, async t => {
+  const f = fixture(t), { ticket, triggerId, attach } = await pendingSupplement(f);
+  f.setChange(input => {
+    f.receive('om_active', 'om_request', false);
+    if (materialChanged) {
+      const meta = f.store.getMeta(`ticket:${ticket.id}`);
+      f.store.setMeta(`ticket:${ticket.id}`, { ...meta, runId: 'changed-before-target-stop' });
+    }
+    f.runtime.cancel(ticket.id); return attach(input);
+  });
+  await f.tick();
+  assert.equal(assessmentStatus(f.store, triggerId).status, 'failed');
+  assert.equal(assessmentStatus(f.store, triggerId).code, 'CANDIDATE_LINKS_REJECTED');
+  assert.equal(assessmentStatus(f.store, triggerId).retryable, false);
+  assert.equal(refreshState(f.store, triggerId).refreshesUsed, 0);
+  assert.equal(f.runtime.getDomainTicket(ticket.id).ended.by, 'human');
+  assert.equal(f.runtime.getDomainTicket(ticket.id).inputs.some(item => item.triggerId === triggerId), false);
+});
+
+test('a remembered target snapshot callback cannot hide a later human stop', async t => {
+  const f = fixture(t), { ticket, triggerId, attach } = await pendingSupplement(f);
+  f.setChange(async input => {
+    f.receive('om_active', 'om_request', false);
+    let caught;
+    try { await input.readContextRecord('triggers', triggerId); } catch (error) { caught = error; }
+    assert.ok(caught instanceof AssessmentContextChanged);
+    f.runtime.cancel(ticket.id);
+    return attach(input);
+  });
+  await f.tick();
+  assert.equal(assessmentStatus(f.store, triggerId).status, 'failed');
+  assert.equal(assessmentStatus(f.store, triggerId).retryable, false);
+  assert.equal(refreshState(f.store, triggerId).refreshesUsed, 0);
+  assert.equal(f.runtime.getDomainTicket(ticket.id).ended.by, 'human');
+  assert.equal(f.runtime.getDomainTicket(ticket.id).inputs.some(item => item.triggerId === triggerId), false);
+});
+
+for (const rejection of ['target-outside-candidate', 'selected-trigger-not-explicit']) for (const invalidation of ['target', 'material', 'swallowed']) {
+  test(`selected attach ${rejection} outranks ${invalidation} snapshot staleness`, async t => {
+    const f = fixture(t), { ticket, triggerId, attach } = await pendingSupplement(f);
+    f.setChange(async input => {
+      if (invalidation === 'material') {
+        const meta = f.store.getMeta(`ticket:${ticket.id}`);
+        f.store.setMeta(`ticket:${ticket.id}`, { ...meta, runId: 'changed-with-invalid-attach' });
+      } else f.receive('om_active', 'om_request', false);
+      if (invalidation === 'swallowed') {
+        await assert.rejects(input.readContextRecord('triggers', triggerId), AssessmentContextChanged);
+      }
+      return { ...attach(input), ...(rejection === 'target-outside-candidate' ? { ticketId: 'ticket-not-in-the-candidate' } : { triggerId: 'feishu:tenant:om_outside' }) };
+    });
+    await f.tick();
+    const status = assessmentStatus(f.store, triggerId);
+    assert.equal(status.status, 'failed');
+    assert.equal(status.code, 'CANDIDATE_LINKS_REJECTED');
+    assert.equal(status.retryable, false);
+    assert.match(f.store.getMeta(`assessment:${status.evalId}`).error, new RegExp(rejection));
+    assert.equal(refreshState(f.store, triggerId).refreshesUsed, 0);
+    assert.equal(f.runtime.list().length, 1);
+    assert.equal(f.runtime.getDomainTicket(ticket.id).inputs.some(item => item.triggerId === triggerId), false);
+  });
+}
+
+test('a target snapshot callback cannot refresh after the original deadline', async t => {
+  const f = fixture(t), { ticket, triggerId, attach } = await pendingSupplement(f);
+  f.setChange(async input => {
+    f.receive('om_active', 'om_request', false);
+    let caught;
+    try { await input.readContextRecord('triggers', triggerId); } catch (error) { caught = error; }
+    assert.ok(caught instanceof AssessmentContextChanged);
+    const deadline = f.store.threads.get(input.candidate.thread.key).evaluating.deadline;
+    t.mock.timers.tick(Date.parse(deadline) - Date.now() + 1);
+    return attach(input);
+  });
+  await f.tick();
+  assert.equal(refreshState(f.store, triggerId).refreshesUsed, 0);
+  assert.equal(f.attempts.length, 2);
+  assert.equal(f.runtime.getDomainTicket(ticket.id).inputs.some(item => item.triggerId === triggerId), false);
+});
 
 test('a concurrent material projection change refreshes the same evaluation with a fresh session', async t => {
   const f = fixture(t); await f.runtime.prepareExecution();
