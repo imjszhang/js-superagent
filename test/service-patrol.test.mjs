@@ -19,7 +19,7 @@ function fixture(t) {
   let now=100_000,job=false,alive=true,hook,signalHook;const calls=[],signals=[];
   const deps={platform:'darwin',uid:501,coordinationDirectory:join(base,'machine'),now:()=>now,ownerState:()=>alive?'alive':'dead',patrolGraceMs:0,
     signalProcess(pid,signal){signals.push({pid,signal});if(signalHook)signalHook();else alive=false;},
-    launchctl(args){calls.push(args);if(args[0]==='print'){if(!job)throw Object.assign(new Error('missing'),{stderr:'Could not find service'});return 'state = running\npid = 100\n';}
+    launchctl(args){calls.push(args);if(args[0]==='print'){if(!job)throw Object.assign(new Error('missing'),{stderr:'Could not find service'});return `state = ${alive?'running':'waiting'}\npid = 100\n`;}
       if(args[0]==='bootstrap'||args[0]==='kickstart'){job=true;alive=true;}if(args[0]==='bootout')job=false;hook?.(args);return '';}};
   const manager=createServiceManager({projectRoot:root,homeDirectory:home},deps);
   const write=(name,value)=>writeFileSync(join(directory,name),JSON.stringify(value),{mode:0o600});

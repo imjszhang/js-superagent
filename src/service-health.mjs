@@ -24,8 +24,12 @@ export function inspectServiceProcesses({ status, runtime, startup, ownerState =
   result.verified = true;
   result.wrapperState = ownerState(runtime.owner);
   result.childState = runtime.childPid == null ? 'dead' : ownerState(runtime.childOwner);
-  // A replacement wrapper may not have published its child yet. Never authorize it using the previous run's receipt.
-  if (status.pid && status.pid !== runtime.pid) { result.wrapperState = 'unknown'; result.verified = false; }
+  // A running launchd generation needs a matching, live owner receipt. Old dead
+  // receipts cannot authorize a missing/reused PID or a replacement wrapper.
+  if (status.pid && status.pid !== runtime.pid ||
+      status.running && (status.pid !== runtime.pid || result.wrapperState !== 'alive')) {
+    result.wrapperState = 'unknown'; result.verified = false;
+  }
   result.settled = result.wrapperState === 'dead' && result.childState === 'dead';
   return result;
 }

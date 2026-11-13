@@ -38,7 +38,7 @@ function fixture(t) {
     calls.push(args);
     if (args[0] === 'print') {
       if (!job) throw Object.assign(new Error('missing'), { stderr: 'Could not find service' });
-      return 'state = running\npid = 12345\n';
+      return `state = ${alive ? 'running' : 'waiting'}\npid = 12345\n`;
     }
     if (args[0] === 'disable') disabled = true;
     if (args[0] === 'enable') disabled = false;

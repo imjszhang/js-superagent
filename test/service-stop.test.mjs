@@ -20,7 +20,7 @@ function fixture(t) {
   const deps={platform:'darwin',uid:501,coordinationDirectory:join(base,'machine'),stopTimeoutMs:0,
     ownerState:owner=>states.get(owner.pid)??'unknown',
     signalProcess(pid,signal){signals.push({pid,signal});if(graceful){states.set(pid,'dead');if(pid===100)states.set(101,'dead');}},
-    launchctl(args){calls.push(args);if(args[0]==='print'){if(!job)throw Object.assign(new Error('missing'),{stderr:'Could not find service'});return 'state = running\npid = 100\n';}
+    launchctl(args){calls.push(args);if(args[0]==='print'){if(!job)throw Object.assign(new Error('missing'),{stderr:'Could not find service'});return `state = ${states.get(100)==='dead'?'waiting':'running'}\npid = 100\n`;}
       if(args[0]==='bootstrap'||args[0]==='kickstart')job=true;if(args[0]==='bootout')job=false;return '';}};
   const options={projectRoot:root,homeDirectory:home},manager=createServiceManager(options,deps);
   const write=(name,value)=>writeFileSync(join(directory,name),JSON.stringify(value),{mode:0o600});
@@ -58,6 +58,24 @@ test('unknown process identity remains unverified and is never signalled or unlo
   assert.equal(f.signals.length,0);assert.equal(f.calls.some(args=>args[0]==='bootout'),false);
   const before=readFileSync(join(f.directory,'startup.json'));
   f.manager.status();f.manager.health();assert.deepEqual(readFileSync(join(f.directory,'startup.json')),before);
+});
+
+for (const currentPid of [null, 100]) test(`old dead process receipts cannot stop a running launchd generation (pid=${currentPid})`, t => {
+  const f = fixture(t); f.record(); f.job = true;
+  // Both recorded owners are dead. Launchd nevertheless reports a running
+  // generation whose PID is absent or has reused the old wrapper's PID.
+  const manager = createServiceManager(f.options, { ...f.deps, launchctl(args) {
+    const result = f.deps.launchctl(args);
+    return args[0] === 'print' ? `state = running\n${currentPid === null ? '' : `pid = ${currentPid}\n`}` : result;
+  } });
+  assert.throws(() => manager.stop(), error => error.code === 'SERVICE_STOP_PENDING');
+  assert.equal(manager.status().stopPending, true);
+  assert.equal(manager.health().reason, 'service-stop-unverified');
+  assert.throws(() => manager.start(), error => error.code === 'SERVICE_STOP_PENDING');
+  assert.throws(() => manager.restart(), error => error.code === 'SERVICE_STOP_PENDING');
+  assert.throws(() => manager.uninstall(), error => error.code === 'SERVICE_STOP_PENDING');
+  assert.equal(f.signals.length, 0);
+  assert.equal(f.calls.some(args => ['bootout', 'enable', 'bootstrap', 'kickstart'].includes(args[0])), false);
 });
 
 test('only the proven orphan child is signalled and reused PIDs are not touched',t=>{
@@ -112,7 +130,7 @@ test('service stop waits for a real wrapper and child to exit before bootout', {
   let wrapper,job=false;const signals=[];
   const manager=createServiceManager({...f.options,cliPath},{...f.deps,stopTimeoutMs:3000,ownerState:inspectProcessOwner,
     signalProcess(pid,signal){signals.push({pid,signal});process.kill(pid,signal);},
-    launchctl(args){if(args[0]==='print'){if(!job)throw Object.assign(new Error('missing'),{stderr:'Could not find service'});return wrapper?`state = running\npid = ${wrapper.pid}\n`:'state = waiting\n';}
+    launchctl(args){if(args[0]==='print'){if(!job)throw Object.assign(new Error('missing'),{stderr:'Could not find service'});return wrapper?`state = ${captureProcessIdentity(wrapper.pid)===null?'waiting':'running'}\npid = ${wrapper.pid}\n`:'state = waiting\n';}
       if(args[0]==='bootstrap')job=true;
       if(args[0]==='bootout'){const record=JSON.parse(readFileSync(join(f.directory,'runtime.json')));assert.equal(inspectProcessOwner(record.owner),'dead');assert.equal(inspectProcessOwner(record.childOwner),'dead');job=false;}return '';}});
   manager.install();manager.start();
