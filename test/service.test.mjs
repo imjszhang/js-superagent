@@ -398,9 +398,14 @@ test('old restart policy from another installed package requires explicit reinst
 test('concurrent machine registry initialization gets bounded retry without clearing registry evidence', { skip: process.platform !== 'darwin' }, t => {
   const f = fixture(t), cliPath = join(f.base, 'initializing-cli.mjs'), evidence = join(f.base, 'registry-evidence');
   writeFileSync(evidence, 'preserve-creator-evidence');
-  writeFileSync(cliPath, "process.send({type:'js-superagent:startup-error',code:'MACHINE_REGISTRY_INITIALIZING'},()=>process.exit(1));");
+  // This tests retry after a known child exits; unknown identity remains fail-closed.
+  const receiptHelper = new URL('./helpers/service-child-receipt.mjs', import.meta.url).href;
+  writeFileSync(cliPath, `import {waitForServiceReceipt} from ${JSON.stringify(receiptHelper)};await waitForServiceReceipt(${JSON.stringify(join(stateDir(f.root), 'service'))});process.send({type:'js-superagent:startup-error',code:'MACHINE_REGISTRY_INITIALIZING'},()=>process.exit(1));`);
   const manager = createServiceManager({ ...f.options, cliPath }, f.deps); manager.install();
-  assert.equal(spawnSync(process.execPath, wrapperArgs(f), { timeout: 5000 }).status, 1);
+  assert.equal(spawnSync(process.execPath, wrapperArgs(f), { timeout: 10000 }).status, 1);
+  const receipt = JSON.parse(readFileSync(join(stateDir(f.root), 'service/runtime.json')));
+  assert.equal(receipt.owner.pid, receipt.pid); assert.equal(receipt.childOwner.pid, receipt.childPid);
+  assert.equal(manager.status().stopPending, false);
   assert.equal(manager.status().blocked, null);
   assert.equal(manager.status().startupState, 'retrying');
   assert.equal(manager.status().retryCount, 1);
