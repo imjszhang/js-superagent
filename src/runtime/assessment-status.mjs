@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 
 const receiptDigest = message => createHash('sha256').update(JSON.stringify(message)).digest('hex');
 const RECEIPT_TEMPLATE = 'assessment-ticket-status-v1';
+export const isMaterialBindingDenied = value => ['MATERIAL_ACCESS_DENIED', 'MATERIAL_DESTINATION_DENIED'].includes(value?.code);
 
 /** Only these fixed host facts can be disclosed without a material body. */
 export function assessmentTicketReceiptProof(message, { evalId, triggerId, status }) {
@@ -10,12 +11,13 @@ export function assessmentTicketReceiptProof(message, { evalId, triggerId, statu
 }
 
 export function verifyAssessmentTicketReceipt(message, proof, record, publicId = id => id) {
-  if (proof?.version !== 1 || proof.template !== RECEIPT_TEMPLATE || !['accepted', 'attached'].includes(proof.status) ||
+  if (proof?.version !== 1 || proof.template !== RECEIPT_TEMPLATE || !['accepted', 'attached', 'failed'].includes(proof.status) ||
       !record || typeof proof.evalId !== 'string' || typeof proof.triggerId !== 'string' ||
-      record.evalId !== proof.evalId || record.status !== 'finished' || !record.triggerIds?.includes(proof.triggerId) ||
-      !record.result?.applied || !proof.ticketId || message.ticketId !== proof.ticketId || message.kind !== 'reply' ||
+      record.evalId !== proof.evalId || !record.triggerIds?.includes(proof.triggerId) || message.kind !== 'reply' ||
       Object.keys(message).some(key => !['id', 'kind', 'ticketId', 'channel', 'text'].includes(key)) ||
       message.id !== `assessment-result:${proof.evalId}:${proof.triggerId}` || proof.messageDigest !== receiptDigest(message)) return false;
+  if (proof.status === 'failed') return record.status === 'failed' && isMaterialBindingDenied(record) && !proof.ticketId && !message.ticketId && message.text === assessmentFailureMessage(record);
+  if (record.status !== 'finished' || !record.result?.applied || !proof.ticketId || message.ticketId !== proof.ticketId) return false;
   const result = record.result;
   if (proof.status === 'accepted' && (result.kind !== 'accept' || publicId(result.decision?.ticketId) !== proof.ticketId || !result.decision.triggerIds?.includes(proof.triggerId))) return false;
   if (proof.status === 'attached' && (result.kind !== 'attach' || publicId(result.ticket?.id) !== proof.ticketId || result.triggerId !== proof.triggerId)) return false;
@@ -48,6 +50,8 @@ export function assessmentStatus(store, triggerId, { includeOwners = true } = {}
 }
 
 export function assessmentFailureMessage(record) {
+  if (record.code === 'MATERIAL_ACCESS_DENIED') return '建单未完成：请求者没有所选项目材料的读取权限。请求已保留，尚未开始执行；请核对材料读取授权与评估配置，再重新评估原请求。';
+  if (record.code === 'MATERIAL_DESTINATION_DENIED') return '建单未完成：当前回复位置未获准接收所选项目材料的结果。请求已保留，尚未开始执行；请核对材料输出授权与评估配置，再重新评估原请求。';
   const kind = publicAssessmentFailure(record).failureKind;
   if (kind === 'format') return `建单评估返回格式不符合要求${record.corrections ? `，已尝试纠正 ${record.corrections} 次` : ''}。请求已保留，尚未开始执行。`;
   if (kind === 'transient' || kind === 'timeout') return '建单评估暂时无法完成。请求已保留，尚未开始执行，可在服务恢复后重试。';

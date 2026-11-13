@@ -48,7 +48,7 @@ export function parseAssessmentReport(raw, label = 'Coordinator') {
 }
 export function assessmentFailure(error) {
   const status = error?.statusCode, code = error?.code;
-  const auth = ['AUTH', 'UNAUTHORIZED', 'FORBIDDEN'].includes(code) || [401, 403].includes(status);
+  const auth = ['AUTH', 'UNAUTHORIZED', 'FORBIDDEN', 'MATERIAL_ACCESS_DENIED', 'MATERIAL_DESTINATION_DENIED'].includes(code) || [401, 403].includes(status);
   const transient = !auth && coordinationFailure(error) === 'transient';
   const failureKind = auth ? 'authority' : error?.failureKind ?? (transient ? 'transient' : 'internal');
   return { code: error?.code ?? `assessment_${failureKind}`, failureKind, retryable: !auth && (error?.retryable === true || transient),
