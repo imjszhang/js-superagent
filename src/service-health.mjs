@@ -1,4 +1,5 @@
 import { inspectProcessOwner } from './machine-coordination.mjs';
+import { sanitizeFeishuDiagnostic } from './channels/feishu-diagnostics.mjs';
 
 export const SERVICE_HEARTBEAT_INTERVAL_MS = 5000;
 export const SERVICE_HEARTBEAT_STALE_MS = 20000;
@@ -35,10 +36,24 @@ export function inspectServiceProcesses({ status, runtime, startup, ownerState =
 }
 const historyCodes = history => [...new Set((Array.isArray(history.codes) ? history.codes : Array.isArray(history.issues) ? history.issues.map(issue => issue?.code) : [])
   .filter(code => Number.isSafeInteger(code) && code >= 0))].slice(0, 100);
+const historyDiagnostics = (history, budget) => {
+  const items = Array.isArray(history.diagnostics) ? history.diagnostics : Array.isArray(history.issues) ? history.issues : [];
+  const diagnostics = [];
+  for (const value of items.slice(0, 100)) {
+    if (!budget.count) break;
+    const item = sanitizeFeishuDiagnostic(value);
+    if (!Object.keys(item).length) continue;
+    const bytes = Buffer.byteLength(JSON.stringify(item)) + 32;
+    if (bytes > budget.bytes) continue;
+    diagnostics.push(item); budget.count--; budget.bytes -= bytes;
+  }
+  return diagnostics.length ? { diagnostics } : {};
+};
 
 /** Only small diagnostic facts cross IPC. Never persist error text, tasks, tokens or model output. */
 function businessSnapshot(value) {
-  return {
+  const sources = Array.isArray(value?.sources) ? value.sources.slice(0, 100).filter(source => typeof source?.id === 'string' && source.id.length <= 200 && SOURCE_STATES.has(source.state)) : [];
+  const snapshot = {
     available: value?.available === true,
     observedAt: date(value?.observedAt),
     paused: value?.paused === true,
@@ -46,13 +61,18 @@ function businessSnapshot(value) {
     active: value?.active === true,
     activeIncidents: count(value?.activeIncidents),
     modelWaits: count(value?.modelWaits),
-    sources: Array.isArray(value?.sources) ? value.sources.slice(0, 100).filter(source => typeof source?.id === 'string' && source.id.length <= 200 && SOURCE_STATES.has(source.state))
-      .map(source => ({ id: source.id, state: source.state, lastSuccess: date(source.lastSuccess),
+    sources: sources.map(source => ({ id: source.id, state: source.state, lastSuccess: date(source.lastSuccess),
         ...(CONNECTION_STATES.has(source.live?.state) ? { live: { state: source.live.state, healthy: source.live.healthy === true } } : {}),
         ...(SOURCE_STATES.has(source.history?.state) ? { history: { state: source.history.state, healthy: source.history.healthy === true,
           failedScopes: count(source.history.failedScopes ?? source.history.issues?.length),
-          codes: historyCodes(source.history) } } : {}) })) : [],
+          codes: historyCodes(source.history) } } : {}) })),
   };
+  // Extra facts share a small global budget; retain headroom in the existing 64 KiB service file contract.
+  const budget = { count: 20, bytes: Math.min(4096, Math.max(0, 60 * 1024 - Buffer.byteLength(JSON.stringify(snapshot)))) };
+  snapshot.sources.forEach((source, index) => {
+    if (source.history) Object.assign(source.history, historyDiagnostics(sources[index].history, budget));
+  });
+  return snapshot;
 }
 
 /** CLI-only publisher; plain SDK, foreground CLI and imports open no timer or endpoint. */

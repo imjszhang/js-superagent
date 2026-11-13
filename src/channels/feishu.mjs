@@ -2,8 +2,11 @@ import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createFeishuTransport, FEISHU_HANDSHAKE_TIMEOUT_MS } from './feishu-transport.mjs';
+import { getFeishuReadDiagnostic, getFeishuTransportErrorDiagnostic } from './feishu-diagnostics.mjs';
 
 const require = createRequire(import.meta.url);
+// Only errors created by this adapter can supply a validation message. SDK errors may contain secrets.
+const historyValidation = new WeakMap(), apiFailures = new WeakSet();
 export function feishuSdkAvailable() {
   try { require.resolve('@larksuiteoapi/node-sdk'); return true; }
   catch { return false; }
@@ -17,13 +20,14 @@ export function assertFeishuServiceConfig(config) {
 }
 
 function identifier(value, prefix, name) {
-  if (typeof value !== 'string' || !new RegExp(`^${prefix}[A-Za-z0-9_-]{1,200}$`).test(value)) throw new Error(`Invalid ${name}`);
+  if (typeof value !== 'string' || !new RegExp(`^${prefix}[A-Za-z0-9_-]{1,200}$`).test(value)) throw invalidHistory(`Invalid ${name}`);
   return value;
 }
 function requireSuccess(response, label) {
   if (!response || response.code !== 0) {
     const error = new Error(`${label} failed with code ${Number.isInteger(response?.code) ? response.code : 'unknown'}`);
     if (Number.isInteger(response?.code)) error.code = response.code;
+    apiFailures.add(error);
     throw error;
   }
   return response.data ?? {};
@@ -32,22 +36,34 @@ function checkSignal(signal) { if (signal?.aborted) throw new Error('Feishu oper
 // Match the prototype's bounded retention of quiet topics; live subscriptions may retain them longer.
 export const FEISHU_TOPIC_HORIZON_MS = 14 * 24 * 60 * 60 * 1000;
 const TOPIC_BUFFER_EVENTS = 500, TOPIC_BUFFER_BYTES = 1024 * 1024;
-function historyError(error, container) {
-  const code = error?.response?.data?.code ?? error?.code;
+function historyError(error, container, startedAt, stage) {
+  let code;
+  try { code = error?.response?.data?.code ?? error?.code; } catch { /* Untrusted error accessors cannot bypass diagnostic redaction. */ }
   const permission = [230027, 99991672, 99991679].includes(code);
+  const validation = historyValidation.get(error);
+  const diagnostic = getFeishuReadDiagnostic(error) ?? getFeishuTransportErrorDiagnostic(error);
+  const reason = validation ? 'validation' : Number.isInteger(code) ? 'api' : apiFailures.has(error) ? 'response' : diagnostic.reason;
+  const phase = validation ? 'validation' : diagnostic.phase === 'auth' ? 'auth' : stage;
+  const elapsedMs = diagnostic.elapsedMs ?? Math.min(86_400_000, Math.max(0, Math.floor(performance.now() - startedAt)));
+  const failedAt = diagnostic.failedAt ?? new Date().toISOString();
   return { scope: container.chatId, operation: 'history', container,
-    category: permission ? 'permission' : error?.validation ? 'validation' : 'transport',
+    category: permission ? 'permission' : validation ? 'validation' : 'transport',
     ...(Number.isInteger(code) ? { code } : {}),
-    // SDK transport errors can carry credentials in their request objects. Retain only a safe message and platform code.
+    ...diagnostic, reason, phase, elapsedMs, failedAt,
+    // Never retain arbitrary SDK messages, response bodies, request objects or claimed validation details.
     error: permission ? `Feishu history permission denied (code ${code}); check the application's im:message.group_msg permission`
       : Number.isInteger(code) ? `Feishu history failed with code ${code}`
-        : error?.validation ? error.message : 'Feishu history transport failed' };
+        : validation ?? (reason === 'response' ? 'Invalid Feishu history response'
+          : phase === 'validation' ? 'Feishu history message processing failed'
+            : reason === 'unknown' ? 'Feishu history transport failed' : `Feishu history ${reason} failure`) };
 }
-function invalidHistory(message) { const error = new Error(message); error.validation = true; return error; }
+function invalidHistory(message) {
+  const error = new Error(message); error.validation = true; historyValidation.set(error, message); return error;
+}
 function parseContent(type, raw) {
   let content;
-  try { content = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { throw new Error('Malformed Feishu message content'); }
-  if (!content || typeof content !== 'object') throw new Error('Malformed Feishu message content');
+  try { content = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { throw invalidHistory('Malformed Feishu message content'); }
+  if (!content || typeof content !== 'object') throw invalidHistory('Malformed Feishu message content');
   if (type === 'text') return { text: typeof content.text === 'string' ? content.text : '', attachments: [] };
   if (type === 'image') return { text: '[Image attachment]', attachments: [{ type: 'image', key: identifier(content.image_key, 'img_', 'image key') }] };
   if (type === 'file') return { text: `[File attachment: ${String(content.file_name ?? 'file').slice(0, 256)}]`, attachments: [{ type: 'file', key: identifier(content.file_key, 'file_', 'file key'), name: String(content.file_name ?? '').slice(0, 256) }] };
@@ -119,9 +135,9 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
     if (event.sender?.tenant_key && event.sender.tenant_key !== tenantKey) return null;
     if ((sender.sender_type ?? sender.type) !== 'user') return null;
     const chatId = identifier(message.chat_id, 'oc_', 'chat ID'), messageId = identifier(message.message_id, 'om_', 'message ID');
-    const timestamp = Number(message.create_time); if (!Number.isFinite(timestamp) || timestamp < 1) throw new Error('Invalid Feishu message timestamp');
+    const timestamp = Number(message.create_time); if (!Number.isFinite(timestamp) || timestamp < 1) throw invalidHistory('Invalid Feishu message timestamp');
     const parsed = parseContent(message.message_type ?? message.msg_type, message.content ?? message.body?.content);
-    if (parsed.text.length > 128 * 1024) throw new Error('Feishu message text exceeds 128 KiB');
+    if (parsed.text.length > 128 * 1024) throw invalidHistory('Feishu message text exceeds 128 KiB');
     const thread = `${tenantKey}:${chatId}:operator`;
     const replyTo = message.parent_id || message.root_id;
     return { id: `feishu:${tenantKey}:${messageId}`, source: 'feishu', threads: [{ source: 'feishu', id: thread }],
@@ -156,9 +172,9 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
     if (scope.mode === 'mentions' && !addressed && !message.root_id && !message.parent_id) return null;
     const messageId = identifier(message.message_id, 'om_', 'message ID');
     const rootId = identifier(message.root_id || message.parent_id || messageId, 'om_', 'root message ID');
-    const timestamp = Number(message.create_time); if (!Number.isFinite(timestamp) || timestamp < 1) throw new Error('Invalid Feishu message timestamp');
+    const timestamp = Number(message.create_time); if (!Number.isFinite(timestamp) || timestamp < 1) throw invalidHistory('Invalid Feishu message timestamp');
     const parsed = parseContent(message.message_type ?? message.msg_type, message.content ?? message.body?.content);
-    if (parsed.text.length > 128 * 1024) throw new Error('Feishu message text exceeds 128 KiB');
+    if (parsed.text.length > 128 * 1024) throw invalidHistory('Feishu message text exceeds 128 KiB');
     const thread = `${tenantKey}:${message.chat_id}:${rootId}`;
     return { id: `feishu:${tenantKey}:${messageId}`, source: 'feishu', threads: [{ source: 'feishu', id: thread }],
       actor: { source: 'feishu', id: senderId }, human: (sender.sender_type ?? sender.type) === 'user', ...(addressed ? { addressed } : {}),
@@ -292,11 +308,14 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
         checkSignal(signal);
         const task = queue.shift(), scope = allowed.get(task.chatId);
         const container = { type: ['resolve', 'thread'].includes(task.type) ? 'thread' : 'chat', id: task.id, chatId: task.chatId };
+        const startedAt = performance.now();
+        let stage = 'history';
         requests++;
         try {
           if (task.type === 'resolve') {
             const data = requireSuccess(await read('get', { path: { message_id: task.id } }, signal), 'Feishu topic reference');
             checkSignal(signal);
+            stage = 'validation';
             if (!Array.isArray(data.items) || !data.items.length || data.items.some(item => item.chat_id !== task.chatId || item.message_id !== task.id)) throw invalidHistory('Feishu topic reference is outside the requested chat or message');
             const message = data.items[0];
             if (message.root_id && message.root_id !== task.id) throw invalidHistory('Feishu topic reference returned a different root');
@@ -320,6 +339,7 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
             ...(pageToken ? { page_token: pageToken } : {}) } }, signal);
           checkSignal(signal);
           const data = requireSuccess(response, 'Feishu history');
+          stage = 'validation';
           if (!Array.isArray(data.items) || data.items.length > 50 || typeof data.has_more !== 'boolean') throw invalidHistory('Invalid Feishu history page');
           const pageEvents = [], discoveries = [];
           const lower = Math.max(Math.max(0, since - 2) * 1000, previous.minimumAt ?? 0);
@@ -387,7 +407,7 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
             if (task.type === 'discover') { previous.complete = true; delete previous.topicSince; }
             delete current.failures[task.key];
           }
-        } catch (error) { checkSignal(signal); current.failures[task.key] = historyError(error, container); }
+        } catch (error) { checkSignal(signal); current.failures[task.key] = historyError(error, container, startedAt, stage); }
       }
       if (queue.length) current.next = queue[0].key; else delete current.next;
       // Topic pages run newest-first on the platform; intake still sees each committed batch in chronological order.
