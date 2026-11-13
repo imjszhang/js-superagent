@@ -134,7 +134,7 @@ test('publishes only the verified tarball once, then waits for the exact version
   });
   assert.equal(result.status, 'published');
   assert.equal(mutations.length, 1);
-  assert.deepEqual(mutations[0].slice(0, 2), ['npm', ['publish', f.archive, '--ignore-scripts', '--access', 'public', '--tag', 'alpha', '--registry', 'https://registry.npmjs.org/']]);
+  assert.deepEqual(mutations[0].slice(0, 2), ['npm', ['publish', f.archive, '--ignore-scripts', '--provenance', '--access', 'public', '--tag', 'alpha', '--registry', 'https://registry.npmjs.org/']]);
   assert.equal(mutations[0][2].env, f.env);
   assert.equal(reads[0].options.cache, 'no-store');
 });

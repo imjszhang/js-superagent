@@ -82,7 +82,7 @@ export async function publishRelease({
   // Never retry the mutation: even a nonzero exit may follow a successful registry write.
   let command;
   try {
-    command = spawn('npm', ['publish', release.archive, '--ignore-scripts', '--access', 'public',
+    command = spawn('npm', ['publish', release.archive, '--ignore-scripts', '--provenance', '--access', 'public',
       '--tag', release.channel, '--registry', registry], { cwd: root, env, stdio: 'inherit', timeout: 120_000 });
   } catch {
     command = { status: null };
