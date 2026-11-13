@@ -20,10 +20,29 @@ function identifier(value, prefix, name) {
   return value;
 }
 function requireSuccess(response, label) {
-  if (!response || response.code !== 0) throw new Error(`${label} failed with code ${Number.isInteger(response?.code) ? response.code : 'unknown'}`);
+  if (!response || response.code !== 0) {
+    const error = new Error(`${label} failed with code ${Number.isInteger(response?.code) ? response.code : 'unknown'}`);
+    if (Number.isInteger(response?.code)) error.code = response.code;
+    throw error;
+  }
   return response.data ?? {};
 }
 function checkSignal(signal) { if (signal?.aborted) throw new Error('Feishu operation cancelled'); }
+// Match the prototype's bounded retention of quiet topics; live subscriptions may retain them longer.
+export const FEISHU_TOPIC_HORIZON_MS = 14 * 24 * 60 * 60 * 1000;
+const TOPIC_BUFFER_EVENTS = 500, TOPIC_BUFFER_BYTES = 1024 * 1024;
+function historyError(error, container) {
+  const code = error?.response?.data?.code ?? error?.code;
+  const permission = [230027, 99991672, 99991679].includes(code);
+  return { scope: container.chatId, operation: 'history', container,
+    category: permission ? 'permission' : error?.validation ? 'validation' : 'transport',
+    ...(Number.isInteger(code) ? { code } : {}),
+    // SDK transport errors can carry credentials in their request objects. Retain only a safe message and platform code.
+    error: permission ? `Feishu history permission denied (code ${code}); check the application's im:message.group_msg permission`
+      : Number.isInteger(code) ? `Feishu history failed with code ${code}`
+        : error?.validation ? error.message : 'Feishu history transport failed' };
+}
+function invalidHistory(message) { const error = new Error(message); error.validation = true; return error; }
 function parseContent(type, raw) {
   let content;
   try { content = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { throw new Error('Malformed Feishu message content'); }
@@ -70,7 +89,8 @@ export function readFeishuAppSecret(config = {}) {
 }
 
 /** Uses an authenticated official SDK client. normalize() accepts only verified SDK events or API results. */
-export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId, tenantKey, scopes, operator, operatorChatId = () => undefined, now = () => Date.now(), maxPages = 10, pollIntervalMs = 60_000 } = {}) {
+export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId, tenantKey, scopes, operator, operatorChatId = () => undefined,
+  trackedThreads = () => [], now = () => Date.now(), maxPages = 10, pollIntervalMs = 60_000 } = {}) {
   if (!/^[a-zA-Z0-9_.:-]{1,128}$/.test(id)) throw new Error('Invalid Feishu source id');
   identifier(botOpenId, 'ou_', 'bot open ID');
   if (botAppId !== undefined) identifier(botAppId, 'cli_', 'bot app ID');
@@ -87,6 +107,7 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
   if (allowed.size !== scopes.length) throw new Error('Duplicate Feishu chat scope');
   if (!Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > 100) throw new Error('Feishu maxPages must be 1 to 100');
   if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1000) throw new Error('Feishu pollIntervalMs must be at least 1000');
+  if (typeof trackedThreads !== 'function') throw new Error('Feishu trackedThreads must be a callback');
   // The operator's direct messages are the operator conversation, not a listed chat: the host hands them to the coordinator.
   const operatorMessage = (event, message) => {
     if (!operatorOpenId || message.chat_type !== 'p2p') return undefined;
@@ -140,7 +161,10 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
       actor: { source: 'feishu', id: senderId }, human: (sender.sender_type ?? sender.type) === 'user', ...(addressed ? { addressed } : {}),
       at: new Date(timestamp).toISOString(), text: parsed.text,
       channel: { source: 'feishu', thread, address: { sourceId: id, chatId: message.chat_id, messageId: rootId, tenantKey } },
-      meta: { tenantKey, chatId: message.chat_id, chatType: scope.type, messageId, rootId, attachments: parsed.attachments, ...(parsed.unsupported ? { unsupported: true } : {}) } };
+      meta: { tenantKey, chatId: message.chat_id, chatType: scope.type, messageId, rootId,
+        ...(message.parent_id ? { parentId: identifier(message.parent_id, 'om_', 'parent message ID') } : {}),
+        ...(message.thread_id ? { threadId: identifier(message.thread_id, 'omt?_', 'thread ID') } : {}),
+        attachments: parsed.attachments, ...(parsed.unsupported ? { unsupported: true } : {}) } };
   };
   const body = message => {
     if (message.card !== undefined) {
@@ -181,36 +205,191 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
   };
   return { id, source: 'feishu', pollIntervalMs, normalize, operatorOpenId,
     async poll({ cursor, signal } = {}) {
-      const current = cursor?.schemaVersion === 1 ? structuredClone(cursor) : { schemaVersion: 1, scopes: {} };
-      const events = [], errors = [], cutoff = Math.floor(now() / 1000);
-      for (const scope of allowed.values()) {
-        if (events.length >= 9950) break;
-        checkSignal(signal);
-        const previous = current.scopes[scope.chatId];
-        // Establish a receiving baseline. Historical backfill is an explicit cursor operation.
-        if (!previous) { current.scopes[scope.chatId] = { since: cutoff }; continue; }
-        let pageToken = previous.pageToken, since = previous.since, until = previous.until ?? cutoff;
-        try {
-          let finished = false;
-          for (let page = 0; page < maxPages; page++) {
-            if (events.length >= 9950) break;
-            const response = await api.list({ params: { container_id_type: 'chat', container_id: scope.chatId,
-              start_time: String(Math.max(0, since - 2)), end_time: String(until), sort_type: 'ByCreateTimeAsc', page_size: 50, ...(pageToken ? { page_token: pageToken } : {}) } });
-            checkSignal(signal);
-            const data = requireSuccess(response, 'Feishu history');
-            if (!Array.isArray(data.items ?? [])) throw new Error('Invalid Feishu history items');
-            for (const message of data.items ?? []) {
-              const event = { sender: message.sender, message: { ...message, chat_id: scope.chatId, chat_type: scope.type } };
-              if (normalize(event)) events.push(event);
-            }
-            if (!data.has_more) { current.scopes[scope.chatId] = { since: until }; finished = true; break; }
-            if (typeof data.page_token !== 'string' || !data.page_token || data.page_token === pageToken) throw new Error('Invalid Feishu pagination cursor');
-            pageToken = data.page_token;
+      if (cursor && ![1, 2].includes(cursor.schemaVersion)) throw new Error('Unsupported Feishu history cursor version');
+      // Preserve v1's unfinished windows on upgrade. Topics and scheduling are internal state, not user configuration.
+      const current = { ...(cursor ? structuredClone(cursor) : {}), schemaVersion: 2,
+        scopes: structuredClone(cursor?.scopes ?? {}), topics: structuredClone(cursor?.topics ?? {}),
+        discovery: structuredClone(cursor?.discovery ?? {}), failures: structuredClone(cursor?.failures ?? {}) };
+      const events = [], cutoff = Math.floor(now() / 1000), queue = [], queued = new Set(), followed = new Set();
+      const topicKey = (chatId, threadId) => `${chatId}:${threadId}`;
+      const enqueue = task => { if (!queued.has(task.key)) { queue.push(task); queued.add(task.key); } };
+      const topic = (chatId, threadId, rootId, since, lastSeen, minimumAt) => {
+        identifier(threadId, 'omt?_', 'thread ID'); identifier(rootId, 'om_', 'root message ID');
+        const key = topicKey(chatId, threadId), previous = current.topics[key];
+        if (previous && (previous.chatId !== chatId || previous.rootId !== rootId)) throw invalidHistory('Feishu topic identity changed');
+        const value = previous ?? { chatId, threadId, rootId, since, ...(minimumAt === undefined ? {} : { minimumAt }) };
+        value.lastSeen = Math.max(value.lastSeen ?? 0, lastSeen);
+        current.topics[key] = value;
+        enqueue({ key: `thread:${key}`, type: 'thread', id: threadId, chatId, state: value });
+        return value;
+      };
+      const associate = (ref, threadId) => {
+        const value = topic(ref.chatId, threadId, ref.rootId, Math.floor(ref.since / 1000), ref.lastAt ?? ref.since, ref.since);
+        followed.add(topicKey(ref.chatId, threadId));
+        // A delayed live replay can establish authority earlier than discovery's receiving baseline.
+        // Revisit that accepted interval once, not on every subsequent poll of the subscription.
+        if (value.associatedSince === undefined || ref.since < value.associatedSince) {
+          const previousLower = Math.max(Math.max(0, value.since - 2) * 1000, value.minimumAt ?? 0);
+          value.associatedSince = ref.since;
+          if (value.minimumAt !== undefined) value.minimumAt = Math.min(value.minimumAt, ref.since);
+          value.since = Math.min(value.since, Math.floor(ref.since / 1000));
+          const nextLower = Math.max(Math.max(0, value.since - 2) * 1000, value.minimumAt ?? 0);
+          if (nextLower < previousLower) {
+            // Millisecond authority can move within the same second. Earlier pages must be revisited even then.
+            // Keep an unfinished window's original upper bound; stable message IDs deduplicate any replay.
+            for (const key of ['pageToken', 'seenTokens', 'pendingEvents', 'ready', 'order']) delete value[key];
           }
-          if (!finished) current.scopes[scope.chatId] = { since, until, pageToken };
-        } catch (error) { checkSignal(signal); errors.push({ scope: scope.chatId, error: String(error.message ?? error) }); }
+        }
+        return value;
+      };
+      for (const chatId of Object.keys(current.scopes)) if (!allowed.has(chatId)) delete current.scopes[chatId];
+      for (const chatId of Object.keys(current.discovery)) if (!allowed.has(chatId)) delete current.discovery[chatId];
+      const tracked = await trackedThreads();
+      if (!Array.isArray(tracked)) throw new Error('Invalid Feishu tracked thread list');
+      for (const ref of tracked) {
+        // The host supplies eligible subscriptions, but the adapter still enforces its configured platform scope.
+        if (!allowed.has(ref.chatId) || allowed.get(ref.chatId).type === 'p2p') continue;
+        identifier(ref.rootId, 'om_', 'root message ID');
+        if (!Number.isFinite(ref.since) || ref.since < 0) throw new Error('Invalid Feishu tracked thread baseline');
+        const known = Object.values(current.topics).find(value => value.chatId === ref.chatId && value.rootId === ref.rootId);
+        const threadId = ref.threadId ?? known?.threadId;
+        if (threadId) {
+          associate(ref, threadId);
+        } else enqueue({ key: `resolve:${ref.chatId}:${ref.rootId}`, type: 'resolve', id: ref.rootId, chatId: ref.chatId, ref });
       }
-      return { events, cursor: current, errors };
+      for (const [key, value] of Object.entries(current.topics)) {
+        if (!allowed.has(value.chatId) || !followed.has(key) && value.initialized && cutoff * 1000 - value.lastSeen >= FEISHU_TOPIC_HORIZON_MS && !value.until) {
+          delete current.topics[key]; continue;
+        }
+        enqueue({ key: `thread:${key}`, type: 'thread', id: value.threadId, chatId: value.chatId, state: value });
+      }
+      for (const scope of allowed.values()) {
+        const previous = current.scopes[scope.chatId];
+        // New chats still start now; existing chat and associated topic recovery never reset to now.
+        if (!previous) current.scopes[scope.chatId] = { since: cutoff };
+        else enqueue({ key: `chat:${scope.chatId}`, type: 'chat', id: scope.chatId, chatId: scope.chatId, state: previous });
+        if (scope.type !== 'p2p') {
+          // Discover recent roots once on upgrade/enable, without replaying old main messages or lowering admission's baseline.
+          const discovery = current.discovery[scope.chatId] ??= { since: Math.max(0, cutoff - FEISHU_TOPIC_HORIZON_MS / 1000), until: cutoff,
+            topicSince: current.scopes[scope.chatId].since };
+          if (!discovery.complete) enqueue({ key: `discover:${scope.chatId}`, type: 'discover', id: scope.chatId, chatId: scope.chatId, state: discovery });
+        }
+      }
+      for (const key of Object.keys(current.failures)) if (!queued.has(key)) delete current.failures[key];
+      // One page per turn, round-robin across containers. Persist where to resume so large groups cannot starve later chats/topics.
+      queue.sort((a, b) => a.key.localeCompare(b.key));
+      if (current.next) {
+        let at = queue.findIndex(task => task.key === current.next);
+        if (at < 0) at = queue.findIndex(task => task.key.localeCompare(current.next) >= 0);
+        if (at > 0) queue.push(...queue.splice(0, at));
+      }
+      const budget = Math.min(200, maxPages * allowed.size), pageCounts = new Map();
+      let requests = 0;
+      while (queue.length && requests < budget && events.length <= 9900) {
+        checkSignal(signal);
+        const task = queue.shift(), scope = allowed.get(task.chatId);
+        const container = { type: ['resolve', 'thread'].includes(task.type) ? 'thread' : 'chat', id: task.id, chatId: task.chatId };
+        requests++;
+        try {
+          if (task.type === 'resolve') {
+            const data = requireSuccess(await api.get({ path: { message_id: task.id } }), 'Feishu topic reference');
+            checkSignal(signal);
+            if (!Array.isArray(data.items) || !data.items.length || data.items.some(item => item.chat_id !== task.chatId || item.message_id !== task.id)) throw invalidHistory('Feishu topic reference is outside the requested chat or message');
+            const message = data.items[0];
+            if (message.root_id && message.root_id !== task.id) throw invalidHistory('Feishu topic reference returned a different root');
+            if (message.thread_id && !message.deleted) {
+              associate(task.ref, message.thread_id);
+            }
+            delete current.failures[task.key];
+            continue;
+          }
+          const previous = task.state, since = previous.since, until = previous.until ?? cutoff, pageToken = previous.pageToken;
+          const isThread = task.type === 'thread', ascending = !isThread || previous.order === 'asc';
+          if (previous.ready) {
+            if (events.length + previous.pendingEvents.length > 9950) { queue.unshift(task); break; }
+            events.push(...previous.pendingEvents); previous.since = until; previous.initialized = true;
+            for (const key of ['ready', 'pendingEvents', 'until', 'pageToken', 'seenTokens', 'order']) delete previous[key];
+            delete current.failures[task.key]; continue;
+          }
+          const response = await api.list({ params: { container_id_type: isThread ? 'thread' : 'chat', container_id: task.id,
+            ...(!isThread ? { start_time: String(Math.max(0, since - 2)), end_time: String(until) } : {}),
+            sort_type: ascending ? 'ByCreateTimeAsc' : 'ByCreateTimeDesc', page_size: 50,
+            ...(pageToken ? { page_token: pageToken } : {}) } });
+          checkSignal(signal);
+          const data = requireSuccess(response, 'Feishu history');
+          if (!Array.isArray(data.items) || data.items.length > 50 || typeof data.has_more !== 'boolean') throw invalidHistory('Invalid Feishu history page');
+          const pageEvents = [], discoveries = [];
+          const lower = Math.max(Math.max(0, since - 2) * 1000, previous.minimumAt ?? 0);
+          let reachedBoundary = false, lastTime = ascending ? -Infinity : Infinity;
+          for (const message of data.items) {
+            if (message.chat_id !== task.chatId || task.type === 'thread' && message.thread_id !== task.id) throw invalidHistory('Feishu history returned a message outside the requested chat or thread');
+            identifier(message.message_id, 'om_', 'message ID');
+            if (message.deleted) continue;
+            const at = Number(message.create_time);
+            if (!Number.isFinite(at) || at < 1) throw invalidHistory('Invalid Feishu message timestamp');
+            if (isThread) {
+              // Feishu ignores time filters on thread containers. Descending pages and a local boundary avoid full rescans.
+              if (ascending ? at < lastTime : at > lastTime) throw invalidHistory('Feishu topic messages were not returned in the requested order');
+              lastTime = at;
+              if (ascending ? at >= until * 1000 : at < lower) reachedBoundary = true;
+            }
+            const rootId = message.root_id || (task.type === 'thread' ? previous.rootId : message.parent_id || message.message_id);
+            if (task.type === 'thread' && rootId !== previous.rootId) throw invalidHistory('Feishu history returned a different topic root');
+            if (message.thread_id && scope.type !== 'p2p') {
+              identifier(message.thread_id, 'omt?_', 'thread ID'); identifier(rootId, 'om_', 'root message ID');
+              const known = current.topics[topicKey(task.chatId, message.thread_id)];
+              if (known && known.rootId !== rootId) throw invalidHistory('Feishu topic identity changed');
+              discoveries.push({ threadId: message.thread_id, rootId, at });
+            }
+            // Platform topic pages may omit root_id. Use only the root established by a verified topic reference.
+            const event = { sender: message.sender, message: { ...message, chat_type: scope.type,
+              ...(task.type === 'thread' && message.message_id !== rootId && !message.root_id ? { root_id: rootId } : {}) } };
+            if (task.type !== 'discover' && (!isThread || at >= lower && at < until * 1000) && normalize(event)) pageEvents.push(event);
+          }
+          const seenTokens = new Set(previous.seenTokens ?? []);
+          if (pageToken) seenTokens.add(createHash('sha256').update(pageToken).digest('hex'));
+          const nextHash = typeof data.page_token === 'string' ? createHash('sha256').update(data.page_token).digest('hex') : undefined;
+          const hasMore = data.has_more && !reachedBoundary;
+          if (hasMore && (!data.page_token || typeof data.page_token !== 'string' || seenTokens.has(nextHash))) {
+            // Retry this fixed window from its start; never get permanently stuck on a cyclic server token.
+            delete previous.pageToken; delete previous.seenTokens; previous.until = until;
+            delete previous.pendingEvents;
+            throw invalidHistory('Feishu history pagination did not advance');
+          }
+          for (const found of discoveries) topic(task.chatId, found.threadId, found.rootId,
+            task.type === 'discover' ? previous.topicSince : since, found.at,
+            task.type === 'discover' ? previous.topicSince * 1000 : undefined);
+          if (isThread && !ascending) {
+            // Do not hand newer follow-ups to the domain before an older first @ on a later page.
+            const pending = [...new Map([...(previous.pendingEvents ?? []), ...pageEvents].map(event => [event.message.message_id, event])).values()];
+            if (pending.length > TOPIC_BUFFER_EVENTS || Buffer.byteLength(JSON.stringify(pending)) > TOPIC_BUFFER_BYTES) {
+              // Very large windows stream oldest-first instead; each round and the persisted buffer stay bounded.
+              Object.assign(previous, { until, order: 'asc' });
+              for (const key of ['pendingEvents', 'pageToken', 'seenTokens']) delete previous[key];
+              continue;
+            }
+            previous.pendingEvents = pending;
+            if (!hasMore) {
+              if (events.length + pending.length > 9950) { previous.ready = true; previous.until = until; continue; }
+              events.push(...pending); delete previous.pendingEvents;
+            }
+          } else events.push(...pageEvents);
+          if (hasMore) {
+            Object.assign(previous, { since, until, pageToken: data.page_token, seenTokens: [...seenTokens, nextHash] });
+            const count = (pageCounts.get(task.key) ?? 0) + 1; pageCounts.set(task.key, count);
+            if (count < maxPages) queue.push(task);
+          } else {
+            previous.since = until; delete previous.until; delete previous.pageToken; delete previous.seenTokens;
+            if (isThread) { previous.initialized = true; delete previous.order; }
+            if (task.type === 'discover') { previous.complete = true; delete previous.topicSince; }
+            delete current.failures[task.key];
+          }
+        } catch (error) { checkSignal(signal); current.failures[task.key] = historyError(error, container); }
+      }
+      if (queue.length) current.next = queue[0].key; else delete current.next;
+      // Topic pages run newest-first on the platform; intake still sees each committed batch in chronological order.
+      events.sort((a, b) => Number(a.message.create_time) - Number(b.message.create_time));
+      return { events, cursor: current, errors: Object.values(current.failures) };
     },
     async deliver(message) {
       const address = message?.channel?.address;
@@ -239,7 +418,7 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
 }
 
 /** Optional official SDK transport. Importing js-superagent itself never connects. */
-export async function createFeishuConnection({ appId, appSecretEnv, appSecret, botOpenId, tenantKey, scopes, operator, operatorChatId, id, sdk: suppliedSDK, pollIntervalMs } = {}) {
+export async function createFeishuConnection({ appId, appSecretEnv, appSecret, botOpenId, tenantKey, scopes, operator, operatorChatId, trackedThreads, id, sdk: suppliedSDK, pollIntervalMs } = {}) {
   identifier(appId, 'cli_', 'Feishu app ID');
   const secret = typeof appSecret === 'string' && appSecret ? appSecret : undefined;
   if (!secret && (typeof appSecretEnv !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(appSecretEnv) || !process.env[appSecretEnv])) throw new Error('A configured Feishu app-secret environment variable is required');
@@ -249,7 +428,7 @@ export async function createFeishuConnection({ appId, appSecretEnv, appSecret, b
   const credentials = { appId, appSecret: secret ?? process.env[appSecretEnv] };
   const quietLogger = { trace() {}, debug() {}, info() {}, warn() {}, error() {} };
   const client = new sdk.Client({ ...credentials, logger: quietLogger });
-  const source = createFeishuSource({ id, client, botOpenId, botAppId: appId, tenantKey, scopes, operator, operatorChatId, pollIntervalMs });
+  const source = createFeishuSource({ id, client, botOpenId, botAppId: appId, tenantKey, scopes, operator, operatorChatId, trackedThreads, pollIntervalMs });
   let ws, started = false;
   return { source,
     async start({ receive, cardAction, onError = () => {}, onState = () => {} } = {}) {

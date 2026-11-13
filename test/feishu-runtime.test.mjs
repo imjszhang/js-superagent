@@ -100,6 +100,82 @@ test('a Feishu group mention identified by the app id still opens a ticket', asy
   assert.equal(runtime.list().length, 1);
 });
 
+test('a delayed live request recovers offline follow-ups from its platform time into the same ticket', async t => {
+  const now = 1_800_000_000_000;
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const { runtime, transport } = runtimeFixture(t, { async run() { return { status: 'waiting', summary: 'Waiting for confirmation' }; } });
+  await runtime.prepareExecution();
+  runtime.receiveSourceEvent('feishu', message('om_root', { message: { thread_id: 'omt_existing', create_time: String(now - 40_000) } }));
+  const ticketId = runtime.list()[0].id, requests = [];
+  transport.api.list = async ({ params }) => {
+    requests.push(params);
+    return { code: 0, data: { has_more: false, items: params.container_id_type === 'thread' ? [{
+      ...message('om_offline', { message: { mentions: [], thread_id: 'omt_existing', create_time: String(now - 10_000), content: JSON.stringify({ text: 'also inspect the offline edge' }) } }).message,
+      sender: { id_type: 'open_id', id: 'ou_alice', sender_type: 'user' },
+    }] : [] } };
+  };
+  t.mock.timers.tick(2000);
+  await runtime.runNext();
+  assert.equal(runtime.list().length, 1);
+  assert.ok(requests.some(request => request.container_id_type === 'thread' && request.container_id === 'omt_existing'));
+  assert.ok(runtime.getDomainTicket(ticketId).inputs.some(input => input.triggerId === 'feishu:tenant:om_offline'));
+  assert.equal(runtime.getDomainTicket(ticketId).channels[0].thread, 'tenant:oc_group:om_root');
+});
+
+test('a missed first mention and later follow-up spanning poll rounds enter one ticket in chronological order', async t => {
+  const now = 1_800_000_000_000;
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const { runtime, transport } = runtimeFixture(t, { async run() { return { status: 'waiting', summary: 'Waiting for confirmation' }; } });
+  await runtime.prepareExecution();
+  const cursor = { schemaVersion: 2, scopes: { oc_group: { since: now / 1000 - 100 } }, discovery: { oc_group: { complete: true } }, topics: {
+    'oc_group:omt_missed': { chatId: 'oc_group', threadId: 'omt_missed', rootId: 'om_root', since: now / 1000 - 100, lastSeen: now - 10_000 },
+  } };
+  const database = new DatabaseSync(join(stateDir(runtime.projectRoot), 'state.sqlite'));
+  try { database.prepare('INSERT INTO kv(key, data) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data')
+    .run('source:feishu:state', JSON.stringify({ cursor })); } finally { database.close(); }
+  transport.api.list = async ({ params }) => {
+    if (params.container_id_type === 'chat') return { code: 0, data: { has_more: false, items: [] } };
+    const page = Number(params.page_token ?? 0), final = page === 10;
+    const raw = message(final ? 'om_first_missed' : 'om_later_missed', { message: { thread_id: 'omt_missed',
+      create_time: String(now - (final ? 40_000 : 10_000)), mentions: final ? [{ id: 'cli_bot' }] : [],
+      content: JSON.stringify({ text: final ? '@_user_1 inspect this fixture' : 'also inspect the follow-up edge' }) } });
+    return { code: 0, data: { has_more: !final, ...(final ? {} : { page_token: String(page + 1) }),
+      items: page === 0 || final ? [{ ...raw.message, sender: { id_type: 'open_id', id: 'ou_alice', sender_type: 'user' } }] : [] } };
+  };
+  await runtime.runNext();
+  assert.equal(runtime.list().length, 0, 'newer follow-up must not enter the domain before the older first mention');
+  t.mock.timers.tick(61_000);
+  await runtime.runNext();
+  assert.equal(runtime.list().length, 1);
+  const domain = runtime.getDomainTicket(runtime.list()[0].id);
+  assert.equal(domain.origin.triggerId, 'feishu:tenant:om_first_missed');
+  assert.ok(domain.inputs.some(input => input.triggerId === 'feishu:tenant:om_later_missed'));
+});
+
+test('history receives an unrelated unaddressed topic reply without granting a new ticket', async t => {
+  const now = 1_800_000_000_000;
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const { runtime, transport } = runtimeFixture(t, { async run() { throw new Error('unaddressed context must not execute'); } });
+  await runtime.prepareExecution();
+  const database = new DatabaseSync(join(stateDir(runtime.projectRoot), 'state.sqlite'));
+  try { database.prepare('INSERT INTO kv(key, data) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data')
+    .run('source:feishu:state', JSON.stringify({ cursor: { schemaVersion: 1, scopes: { oc_group: { since: now / 1000 - 100 } } } })); }
+  finally { database.close(); }
+  transport.api.list = async ({ params }) => {
+    const root = params.container_id_type === 'chat';
+    const raw = message(root ? 'om_unsubscribed_root' : 'om_unaddressed_history', { message: { thread_id: 'omt_unsubscribed', mentions: [],
+      create_time: String(now - (root ? 50_000 : 10_000)), content: JSON.stringify({ text: 'ordinary group discussion' }) } });
+    return { code: 0, data: { has_more: false, items: [{ ...raw.message, sender: { id_type: 'open_id', id: 'ou_alice', sender_type: 'user' } }] } };
+  };
+  await runtime.runNext(); assert.equal(runtime.list().length, 0);
+  const verify = new DatabaseSync(join(stateDir(runtime.projectRoot), 'state.sqlite'));
+  try {
+    assert.ok(verify.prepare('SELECT data FROM domain_triggers WHERE id = ?').get('feishu:tenant:om_unaddressed_history'), 'the reply arrived; a zero ticket count alone is not sufficient');
+    const disposition = JSON.parse(verify.prepare('SELECT data FROM domain_dispositions WHERE id = ?').get('feishu:tenant:om_unaddressed_history').data);
+    assert.ok(disposition.filtered); assert.deepEqual(disposition.fanout, []);
+  } finally { verify.close(); }
+});
+
 test('a Feishu event is accepted while a worker is running, and a dropped connection keeps the reply pending', async t => {
   let release;
   const { runtime, calls } = runtimeFixture(t, { async run() { await new Promise(resolve => { release = resolve; }); return { status: 'completed', summary: 'Finished after the mention' }; } });

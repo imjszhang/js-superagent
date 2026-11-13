@@ -4,20 +4,28 @@ export const SERVICE_HEARTBEAT_INTERVAL_MS = 5000;
 export const SERVICE_HEARTBEAT_STALE_MS = 20000;
 const RUN_ID = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i;
 const SOURCE_STATES = new Set(['healthy', 'starting', 'disabled', 'stopped', 'stale', 'degraded']);
+const CONNECTION_STATES = new Set(['starting', 'ready', 'reconnecting', 'error', 'stopped']);
 const count = value => Number.isSafeInteger(value) && value >= 0 && value <= 100000 ? value : 0;
 const date = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
+const historyCodes = history => [...new Set((Array.isArray(history.codes) ? history.codes : Array.isArray(history.issues) ? history.issues.map(issue => issue?.code) : [])
+  .filter(code => Number.isSafeInteger(code) && code >= 0))].slice(0, 100);
 
 /** Only small diagnostic facts cross IPC. Never persist error text, tasks, tokens or model output. */
 function businessSnapshot(value) {
   return {
     available: value?.available === true,
+    observedAt: date(value?.observedAt),
     paused: value?.paused === true,
     machineReady: value?.machineReady === true,
     active: value?.active === true,
     activeIncidents: count(value?.activeIncidents),
     modelWaits: count(value?.modelWaits),
     sources: Array.isArray(value?.sources) ? value.sources.slice(0, 100).filter(source => typeof source?.id === 'string' && source.id.length <= 200 && SOURCE_STATES.has(source.state))
-      .map(source => ({ id: source.id, state: source.state, lastSuccess: date(source.lastSuccess) })) : [],
+      .map(source => ({ id: source.id, state: source.state, lastSuccess: date(source.lastSuccess),
+        ...(CONNECTION_STATES.has(source.live?.state) ? { live: { state: source.live.state, healthy: source.live.healthy === true } } : {}),
+        ...(SOURCE_STATES.has(source.history?.state) ? { history: { state: source.history.state, healthy: source.history.healthy === true,
+          failedScopes: count(source.history.failedScopes ?? source.history.issues?.length),
+          codes: historyCodes(source.history) } } : {}) })) : [],
   };
 }
 
@@ -31,7 +39,7 @@ export function startServiceHeartbeat(runtime, { host = process, intervalMs = SE
     let business;
     try {
       const status = runtime.status(), health = runtime.businessHealth();
-      business = businessSnapshot({ available: true, paused: status.paused, active: status.active, machineReady: status.machine?.ready,
+      business = businessSnapshot({ available: true, observedAt: health.at, paused: status.paused, active: status.active, machineReady: status.machine?.ready,
         activeIncidents: health.incidents?.length, modelWaits: health.models?.length, sources: health.sources });
     } catch { business = businessSnapshot({ available: false }); }
     try { host.send({ type: 'js-superagent:heartbeat', runId, sequence: ++sequence, business }, () => {}); }
@@ -76,6 +84,9 @@ export function evaluateServiceHealth({ status, runtime, heartbeat, now = Date.n
   if (!status.ready) return finish('starting', 'awaiting-startup-ready');
   if (!result.business.available) return finish('degraded', 'business-snapshot-unavailable');
   if (!result.business.machineReady) return finish('degraded', 'runtime-preparation-unavailable');
+  const observed = Date.parse(result.business.observedAt);
+  if (!Number.isFinite(observed) || observed < started) return finish('starting', 'business-observation-pending');
+  if (observed > now + 1000 || now - observed > staleAfterMs) return finish('degraded', 'business-observation-stale');
   if (result.business.activeIncidents || result.business.modelWaits || result.business.sources.some(source => ['stale', 'degraded'].includes(source.state))) return finish('degraded', 'business-needs-attention');
   if (result.business.paused) return finish('paused', 'business-intentionally-paused');
   if (result.business.sources.some(source => source.state === 'starting')) return finish('starting', 'source-awaiting-first-success');

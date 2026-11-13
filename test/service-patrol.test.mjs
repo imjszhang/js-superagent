@@ -26,7 +26,7 @@ function fixture(t) {
   const pulse=(patch={})=>{
     write('runtime.json',{healthProtocol:1,runId,pid:100,childPid:101,owner:{pid:100,birth:'parent',bootId:'boot'},childOwner:{pid:101,birth:'child',bootId:'boot'},startedAt:new Date(0).toISOString()});
     write('startup.json',{schemaVersion:1,state:'ready',retryCount:0,pid:100,childPid:101});
-    write('heartbeat.json',{schemaVersion:1,runId,sequence:1,pid:100,childPid:101,receivedAt:new Date(now).toISOString(),business:{available:true,machineReady:true,paused:false,active:false,activeIncidents:0,modelWaits:0,sources:[],...patch}});
+    write('heartbeat.json',{schemaVersion:1,runId,sequence:1,pid:100,childPid:101,receivedAt:new Date(now).toISOString(),business:{available:true,observedAt:new Date(now).toISOString(),machineReady:true,paused:false,active:false,activeIncidents:0,modelWaits:0,sources:[],...patch}});
   };
   const mutate=fn=>{const db=new DatabaseSync(dbPath);try{return fn(db);}finally{db.close();}};
   return {root,directory,dbPath,manager,calls,signals,pulse,write,mutate,advance(ms){now+=ms;},

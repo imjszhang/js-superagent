@@ -16,9 +16,20 @@ test('real-time and polled copies deduplicate with an atomic cursor and survive 
   const adapter = { id: 'test', source: 'test', normalize: value => value, poll: async () => ({ events: [raw, raw], cursor: { page: 1 } }) };
   f.registry.register(adapter); assert.equal(f.registry.ingest('test', raw).status, 'received');
   const polled = await f.registry.poll('test'); assert.equal(polled.received, 0); assert.equal(polled.duplicates, 2);
+  assert.equal(f.store.listMeta('source:test:event:')[0].value.firstReceivedVia, 'live');
   await f.registry.close();
   const reopened = new SourceRegistry({ store: f.store, receive() { throw new Error('must not replay'); } }).register(adapter);
   assert.deepEqual(reopened.state('test').cursor, { page: 1 }); assert.equal(reopened.ingest('test', raw).status, 'duplicate'); await reopened.close();
+});
+test('history intake records the trusted first path and live duplicates cannot overwrite it', async t => {
+  const f = fixture(t), raw = { ...event('missed'), meta: { firstReceivedVia: 'live' } };
+  f.registry.register({ id: 'test', source: 'test', normalize: value => value, poll: async () => ({ events: [raw], cursor: 1,
+    errors: [{ scope: 'oc_group', error: 'permission denied', code: 230027, category: 'permission', operation: 'history', container: { type: 'thread', id: 'omt_thread', chatId: 'oc_group' } }] }) });
+  assert.equal((await f.registry.poll('test')).received, 1);
+  assert.equal(f.registry.ingest('test', raw).status, 'duplicate');
+  assert.equal(f.store.listMeta('source:test:event:')[0].value.firstReceivedVia, 'history');
+  assert.deepEqual(f.registry.state('test').error[0], { scope: 'oc_group', error: 'permission denied', code: 230027, category: 'permission', operation: 'history', container: { type: 'thread', id: 'omt_thread', chatId: 'oc_group' } });
+  await f.registry.close();
 });
 test('domain reception failure rolls back the entire poll and leaves the cursor for retry', async t => {
   const f = fixture(t, value => { f.store.triggers.save(value); if (value.id === 'two') throw new Error('transaction failed'); });
