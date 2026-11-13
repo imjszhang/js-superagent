@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.15.0-alpha.6 — Unreleased
+## 0.15.0-alpha.7 — Unreleased
+
+- Retain attempt-local evidence of host context invalidation across assessor callback error redaction, so a copied error still follows the existing bounded refresh path.
+- Discard an assessor result after a trusted callback invalidation even when the assessor catches the callback error; keep authority, ownership, deadline and other host refusals ahead of refresh.
+- Preserve original failed requests for explicit recovery. Do not replay old failures, change driver error redaction or add configuration.
+
+## 0.15.0-alpha.6 — Released 2026-11-13
 
 - Retain authorized human Feishu topic supplements before ticket creation in the existing pending/evaluation flow, without granting independent work authority or replaying previously filtered messages.
 - Permit the existing single-input ignore command to close an unadmitted batch input without borrowing the batch's authority or altering worker ownership.
