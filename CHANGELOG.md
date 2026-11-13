@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.15.0-alpha.7 — Unreleased
+## 0.15.0-alpha.8 — Unreleased
+
+- Add GitHub Actions trusted npm publishing with an isolated publishing job and no stored npm token.
+- Publish the exact package validated on macOS, checking its source commit and integrity; safely verify repeated runs without republishing an existing version.
+- Keep publication explicit and limited to main. No runtime, skill or project configuration changes.
+
+## 0.15.0-alpha.7 — Released 2026-11-13
 
 - Retain attempt-local evidence of host context invalidation across assessor callback error redaction, so a copied error still follows the existing bounded refresh path.
 - Discard an assessor result after a trusted callback invalidation even when the assessor catches the callback error; keep authority, ownership, deadline and other host refusals ahead of refresh.

@@ -17,13 +17,43 @@ npm run release:prepare
 
 This runs all checks, builds the core before checking declarations, validates package/lock/license/channel consistency and tests installation in a clean consumer. It then creates `release/js-superagent-0.14.0-alpha.0.tgz` and `release/manifest.json`, recording integrity, sizes and source commit/dirty status. `release/` is ignored. A dirty-source artifact is diagnostic, not the final release candidate: commit first, then regenerate and require sourceDirty=false.
 
-The CI workflow performs the same preparation and retains an artifact. It cannot publish; it has only contents:read permission. Manual native-model/network acceptance scripts are not run by the normal test suite.
+The CI workflow performs the same preparation and retains an artifact. It cannot publish; it has only contents:read permission. The separate `publish.yml` workflow described below performs its own preparation for the exact dispatched main commit. Manual native-model/network acceptance scripts are not run by the normal test suite.
 
 ## Version changes
 
 Update CHANGELOG, then use `npm version <exact-version> --no-git-tag-version` so package.json and package-lock.json agree. Keep prereleases on alpha/beta/rc as appropriate in publishConfig.tag; only a stable release uses latest. Run preparation, commit and push, and regenerate the final artifact from that commit. Do not reuse a version that already exists on npm.
 
-Git release tags use `v<package.version>`; `RELEASE_TAG=v0.14.0-alpha.0 npm run check:release` checks agreement. Create the annotated tag and GitHub prerelease only for the exact artifact being released, not for every preparation commit.
+Git release tags use `v<package.version>`; `RELEASE_TAG=v0.14.0-alpha.0 npm run check:release` checks agreement. After trusted publication succeeds, create the annotated tag and GitHub prerelease for the workflow's exact source commit and artifact, not a later main commit.
+
+## Trusted publishing from GitHub
+
+The standard release path is `.github/workflows/publish.yml` in `imjszhang/js-superagent`. It is explicitly dispatched on `main` with the expected package version:
+
+```bash
+gh workflow run publish.yml --ref main -f version=0.15.0-alpha.8
+```
+
+Merge the version, changelog and implementation first. The workflow publishes only its own `GITHUB_SHA`, and the input must match that commit's package and lock version. Do not change checkout to an arbitrary tag or ref: npm provenance uses the workflow's original SHA/ref. Ordinary pushes, PRs and CI checks do not publish.
+
+The macOS preparation job runs the full release checks, including native service tests, without an OIDC publishing permission. A separate publishing job downloads that same run's archive and manifest. It checks the clean source commit, package metadata and SHA-512, then publishes the existing tarball with lifecycle scripts disabled. Only this job has `id-token: write`; no npm token or npm login is configured in GitHub.
+
+The one-time npm trusted publisher configuration is:
+
+| Field | Value |
+| --- | --- |
+| Package | `js-superagent` |
+| Repository | `imjszhang/js-superagent` |
+| Workflow file | `publish.yml` |
+| GitHub environment | `npm` |
+| Allowed operation | Direct `npm publish` |
+
+The GitHub `npm` environment permits deployments from the `main` branch only, with no per-release approval or wait timer. Match the environment name exactly in npm. Direct publication must be enabled; staged-only publication would still require an operator to approve each release. Creating/changing this binding can require a one-time npm account verification. The first real publication must complete within two days of creating a new binding. Subsequent runs authenticate through GitHub's short-lived OIDC identity, and npm generates provenance automatically for this public repository/package.
+
+The workflow uses Node 24 and npm 11.19.1, pins its actions, and serializes publication. If the exact version already exists with identical integrity, a rerun verifies it without republishing or moving the channel backwards. A conflicting archive fails. Only an explicit registry 404 is treated as an absent version; other registry failures stop publication. Each run invokes `npm publish` at most once, then checks the registry for up to a bounded processing period. An ambiguous result must be inspected before another run; do not bump the version just to bypass uncertainty.
+
+After success, download `npm-release-candidate` from that run, inspect the registry version/integrity, provenance and channel, and install the exact registry version in a clean consumer. Retain the artifact/manifest with the GitHub release. Existing local runtimes are not automatically upgraded, and the historical `latest` tag is not changed by alpha publication. Local manual `npm publish` can still require npm verification; this setup removes that prompt from the authorized GitHub workflow.
+
+Official references: [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) and [npm trust](https://docs.npmjs.com/cli/v11/commands/npm-trust/).
 
 ## First publication (separate explicit action)
 
@@ -35,7 +65,7 @@ npm publish ./release/js-superagent-0.14.0-alpha.0.tgz --access public --tag alp
 
 This command is shown for the authorized release step; preparation does not run it. Complete any interactive authentication requirement. Verify the resulting version, dist-tag and integrity with npm view before recording the release as published; after an ambiguous network failure, inspect the registry before retrying. Create/push the matching annotated Git tag and GitHub prerelease with its changelog and integrity metadata. Install the exact registry version in a clean project as the final consumer check.
 
-npm's [publish documentation](https://docs.npmjs.com/cli/v11/commands/npm-publish/) describes publication and dist-tags. Subsequent automation can use [trusted publishing](https://docs.npmjs.com/trusted-publishers/), but it must be configured for the package and exact repository/workflow. It is not configured by this preparation, and no token is stored in this repository. Existing local runtimes are not automatically upgraded by publication.
+npm's [publish documentation](https://docs.npmjs.com/cli/v11/commands/npm-publish/) describes publication and dist-tags. This historical manual path is retained for recovery; prefer the trusted GitHub workflow above for subsequent releases. Package preparation alone never changes registry trust settings or publishes. No token is stored in this repository.
 
 ## First-release registry processing
 
