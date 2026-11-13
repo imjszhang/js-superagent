@@ -26,7 +26,8 @@ function fixture(t) {
   } })); db.close();
   const environmentFile = join(base, 'service.env'), cliPath = join(base, 'child.mjs'), childResult = join(base, 'child.json');
   writeFileSync(environmentFile, `${KEY}=fixture-only-secret\nUNRELATED_SECRET=not-for-child\nNODE_OPTIONS=--invalid-env-file-option\n`, { mode: 0o600 });
-  writeFileSync(cliPath, `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(childResult)},JSON.stringify({key:process.env.${KEY},unrelated:process.env.UNRELATED_SECRET,nodeOptions:process.env.NODE_OPTIONS}));console.log('child-ok');`);
+  const receiptHelper = new URL('./helpers/service-child-receipt.mjs', import.meta.url).href;
+  writeFileSync(cliPath, `import {writeFileSync} from 'node:fs';import {waitForServiceReceipt} from ${JSON.stringify(receiptHelper)};const receipt=await waitForServiceReceipt(${JSON.stringify(join(stateDir(root), 'service'))});writeFileSync(${JSON.stringify(childResult)},JSON.stringify({key:process.env.${KEY},unrelated:process.env.UNRELATED_SECRET,nodeOptions:process.env.NODE_OPTIONS,runId:receipt.runId,childPid:process.pid}));console.log('child-ok');`);
   let job = false, disabled = false, alive = false;
   const record = () => writeFileSync(join(stateDir(root), 'service/runtime.json'), JSON.stringify({ healthProtocol: 1,
     runId: 'cd432b56-5645-4e8d-b211-cc94f64fd111', pid: 12345, childPid: 12346,
@@ -53,7 +54,7 @@ function fixture(t) {
 const cleanRun = f => {
   const path=join(stateDir(f.root),'service/control-intent.json'),intent=JSON.parse(readFileSync(path));
   writeFileSync(path,JSON.stringify({...intent,desired:'running'}));
-  return spawnSync(process.execPath, [modulePath, 'run', f.root], { encoding: 'utf8', timeout: 5000, env: { HOME: f.home, PATH: process.env.PATH, JS_SUPERAGENT_HOME: process.env.JS_SUPERAGENT_HOME } });
+  return spawnSync(process.execPath, [modulePath, 'run', f.root], { encoding: 'utf8', timeout: 10000, env: { HOME: f.home, PATH: process.env.PATH, JS_SUPERAGENT_HOME: process.env.JS_SUPERAGENT_HOME } });
 };
 
 test('DSH service reads its persisted file with no launchd secret, only forwards required keys and rereads rotation', { skip: process.platform !== 'darwin' }, t => {
@@ -63,11 +64,18 @@ test('DSH service reads its persisted file with no launchd secret, only forwards
   assert.equal(generated.includes('fixture-only-secret'), false);
   assert.equal(generated.includes('not-for-child'), false);
   assert.equal(f.disabled, true);
+  let previousRunId;
   for (const secret of ['fixture-only-secret', 'rotated-fixture-secret']) {
+    rmSync(f.childResult, { force: true });
     writeFileSync(f.environmentFile, `${KEY}=${secret}\nUNRELATED_SECRET=not-for-child\nNODE_OPTIONS=--invalid-env-file-option\n`, { mode: 0o600 });
     const child = cleanRun(f);
     assert.equal(child.status, 0, child.stderr);
-    assert.deepEqual(JSON.parse(readFileSync(f.childResult)), { key: secret });
+    assert.equal(existsSync(f.childResult), true, 'this child must produce a fresh result');
+    const { runId, childPid, ...forwarded } = JSON.parse(readFileSync(f.childResult));
+    const receipt = JSON.parse(readFileSync(join(stateDir(f.root), 'service/runtime.json')));
+    assert.notEqual(runId, previousRunId); assert.equal(runId, receipt.runId); assert.equal(childPid, receipt.childPid);
+    assert.equal(receipt.owner.pid, receipt.pid); assert.equal(receipt.childOwner.pid, childPid);
+    assert.deepEqual(forwarded, { key: secret }); previousRunId = runId;
     assert.equal(readFileSync(status.logs.stdout, 'utf8').includes(secret), false);
     assert.equal(child.stderr.includes(secret), false);
   }
