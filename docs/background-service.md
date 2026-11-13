@@ -53,7 +53,11 @@ js-superagent --project /path/to/project status
 
 `service status` 用于确认进程是否运行；`github status` 显示最近同步、错误和回传；`status` 查看工单。进程存在不等于 GitHub 登录、模型调用或任务执行成功。
 
-`service status` 返回项目服务标签、安装状态、模式、LaunchAgent 和 manifest 路径、是否已加载／运行、服务进程 `pid`、CLI 子进程 `childPid`、最近退出码及日志路径。服务标签由项目真实路径和项目 ID 派生，同一用户的多个项目分别管理。新增 `ready` 只在当前包装进程及 CLI 子进程完成监听/运行时启动并发回收据后为真；`startupState` 区分 `starting`、`ready`、`retrying`、`blocked` 和 `stopped`，不以 PID 存在代替业务就绪。
+`service status` 返回项目服务标签、安装状态、模式、LaunchAgent 和 manifest 路径、是否已加载／运行、服务进程 `pid`、CLI 子进程 `childPid`、最近退出码及日志路径。服务标签由项目真实路径和项目 ID 派生，同一用户的多个项目分别管理。新增 `ready` 只在当前包装进程及 CLI 子进程完成监听/运行时启动并发回收据后为真；`startupState` 区分 `starting`、`ready`、`retrying`、`blocked`、`stopping` 和 `stopped`，不以 PID 存在代替业务就绪。
+
+`loaded`／`running` 仍描述 launchd。它们为 false 不证明工作子进程已退出：管理器继续核对已保存的进程启动身份，`stopPending: true` 表示尚有本服务进程存活或无法验证其退出。此时 health 报告 `service-stop-incomplete` 或 `service-stop-unverified`，不能作为离线补收、备份或升级已经安全开始的证据。查询状态只读取，不发信号或清除故障。
+
+停止先禁用自动启动，向身份确认的包装进程发送 SIGTERM；包装已退出而工作子进程仍在时，只向该确认归属的子进程补发 SIGTERM。两者均确认退出后才卸载 launchd。超时、身份缺失或冲突返回 `SERVICE_STOP_PENDING`，不自动 SIGKILL，不移除安装记录，不允许启动第二实例、替换安装、卸载或迁移。记录完整的已退出进程与从未启动的安装可正常继续；不能删除运行记录来跳过身份核验。包装器自身也会核对停止意图及旧子进程，避免退避后的迟到启动覆盖孤儿进程证据。
 
 LaunchAgent 位于 `~/Library/LaunchAgents/<label>.plist`；项目状态目录下的 `service/` 保存 `manifest.json`、运行进程记录和日志。`stdout.log`、`stderr.log` 默认各限制为 5 MiB，各保留一份 `.log.1` 备份。卸载只移除服务定义与安装 manifest，日志及项目状态保留。管理器核对文件归属，不覆盖或删除其他程序创建的服务文件。
 

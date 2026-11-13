@@ -12,7 +12,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHarnessRegistry } from './harness/registry.mjs';
 import { assertDatabaseAvailable } from './database-maintenance.mjs';
 import { createMachineCoordinator, captureProcessIdentity, inspectProcessOwner } from './machine-coordination.mjs';
-import { acceptServiceHeartbeat, evaluateServiceHealth } from './service-health.mjs';
+import { acceptServiceHeartbeat, evaluateServiceHealth, inspectServiceProcesses } from './service-health.mjs';
 import { patrolService } from './service-patrol.mjs';
 import { projectStateDirectory, stateHome } from './state-paths.mjs';
 
@@ -64,7 +64,7 @@ function startupState(directory) {
   const path = join(directory, 'startup.json');
   if (!safeFile(path, false, MAX_MANIFEST)) return null;
   const value = JSON.parse(readSafe(path));
-  if (value.schemaVersion !== 1 || !['starting', 'ready', 'retrying', 'blocked', 'stopped'].includes(value.state) || !Number.isSafeInteger(value.retryCount) || value.retryCount < 0) throw new Error('Invalid service startup state');
+  if (value.schemaVersion !== 1 || !['starting', 'ready', 'retrying', 'blocked', 'stopping', 'stopped'].includes(value.state) || !Number.isSafeInteger(value.retryCount) || value.retryCount < 0) throw new Error('Invalid service startup state');
   return value;
 }
 function saveStartup(directory, patch) {
@@ -131,6 +131,59 @@ function defaultLaunchctl(args) {
 function missingJob(error) {
   const message = String(error.stderr ?? error.message ?? '');
   return /Could not find service|service not found|No such process/i.test(message);
+}
+function readServiceRecord(path) {
+  if (!safeFile(path, false, MAX_MANIFEST)) return null;
+  try {
+    const value = JSON.parse(readSafe(path));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch (error) { if (error instanceof SyntaxError) return {}; throw error; }
+}
+function stopPending() {
+  return Object.assign(new Error('Service stop is still pending or process identity is unverified; inspect status before starting, replacing or uninstalling it'), { code: 'SERVICE_STOP_PENDING' });
+}
+function observeProcesses(directory, state, dependencies) {
+  const runtime = readServiceRecord(join(directory, 'runtime.json'));
+  return { runtime, ...inspectServiceProcesses({ status: state, runtime, startup: startupState(directory), ownerState: dependencies.ownerState ?? inspectProcessOwner }) };
+}
+function assertStoppedProcesses(directory, state, dependencies) {
+  if (!observeProcesses(directory, state, dependencies).settled) throw stopPending();
+}
+/** Shared by normal management and relocation: never unload a live or unverified owned process. */
+function stopOwnedProcesses({ directory, loaded, launchctl, target, dependencies }) {
+  launchctl(['disable', target]);
+  const previous = startupState(directory);
+  saveStartup(directory, { state: 'stopping', ready: false, nextRetryAt: null });
+  const deadline = Date.now() + (dependencies.stopTimeoutMs ?? 15_000), signalled = new Set();
+  const signal = dependencies.signalProcess ?? ((pid, value) => process.kill(pid, value));
+  const sleep = dependencies.sleep ?? (ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms));
+  for (;;) {
+    const observation = observeProcesses(directory, loaded(), dependencies);
+    if (observation.settled) break;
+    const { runtime, wrapperState, childState, verified } = observation;
+    const owner = verified && wrapperState === 'alive' && ['alive', 'dead'].includes(childState) ? runtime.owner
+      : verified && wrapperState === 'dead' && childState === 'alive' ? runtime.childOwner : null;
+    const key = owner && JSON.stringify([runtime.runId, owner]);
+    if (owner && !signalled.has(key) && (dependencies.ownerState ?? inspectProcessOwner)(owner) === 'alive') {
+      signalled.add(key);
+      try { signal(owner.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+      // A test hook or a very fast process can complete immediately; always inspect again before the deadline check.
+      if (observeProcesses(directory, loaded(), dependencies).settled) break;
+    }
+    if (Date.now() >= deadline) throw stopPending();
+    sleep(50);
+  }
+  assertStoppedProcesses(directory, loaded(), dependencies);
+  if (loaded().loaded) {
+    try { launchctl(['bootout', target]); } catch (error) { if (!missingJob(error)) throw error; }
+    while (loaded().loaded) {
+      assertStoppedProcesses(directory, loaded(), dependencies);
+      if (Date.now() >= deadline) throw stopPending();
+      sleep(50);
+    }
+  }
+  assertStoppedProcesses(directory, loaded(), dependencies);
+  saveStartup(directory, { state: previous?.state === 'blocked' ? 'blocked' : 'stopped', ready: false });
 }
 // Resolve the same persisted execution override as the runtime without init(), recovery,
 // schema writes or model work. Status/stop need only the project identity, never this reader.
@@ -250,8 +303,7 @@ export function createServiceManager(options = {}, dependencies = {}) {
     return manifest;
   }
   function readRecord(path) {
-    if(!safeFile(path,false,MAX_MANIFEST))return null;
-    try{return JSON.parse(readSafe(path));}catch(error){if(error instanceof SyntaxError)return {};throw error;}
+    return readServiceRecord(path);
   }
   function readIntent() {
     const value=readRecord(intentPath);
@@ -321,22 +373,18 @@ export function createServiceManager(options = {}, dependencies = {}) {
   function status() {
     const manifest = owned(false);
     const state = loaded();
-    let childPid = null;
-    if (manifest && state.pid && safeFile(runtimePath, false, MAX_MANIFEST)) {
-      try {
-        const runtime = JSON.parse(readSafe(runtimePath));
-        if (runtime.pid === state.pid && Number.isSafeInteger(runtime.childPid) && runtime.childPid > 0) childPid = runtime.childPid;
-      } catch (error) { if (!(error instanceof SyntaxError)) throw error; }
-    }
     const startup = manifest ? startupState(directory) : null;
-    const ready = Boolean(state.running && startup?.state === 'ready' && startup.pid === state.pid && startup.childPid === childPid);
-    return { installed: Boolean(manifest), ready, startupState: startup?.state === 'blocked' ? 'blocked' : ready ? 'ready' : state.running ? 'starting' : startup?.state === 'retrying' ? 'retrying' : 'stopped', blocked: startup?.state === 'blocked' ? { code: startup.errorCode, message: startup.message } : null, retryCount: startup?.retryCount ?? 0, webhookEndpoint: manifest?.webhookEndpoint ?? null, label, projectRoot, mode: manifest?.mode ?? options.mode ?? 'poll', plistPath, manifestPath, logs, logMaxBytes: manifest?.logMaxBytes ?? options.logMaxBytes ?? DEFAULT_LOG_BYTES,
+    const observation = manifest ? observeProcesses(directory, state, dependencies) : null;
+    const childPid = observation?.runtime && (!state.pid || observation.runtime.pid === state.pid) && Number.isSafeInteger(observation.runtime.childPid) && observation.runtime.childPid > 0 ? observation.runtime.childPid : null;
+    const stopPending = Boolean(observation && !observation.settled && (!state.running || startup?.state === 'stopping' || readIntent()?.desired === 'stopped'));
+    const ready = Boolean(!stopPending && state.running && startup?.state === 'ready' && startup.pid === state.pid && startup.childPid === childPid);
+    return { installed: Boolean(manifest), ready, stopPending, startupState: stopPending ? 'stopping' : startup?.state === 'blocked' ? 'blocked' : ready ? 'ready' : state.running ? 'starting' : startup?.state === 'retrying' ? 'retrying' : 'stopped', blocked: startup?.state === 'blocked' ? { code: startup.errorCode, message: startup.message } : null, retryCount: startup?.retryCount ?? 0, webhookEndpoint: manifest?.webhookEndpoint ?? null, label, projectRoot, mode: manifest?.mode ?? options.mode ?? 'poll', plistPath, manifestPath, logs, logMaxBytes: manifest?.logMaxBytes ?? options.logMaxBytes ?? DEFAULT_LOG_BYTES,
       environmentFile: manifest?.environmentFile ?? null, ...state, childPid };
   }
   function health() {
     const state = status();
-    // Stopped services need no old heartbeat or process probe, and are never auto-enabled here.
-    return evaluateServiceHealth({ status: state, ...(state.running ? { runtime: readRecord(runtimePath), heartbeat: readRecord(join(directory, 'heartbeat.json')) } : {}),
+    // Even an unloaded service may retain a live child. Observation never enables or signals it.
+    return evaluateServiceHealth({ status: state, ...(state.installed ? { runtime: readRecord(runtimePath), startup: startupState(directory), heartbeat: readRecord(join(directory, 'heartbeat.json')) } : {}),
       now: dependencies.now?.() ?? Date.now(), ...(dependencies.ownerState ? { ownerState: dependencies.ownerState } : {}) });
   }
   function patrol({recover=false}={}) {
@@ -376,6 +424,7 @@ export function createServiceManager(options = {}, dependencies = {}) {
   }
   function install() {
     const existing = owned(false);
+    if (existing && (!loaded().running || status().stopPending)) assertStoppedProcesses(directory, loaded(), dependencies);
     let next = plan(existing);
     if (existing) {
       if (existing.schemaVersion !== 2) throw new Error('Legacy service installation requires explicit uninstall/reinstall; status and stop remain available');
@@ -384,6 +433,7 @@ export function createServiceManager(options = {}, dependencies = {}) {
       const endpointChanged = JSON.stringify(next.webhookEndpoint) !== JSON.stringify(existing.webhookEndpoint);
       if (options.environmentFile !== undefined && options.environmentFile !== existing.environmentFile || existing.restartPolicy !== 'on-failure' || endpointChanged) {
         if (loaded().loaded) throw new Error('Stop the service before changing its installation settings');
+        assertStoppedProcesses(directory, loaded(), dependencies);
         // Retain installed executables, proxy values and service identity.
         const updated = { ...existing, restartPolicy: 'on-failure', ...(options.environmentFile === undefined ? {} : { environmentFile: options.environmentFile }), ...(next.webhookEndpoint ? { webhookEndpoint: next.webhookEndpoint } : {}) };
         serviceEnvironment(updated);
@@ -409,6 +459,7 @@ export function createServiceManager(options = {}, dependencies = {}) {
     if (stat(plistPath)) throw new Error('Refusing to overwrite an unowned LaunchAgent');
     if (loaded().loaded) throw new Error('Refusing to replace an unowned loaded service');
     const retained = retainedOwner();
+    if (retained) assertStoppedProcesses(directory, loaded(), dependencies);
     for (const file of [join(directory, '.gitignore'), runtimePath, intentPath, join(directory,'patrol.sqlite'), join(directory, 'startup.json'), join(directory, 'heartbeat.json'), ...Object.values(logs).flatMap(path => [path, `${path}.1`])]) {
       if (stat(file) && !retained) throw new Error(`Refusing to reuse an unowned service file: ${file}`);
       safeFile(file, false);
@@ -456,6 +507,8 @@ export function createServiceManager(options = {}, dependencies = {}) {
     const manifest = owned();
     if (manifest.schemaVersion !== 2) throw new Error('Legacy service installation requires explicit uninstall/reinstall before start');
     if (manifest.restartPolicy !== 'on-failure') throw new Error('Legacy service restart policy requires service install while stopped before start');
+    const state = loaded();
+    if (!state.running || status().stopPending) assertStoppedProcesses(directory, state, dependencies);
     try {
       // Revalidate references on each start, while retaining the installed mode and executables.
       safeFile(manifest.modulePath);
@@ -477,19 +530,15 @@ export function createServiceManager(options = {}, dependencies = {}) {
     } catch(error) {if(readIntent()?.desired==='stopped')stopControlled();throw error;}
     return status();
   }
-  function start() {owned();return startControlled(saveIntent('running'));}
+  function start() {
+    owned();
+    const state = loaded();
+    if (!state.running || status().stopPending) assertStoppedProcesses(directory, state, dependencies);
+    return startControlled(saveIntent('running'));
+  }
   function stopControlled() {
     owned();
-    launchctl(['disable', target]);
-    if (loaded().loaded) {
-      try { launchctl(['bootout', target]); } catch (error) { if (!missingJob(error)) throw error; }
-      const deadline = Date.now() + (dependencies.stopTimeoutMs ?? 15_000);
-      while (loaded().loaded) {
-        if (Date.now() >= deadline) throw new Error('Service stop is still pending; retry status before starting or uninstalling it');
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-      }
-    }
-    if (startupState(directory)?.state !== 'blocked') saveStartup(directory, { state: 'stopped', ready: false });
+    stopOwnedProcesses({ directory, loaded, launchctl, target, dependencies });
     return status();
   }
   function stop() {owned();saveIntent('stopped');return stopControlled();}
@@ -525,23 +574,19 @@ export function retireRelocatedService({ projectRoot, fromRoot }, dependencies =
   if (manifest.plistPath !== plistPath) throw new Error('Relocation service plist does not belong to the original project');
   const uid = dependencies.uid ?? process.getuid(), launchctl = dependencies.launchctl ?? defaultLaunchctl, target = `gui/${uid}/${label}`;
   const loaded = () => {
-    try { launchctl(['print', target]); return true; }
-    catch (error) { if (missingJob(error)) return false; throw new Error('Cannot inspect the original project service', { cause: error }); }
+    try {
+      const output = String(launchctl(['print', target])), pid = output.match(/^\s*pid = (\d+)\s*$/m);
+      return { loaded: true, running: /^\s*state = running\s*$/m.test(output), pid: pid ? Number(pid[1]) : null };
+    } catch (error) { if (missingJob(error)) return { loaded: false, running: false, pid: null }; throw new Error('Cannot inspect the original project service', { cause: error }); }
   };
   if (!safeFile(plistPath, false, MAX_MANIFEST)) {
-    if (loaded()) throw new Error('Original service is loaded without its verifiable plist; refuse automatic relocation');
+    if (loaded().loaded) throw new Error('Original service is loaded without its verifiable plist; refuse automatic relocation');
+    assertStoppedProcesses(directory, loaded(), dependencies);
     return { installed: true, retired: true, alreadyRetired: true, manifest };
   }
   if (safeFile(plistPath).uid !== process.getuid() || sha(readSafe(plistPath)) !== manifest.plistHash || makePlist(manifest) !== readSafe(plistPath)) throw new Error('Original service plist ownership or content changed; refuse automatic relocation');
-  launchctl(['disable', target]);
-  if (loaded()) {
-    try { launchctl(['bootout', target]); } catch (error) { if (!missingJob(error)) throw error; }
-    const deadline = Date.now() + (dependencies.stopTimeoutMs ?? 15_000);
-    while (loaded()) {
-      if (Date.now() >= deadline) throw new Error('Original service stop is still pending; relocation must wait');
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-    }
-  }
+  writeAtomic(join(directory, 'control-intent.json'), { schemaVersion: 1, projectId: config.projectId, label, desired: 'stopped', token: randomUUID(), at: new Date().toISOString() });
+  stopOwnedProcesses({ directory, loaded, launchctl, target, dependencies });
   // Check again after launchctl; never unlink a replacement written by somebody else.
   if (sha(readSafe(plistPath)) !== manifest.plistHash || makePlist(manifest) !== readSafe(plistPath)) throw new Error('Original service plist changed during retirement');
   unlinkSync(plistPath);
@@ -567,6 +612,9 @@ async function runService(projectRoot) {
   const root = realpathSync(projectRoot);
   const directory = join(projectStateDirectory(root), 'service');
   const manifest = JSON.parse(readSafe(join(directory, 'manifest.json')));
+  const intentPath = join(directory, 'control-intent.json'), intent = readServiceRecord(intentPath);
+  const runningIntent = value => value?.schemaVersion === 1 && value.projectId === manifest.projectId && value.label === manifest.label && value.desired === 'running' && typeof value.token === 'string';
+  if (!runningIntent(intent)) { process.exitCode = 0; return; }
   const previous = startupState(directory);
   if (previous?.state === 'blocked') { process.exitCode = 0; return; }
   const manager = createServiceManager({ projectRoot: root, homeDirectory: manifest.homeDirectory, environmentFile: manifest.environmentFile, mode: manifest.mode, port: manifest.webhookEndpoint?.port, nodeExecutable: manifest.nodeExecutable, cliPath: manifest.cliPath, logMaxBytes: manifest.logMaxBytes });
@@ -584,6 +632,10 @@ async function runService(projectRoot) {
     const delay = Date.parse(previous.nextRetryAt) - Date.now();
     if (delay > 0) await new Promise(resolveWait => setTimeout(resolveWait, Math.min(delay, 300_000)));
   }
+  // A stop during bounded backoff must not be followed by a late child spawn. Nor may launchd retry over an orphan.
+  const currentIntent = readServiceRecord(intentPath);
+  if (!runningIntent(currentIntent) || currentIntent.token !== intent.token) { process.exitCode = 0; return; }
+  assertStoppedProcesses(directory, { running: false, pid: null }, {});
   const stdout = boundedLog(join(directory, 'stdout.log'), manifest.logMaxBytes);
   const stderr = boundedLog(join(directory, 'stderr.log'), manifest.logMaxBytes);
   const args = [manifest.cliPath, '--project', root, ...(manifest.mode === 'webhook' ? ['--webhook-port', String(manifest.webhookEndpoint.port), 'github', 'listen'] : ['serve'])];
@@ -604,7 +656,7 @@ async function runService(projectRoot) {
   child.on('message', message => {
     const heartbeat = acceptServiceHeartbeat(message, { runId, sequence: heartbeatSequence, pid: process.pid, childPid: child.pid });
     if (heartbeat) { heartbeatSequence = heartbeat.sequence; writeAtomic(heartbeatPath, heartbeat); }
-    if (message?.type === 'js-superagent:ready') saveStartup(directory, { state: 'ready', ready: true, errorCode: null, message: null });
+    if (message?.type === 'js-superagent:ready' && !intentionalStop) saveStartup(directory, { state: 'ready', ready: true, errorCode: null, message: null });
     if (message?.type === 'js-superagent:startup-error') {
       // The CLI sends this only from its exception path. Do not persist arbitrary error text.
       startupError = typeof message.code === 'string' && /^[A-Z][A-Z0-9_]{0,100}$/.test(message.code) ? message.code : 'SERVICE_STARTUP';

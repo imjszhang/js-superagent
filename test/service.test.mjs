@@ -11,7 +11,13 @@ import { createServer } from 'node:net';
 import { createHash } from 'node:crypto';
 import { initializeProjectConfig, writeProjectConfig } from '../src/config.mjs';
 import { createServiceManager, retireRelocatedService } from '../src/service.mjs';
+import { inspectProcessOwner } from '../src/machine-coordination.mjs';
 const modulePath = fileURLToPath(new URL('../src/service.mjs', import.meta.url));
+function wrapperArgs(f) {
+  const path=join(stateDir(f.root),'service/control-intent.json'),intent=JSON.parse(readFileSync(path));
+  writeFileSync(path,JSON.stringify({...intent,desired:'running'}));
+  return [modulePath,'run',f.root];
+}
 test('service preflight rejects an active overlapping root without enabling launchd', async t => {
   const f=fixture(t);
   const {createMachineCoordinator}=await import('../src/machine-coordination.mjs');
@@ -42,9 +48,15 @@ function fixture(t) {
   mkdirSync(root); mkdirSync(home);
   const codex = join(base, 'codex'); writeFileSync(codex, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
   initializeProjectConfig(root, { execution: { driver: 'codex-app-server', executable: codex } });
-  let job = false, disabled = false;
+  let job = false, disabled = false, alive = false;
   const calls = [];
-  const deps = { platform: 'darwin', uid: 501, coordinationDirectory: join(base, 'machine'), launchctl(args) {
+  const record = () => writeFileSync(join(stateDir(root), 'service/runtime.json'), JSON.stringify({ healthProtocol: 1,
+    runId: 'cd432b56-5645-4e8d-b211-cc94f64fd111', pid: 12345, childPid: 12346,
+    owner: { host: 'fixture', pid: 12345, birth: 'wrapper', bootId: 'fixture-boot' },
+    childOwner: { host: 'fixture', pid: 12346, birth: 'child', bootId: 'fixture-boot' }, startedAt: new Date().toISOString() }));
+  const deps = { platform: 'darwin', uid: 501, stopTimeoutMs: 0, coordinationDirectory: join(base, 'machine'),
+    ownerState: owner => owner?.bootId === 'fixture-boot' ? alive ? 'alive' : 'dead' : inspectProcessOwner(owner),
+    signalProcess: () => { alive = false; }, launchctl(args) {
     calls.push(args);
     if (args[0] === 'print') {
       if (!job) throw Object.assign(new Error('missing'), { stderr: 'Could not find service', status: 113 });
@@ -52,12 +64,12 @@ function fixture(t) {
     }
     if (args[0] === 'disable') disabled = true;
     if (args[0] === 'enable') disabled = false;
-    if (args[0] === 'bootstrap') job = true;
+    if (args[0] === 'bootstrap') { job = true; alive = true; record(); }
     if (args[0] === 'bootout') job = false;
     return '';
   } };
   const options = { projectRoot: root, homeDirectory: home };
-  return { base, root, home, codex, options, deps, calls, manager: createServiceManager(options, deps), get disabled() { return disabled; }, set job(value) { job = value; } };
+  return { base, root, home, codex, options, deps, calls, manager: createServiceManager(options, deps), get disabled() { return disabled; }, set job(value) { job = value; alive = value; if (value && existsSync(join(stateDir(root), 'service/manifest.json'))) record(); } };
 }
 test('install escapes XML, pins absolute executables, remains disabled until start, and is idempotent', t => {
   const f = fixture(t), status = f.manager.install();
@@ -137,7 +149,7 @@ test('launchctl errors are distinguished from absent jobs and failed stop preser
   assert.equal(existsSync(status.manifestPath), true); assert.equal(existsSync(status.plistPath), true);
 });
 test('stop tolerates asynchronous launchd unload and a racing No such process response', t => {
-  const f = fixture(t); f.manager.install(); let prints = 0, bootout = false;
+  const f = fixture(t); f.manager.install(); f.manager.start(); f.job = false; let prints = 0, bootout = false;
   const manager = createServiceManager(f.options, { ...f.deps, launchctl(args) {
     if (args[0] === 'print') { prints++; if (!bootout || prints < 4) return 'state = waiting\npid = 12345\n'; throw Object.assign(new Error('missing'), { stderr: 'Could not find service' }); }
     if (args[0] === 'bootout') { bootout = true; throw Object.assign(new Error('gone'), { stderr: 'No such process' }); }
@@ -154,7 +166,7 @@ test('wrapper starts installed CLI without a shell and bounds both logs across r
   const f = fixture(t), cliPath = join(f.base, 'fake-cli.mjs');
   writeFileSync(cliPath, `import {writeSync,existsSync} from 'node:fs';\nwriteSync(1,'A'.repeat(800));\nconst interval=setInterval(()=>{if(existsSync(${JSON.stringify(join(stateDir(f.root), 'service/stdout.log'))})){clearInterval(interval);writeSync(1,'B'.repeat(800));writeSync(2,'E'.repeat(3000));}},10);\n`);
   const manager = createServiceManager({ ...f.options, cliPath, logMaxBytes: 1024 }, f.deps), status = manager.install();
-  const child = spawnSync(process.execPath, [modulePath, 'run', f.root], { encoding: 'utf8', timeout: 5000 });
+  const child = spawnSync(process.execPath, wrapperArgs(f), { encoding: 'utf8', timeout: 5000 });
   assert.equal(child.status, 0, child.stderr);
   assert.equal(readFileSync(status.logs.stdout, 'utf8'), 'B'.repeat(800)); assert.equal(readFileSync(status.logs.stdout + '.1', 'utf8'), 'A'.repeat(800));
   assert.equal(readFileSync(status.logs.stderr, 'utf8'), 'E'.repeat(1024));
@@ -183,7 +195,7 @@ test('poll mode supports configured native gh without requiring webhook credenti
 });
 test('wrapper startup validation errors are written to the bounded diagnostic log', { skip: process.platform !== 'darwin' }, t => {
   const f = fixture(t), status = f.manager.install(); rmSync(f.codex);
-  const child = spawnSync(process.execPath, [modulePath, 'run', f.root], { encoding: 'utf8', timeout: 5000 });
+  const child = spawnSync(process.execPath, wrapperArgs(f), { encoding: 'utf8', timeout: 5000 });
   assert.equal(child.status, 0); assert.match(readFileSync(status.logs.stderr, 'utf8'), /Executable is unavailable/);
   assert.equal(f.manager.status().blocked.code, 'SERVICE_CONFIGURATION');
 });
@@ -255,7 +267,7 @@ test('service resolves persisted DSH settings without migration or forwarding a 
   assert.equal(manifest.executionDriver,'dsh-sdk');assert.equal(manifest.executorExecutable,dsh);
   assert.deepEqual(manifest.requiredEnvironment,['W0_DSH_SERVICE_KEY']);assert.equal(manifest.codexExecutable,undefined);
   assert.equal(JSON.stringify(manifest).includes('mock-private-key'),false);
-  const child=spawnSync(process.execPath,[modulePath,'run',f.root],{encoding:'utf8',timeout:5000,env:{...process.env,W0_DSH_SERVICE_KEY:'mock-private-key'}});
+  const child=spawnSync(process.execPath,wrapperArgs(f),{encoding:'utf8',timeout:5000,env:{...process.env,W0_DSH_SERVICE_KEY:'mock-private-key'}});
   assert.equal(child.status,0,child.stderr);assert.match(readFileSync(status.logs.stdout,'utf8'),/configured-dsh/);
   assert.deepEqual(readFileSync(join(stateDir(f.root), 'state.sqlite')),before);
   assert.equal(f.calls.some(call=>call[0]==='bootstrap'),false);
@@ -300,7 +312,7 @@ test('wrapper records permanent child startup failure and does not spawn it agai
   const f = fixture(t), cliPath = join(f.base, 'blocked-cli.mjs'), receipt = join(f.base, 'attempts');
   writeFileSync(cliPath, `import {appendFileSync} from 'node:fs';appendFileSync(${JSON.stringify(receipt)},'attempt\\n');process.send({type:'js-superagent:startup-error',code:'GITHUB_REPOSITORY_OWNED',message:'fixture-secret-not-for-state'},()=>process.exit(1));`);
   const manager = createServiceManager({ ...f.options, cliPath }, f.deps), installed = manager.install();
-  for (let i = 0; i < 2; i++) assert.equal(spawnSync(process.execPath, [modulePath, 'run', f.root], { timeout: 5000 }).status, 0);
+  for (let i = 0; i < 2; i++) assert.equal(spawnSync(process.execPath, wrapperArgs(f), { timeout: 5000 }).status, 0);
   assert.equal(readFileSync(receipt, 'utf8'), 'attempt\n');
   assert.equal(manager.status().blocked.code, 'GITHUB_REPOSITORY_OWNED');
   assert.equal(readFileSync(join(stateDir(f.root), 'service/startup.json'), 'utf8').includes('fixture-secret'), false);
@@ -310,7 +322,7 @@ test('service ready requires the live wrapper/child receipt and is cleared on st
   const f = fixture(t), cliPath = join(f.base, 'ready-cli.mjs');
   writeFileSync(cliPath, "process.send({type:'js-superagent:ready'});setInterval(()=>{},1000);process.on('SIGTERM',()=>process.exit(0));");
   createServiceManager({ ...f.options, cliPath }, f.deps).install();
-  const child = spawn(process.execPath, [modulePath, 'run', f.root], { stdio: 'ignore' });
+  const child = spawn(process.execPath, wrapperArgs(f), { stdio: 'ignore' });
   t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
   const manager = createServiceManager(f.options, { ...f.deps, launchctl: () => `state = running\npid = ${child.pid}\n` });
   const deadline = Date.now() + 3000;
@@ -338,11 +350,11 @@ test('unclassified process failure gets a bounded delayed retry, then blocks at 
   const f = fixture(t), cliPath = join(f.base, 'crashing-cli.mjs'), receipt = join(f.base, 'attempts');
   writeFileSync(cliPath, `import {appendFileSync} from 'node:fs';appendFileSync(${JSON.stringify(receipt)},'attempt\\n');process.exit(2);`);
   const manager = createServiceManager({ ...f.options, cliPath }, f.deps); manager.install();
-  assert.equal(spawnSync(process.execPath, [modulePath, 'run', f.root], { timeout: 5000 }).status, 1);
+  assert.equal(spawnSync(process.execPath, wrapperArgs(f), { timeout: 5000 }).status, 1);
   const path = join(stateDir(f.root), 'service/startup.json'), state = JSON.parse(readFileSync(path));
   assert.equal(state.state, 'retrying'); assert.equal(state.retryCount, 1); assert.ok(Date.parse(state.nextRetryAt) > Date.now());
   writeFileSync(path, JSON.stringify({ ...state, retryCount: 8, nextRetryAt: null }));
-  assert.equal(spawnSync(process.execPath, [modulePath, 'run', f.root], { timeout: 5000 }).status, 0);
+  assert.equal(spawnSync(process.execPath, wrapperArgs(f), { timeout: 5000 }).status, 0);
   assert.equal(manager.status().blocked.code, 'SERVICE_RETRY_LIMIT');
   assert.equal(readFileSync(receipt, 'utf8'), 'attempt\n');
 });
@@ -388,7 +400,7 @@ test('concurrent machine registry initialization gets bounded retry without clea
   writeFileSync(evidence, 'preserve-creator-evidence');
   writeFileSync(cliPath, "process.send({type:'js-superagent:startup-error',code:'MACHINE_REGISTRY_INITIALIZING'},()=>process.exit(1));");
   const manager = createServiceManager({ ...f.options, cliPath }, f.deps); manager.install();
-  assert.equal(spawnSync(process.execPath, [modulePath, 'run', f.root], { timeout: 5000 }).status, 1);
+  assert.equal(spawnSync(process.execPath, wrapperArgs(f), { timeout: 5000 }).status, 1);
   assert.equal(manager.status().blocked, null);
   assert.equal(manager.status().startupState, 'retrying');
   assert.equal(manager.status().retryCount, 1);

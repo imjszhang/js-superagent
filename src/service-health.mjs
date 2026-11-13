@@ -7,6 +7,28 @@ const SOURCE_STATES = new Set(['healthy', 'starting', 'disabled', 'stopped', 'st
 const CONNECTION_STATES = new Set(['starting', 'ready', 'reconnecting', 'error', 'stopped']);
 const count = value => Number.isSafeInteger(value) && value >= 0 && value <= 100000 ? value : 0;
 const date = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
+const pid = value => Number.isSafeInteger(value) && value > 0;
+const identity = (owner, processId) => owner?.pid === processId && typeof owner.host === 'string' && owner.host.length > 0 &&
+  typeof owner.birth === 'string' && owner.birth.length > 0 && typeof owner.bootId === 'string' && owner.bootId.length > 0;
+
+/** Launchd absence is not process exit. This inspection never signals or repairs a process. */
+export function inspectServiceProcesses({ status, runtime, startup, ownerState = inspectProcessOwner }) {
+  const result = { pid: runtime?.pid ?? status.pid ?? null, childPid: runtime?.childPid ?? null, wrapperState: 'unknown', childState: 'unknown', settled: false, verified: false };
+  if (!runtime) {
+    // A fresh installation, or a start that never spawned a wrapper, has no process evidence to reconcile.
+    if (!status.running && !status.pid && !startup?.pid && !startup?.childPid) return { ...result, wrapperState: 'dead', childState: 'dead', settled: true };
+    return result;
+  }
+  if (runtime.healthProtocol !== 1 || !RUN_ID.test(runtime.runId ?? '') || !pid(runtime.pid) || !identity(runtime.owner, runtime.pid) ||
+      runtime.childPid != null && (!pid(runtime.childPid) || !identity(runtime.childOwner, runtime.childPid))) return result;
+  result.verified = true;
+  result.wrapperState = ownerState(runtime.owner);
+  result.childState = runtime.childPid == null ? 'dead' : ownerState(runtime.childOwner);
+  // A replacement wrapper may not have published its child yet. Never authorize it using the previous run's receipt.
+  if (status.pid && status.pid !== runtime.pid) { result.wrapperState = 'unknown'; result.verified = false; }
+  result.settled = result.wrapperState === 'dead' && result.childState === 'dead';
+  return result;
+}
 const historyCodes = history => [...new Set((Array.isArray(history.codes) ? history.codes : Array.isArray(history.issues) ? history.issues.map(issue => issue?.code) : [])
   .filter(code => Number.isSafeInteger(code) && code >= 0))].slice(0, 100);
 
@@ -58,11 +80,15 @@ export function acceptServiceHeartbeat(message, { runId, sequence = 0, now = Dat
 }
 
 /** Read-only external diagnosis. A live PID or old ready receipt alone never proves health. */
-export function evaluateServiceHealth({ status, runtime, heartbeat, now = Date.now(), ownerState = inspectProcessOwner, staleAfterMs = SERVICE_HEARTBEAT_STALE_MS }) {
+export function evaluateServiceHealth({ status, runtime, startup, heartbeat, now = Date.now(), ownerState = inspectProcessOwner, staleAfterMs = SERVICE_HEARTBEAT_STALE_MS }) {
   const result = { state: 'unobserved', healthy: false, observedAt: new Date(now).toISOString(), lastHeartbeatAt: null, heartbeatAgeMs: null,
     staleAfterMs, reason: null, process: { pid: status.pid ?? null, childPid: status.childPid ?? null, wrapperState: null, childState: null }, business: null };
   const finish = (state, reason) => ({ ...result, state, reason, healthy: state === 'healthy' });
   if (!status.installed) return finish('not-installed', 'service-not-installed');
+  const processes = inspectServiceProcesses({ status, runtime, startup, ownerState });
+  result.process = { pid: processes.pid, childPid: processes.childPid, wrapperState: processes.wrapperState, childState: processes.childState };
+  if ((!status.running || status.stopPending) && !processes.settled) return finish(processes.verified && ![processes.wrapperState, processes.childState].includes('unknown') ? 'stalled' : 'unobserved',
+    processes.verified && ![processes.wrapperState, processes.childState].includes('unknown') ? 'service-stop-incomplete' : 'service-stop-unverified');
   if (!status.running && status.startupState === 'blocked') return finish('setup-blocked', status.blocked?.code ?? 'service-configuration');
   if (!status.running && status.startupState === 'retrying') return finish('retrying', 'bounded-retry-scheduled');
   if (!status.running) return finish('stopped', 'service-is-not-running');
