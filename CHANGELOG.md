@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.15.0-alpha.9 — Unreleased
+## 0.15.0-alpha.10 — Unreleased
+
+- Retain bounded Feishu read failure reasons, allowlisted transport codes, HTTP status, failure stage, elapsed time and timestamp without retaining credentials or message content.
+- Distinguish read deadlines from stop/caller cancellation even when the official SDK reports a generic cancellation; retain the original error and dispatched-write lifecycle.
+- Carry safe diagnostics through persisted source state, business health and bounded service summaries; distinguish known local validation errors from network/API failures.
+- Preserve cursor recovery, admission, ordering, deduplication, timeouts, request budgets and retry counts. No new configuration or performance changes.
+
+Details: [Feishu history diagnostics](docs/feishu-history-diagnostics.md).
+
+## 0.15.0-alpha.9 — Released 2026-11-13
 
 - Classify host-confirmed changes to an authorized candidate ticket snapshot separately from missing targets, revoked authority, changed routes and input ownership conflicts.
 - Recheck hard refusals before material invalidation and before consuming the existing two-refresh allowance; preserve the original evaluation deadline, input and fresh assessment sessions.

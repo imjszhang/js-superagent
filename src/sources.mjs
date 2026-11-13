@@ -1,5 +1,6 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { hostname } from 'node:os';
+import { sanitizeFeishuDiagnostic } from './channels/feishu-diagnostics.mjs';
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 /** Bounded source-location facts; never copy transport payloads, tokens or message text. */
@@ -7,6 +8,7 @@ export function sourceDiagnostic(value) {
   const chat = value => typeof value === 'string' && /^oc_[A-Za-z0-9_-]{1,200}$/.test(value);
   const container = value?.container;
   return {
+    ...sanitizeFeishuDiagnostic(value),
     ...(chat(value?.scope) ? { scope: value.scope } : {}),
     ...(Number.isSafeInteger(value?.code) && value.code >= 0 ? { code: value.code } : {}),
     ...(['permission', 'transport', 'validation'].includes(value?.category) ? { category: value.category } : {}),
