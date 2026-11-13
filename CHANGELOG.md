@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.15.0-alpha.8 — Unreleased
+## 0.15.0-alpha.9 — Unreleased
+
+- Classify host-confirmed changes to an authorized candidate ticket snapshot separately from missing targets, revoked authority, changed routes and input ownership conflicts.
+- Recheck hard refusals before material invalidation and before consuming the existing two-refresh allowance; preserve the original evaluation deadline, input and fresh assessment sessions.
+- Retain bounded target/version diagnostics across native callback error copying, and keep exhausted requests available for explicit recovery without replaying historical failures.
+- Preserve the prototype domain, Feishu admission and worker ownership rules. No configuration, retry-count or material-access changes.
+
+## 0.15.0-alpha.8 — Released 2026-11-13
 
 - Add GitHub Actions trusted npm publishing with an isolated publishing job and no stored npm token.
 - Publish the exact package validated on macOS, checking its source commit and integrity; safely verify repeated runs without republishing an existing version.

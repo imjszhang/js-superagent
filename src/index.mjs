@@ -1799,10 +1799,14 @@ export class ProjectRuntime {
       for (const trigger of candidate.triggers) this.#store.setMeta(`assessment-trigger:${trigger.id}`, { evalId: candidate.evalId });
     });
     this.#assessmentAbort = new AbortController();
-    let materialSession,materialEvents,authorization,inputProvenance;
+    let materialSession,materialEvents,authorization,inputProvenance,links;
     // Native adapters may redact/copy a callback exception or swallow it. Keep
     // only this attempt's host proof; arbitrary adapter text/code is not proof.
     let callbackStale, callbackRejection, callbackFailed = false;
+    const contextEvidence = error => error.targetSnapshot ? { targetSnapshot: {
+      ticketId: error.targetSnapshot.ticketId, previousVersion: error.targetSnapshot.previousVersion,
+      currentVersion: error.targetSnapshot.currentVersion, changeKind: error.targetSnapshot.changeKind,
+    } } : {};
     const rejectCallback = error => {
       callbackRejection ??= error instanceof Later ? new Later(error.message) : Object.assign(new Error(error.message),
         Object.fromEntries(['code', 'failureKind', 'retryable', 'triggerId'].filter(key => error[key] !== undefined).map(key => [key, error[key]])));
@@ -1812,7 +1816,7 @@ export class ProjectRuntime {
       ? new Error('Assessment host callback failed; its invalidated result cannot be applied') : callbackStale));
     const recordCallbackError = error => {
       // Copy host-owned facts before the adapter can mutate the thrown object.
-      if (isAssessmentContextChanged(error)) callbackStale ??= new AssessmentContextChanged(error.reason);
+      if (isAssessmentContextChanged(error)) callbackStale ??= Object.assign(new AssessmentContextChanged(error.reason), contextEvidence(error));
       else callbackFailed = true;
     };
     const authorizationStamp = () => materialDigest({ policy: this.#policy().version, coordinator: this.#coordinator.current().version,
@@ -1831,11 +1835,16 @@ export class ProjectRuntime {
         // authorization fingerprint can attribute its failure to the primary.
         this.#assertRetainedFeishuInputs(candidate, rejectCallback);
         if (authorization !== undefined && authorization !== authorizationStamp()) rejectCallback(Object.assign(new Error('Assessment authorization changed'), { code: 'assessment_authority', failureKind: 'authority', retryable: false }));
+        // A material snapshot change must not hide a stopped, rerouted or owned
+        // target. Authority checks never grant a new target or refresh by code.
+        try { links?.verifyAuthority(...attachmentTarget()); } catch (error) { rejectCallback(error); }
         if(materialSession!==undefined && this.#materialSessionScope(materialEvents)!==materialSession)throw new AssessmentContextChanged('material-session');
         return fn(owner);
       }); } catch (error) { recordCallbackError(error); throw error; }
     };
     let outcome, progress = {};
+    const attachmentTarget = () => outcome?.kind === 'attach'
+      ? [outcome.ticketId, outcome.triggerId ?? candidate.triggers[0].id] : [];
     const recordBase = { runId, evalId: candidate.evalId, policyVersion: candidate.policyVersion, triggerIds: candidate.triggers.map(trigger => trigger.id) };
     try {
       this.#assertRetainedFeishuInputs(candidate);
@@ -1844,7 +1853,7 @@ export class ProjectRuntime {
       if (candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id)))
         throw Object.assign(new Error('Original operator authority is no longer configured'), { failureKind: 'authority', code: 'assessment_authority', retryable: false });
       this.#engine.candidateDelivered(candidate.evalId);
-      const links = createCandidateLinks({ store:this.#store, policy:()=>this.#policy(), candidate, repository:this.#config().github?.repository });
+      links = createCandidateLinks({ store:this.#store, policy:()=>this.#policy(), candidate, repository:this.#config().github?.repository });
       materialEvents = candidate.triggers.map(trigger => this.#assessmentOrigin(trigger.id) ?? {references:{triggerId:trigger.id}});
       for (const event of materialEvents) {
         const proof = event.id && this.#store.getMeta(`material-event:${event.id}`);
@@ -1925,13 +1934,12 @@ export class ProjectRuntime {
       const result = guard(()=>{
         if (callbackFailure()) throw callbackFailure();
         this.#assertRetainedFeishuInputs(candidate);
-        links.verify();
+        links.verify(...attachmentTarget());
         if(this.#materialSessionScope(materialEvents)!==materialSession)throw new AssessmentContextChanged('material-session');
         if(materialReader)materialReader.verify();
         const provenance=rememberMaterials(),materialSources=provenance.ticketIds,metadataSources=provenance.metadataTicketIds;
         if (candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id)))
           throw Object.assign(new Error('Original operator authority changed during assessment'), { failureKind: 'authority', code: 'assessment_authority', retryable: false });
-        if (outcome.kind === 'attach') links.verify(outcome.ticketId, outcome.triggerId ?? candidate.triggers[0].id);
         if (outcome.kind === 'attach') {
           const triggerId = outcome.triggerId ?? candidate.triggers[0].id;
           const trigger = this.#store.triggers.get(triggerId);
@@ -1976,10 +1984,15 @@ export class ProjectRuntime {
         if (error instanceof Later) throw error;
       }
       if (isAssessmentContextChanged(error)) {
+        Object.assign(recordBase, contextEvidence(error));
         const refreshed = this.#store.atomic(() => {
           const held = this.#engine.candidate(candidate.triggers[0].id);
           if (held?.evalId !== candidate.evalId || this.#policy().version !== candidate.policyVersion) return { waiting: true };
           try { this.#assertRetainedFeishuInputs(candidate); }
+          catch (error) { return { denied: true, error }; }
+          // Recheck after an adapter returns or copies a callback exception:
+          // target authority may have changed since the trusted stale evidence.
+          try { links?.verifyAuthority(...attachmentTarget()); }
           catch (error) { return { denied: true, error }; }
           if (authorization === undefined || authorization !== authorizationStamp() ||
               candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id))) return { denied: true };

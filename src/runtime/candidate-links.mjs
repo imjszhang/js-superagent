@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { followupOwners } from '../../dist/core/index.js';
 import { normalizeGitHubActorTrigger } from '../policy.mjs';
+import { AssessmentContextChanged } from './assessment-refresh.mjs';
 
 const MAX_TRIGGERS = 20, MAX_TEXT_BYTES = 32000, MAX_REFERENCES = 20, MAX_TARGETS = 8;
 const repoName = value => typeof value === 'string' && /^[a-z\d][a-z\d-]{0,38}\/[a-z\d_.-]{1,100}$/.test(value) && !['.', '..'].includes(value.split('/')[1]);
@@ -14,6 +15,11 @@ const digest = value => createHash('sha256').update(JSON.stringify(canonical(val
 function fail(reason, triggerId) { throw Object.assign(new Error(`Candidate links refused: ${reason}`), { code: 'CANDIDATE_LINKS_REJECTED', reason, ...(triggerId ? { triggerId } : {}) }); }
 const threadKey = ref => `${ref.source}:${ref.id}`;
 const membership = thread => thread && { key: thread.key, ref: thread.ref, subscriptions: thread.subscriptions, context: thread.context ?? [] };
+// Changing authority, identity or reply destinations is not an ordinary worker
+// snapshot update. Keep the full fingerprint as well: nothing is applied from a
+// stale card, even when only inputs or execution state changed.
+const targetAuthority = ticket => ({ id: ticket.id, decisionId: ticket.decisionId, mandate: ticket.mandate,
+  origin: ticket.origin, channels: ticket.channels, createdAt: ticket.createdAt, threads: ticket.threads });
 
 /** Mask whole URL tokens before short references, so an invalid outer URL cannot donate an inner reference. */
 function references(text, repository, budget) {
@@ -92,7 +98,10 @@ export function createCandidateLinks({ store, policy, candidate, repository }) {
       !Array.isArray(snapshot.tickets) || snapshot.triggers.some(trigger => !trigger?.id || !Array.isArray(trigger.threads) || !trigger.threads.length || typeof trigger.text !== 'string')) fail('invalid-candidate');
   const sources = snapshot.triggers.map(trigger => ({ trigger, fingerprint: digest(trigger), disposition: digest(store.triggers.disposition(trigger.id)),
     threads: trigger.threads.map(ref => ({ key: threadKey(ref), fingerprint: digest(membership(store.threads.get(threadKey(ref)))) })) }));
-  const original = new Set(snapshot.tickets.map(ticket => ticket.id)), targets = new Map(snapshot.tickets.map(ticket => [ticket.id, { ticket, fingerprint: digest(ticket), original: true }]));
+  const original = new Set(snapshot.tickets.map(ticket => ticket.id)), targets = new Map(snapshot.tickets.map(ticket => [ticket.id, {
+    ticket, fingerprint: digest(ticket), origin: digest(ticket.origin?.triggerId && store.triggers.get(ticket.origin.triggerId)),
+    routeable: snapshot.triggers.some(trigger => routeable(store, initialPolicy, ticket, [trigger])), original: true,
+  }]));
   const linkedThreads = new Map(), links = new Map(), budget = { count: 0, triggers: 0, bytes: 0 };
 
   function verifySources() {
@@ -130,7 +139,7 @@ export function createCandidateLinks({ store, policy, candidate, repository }) {
         if (!related(store, initialPolicy, ticket, thread, [source.trigger], repository)) continue;
         if (!targets.has(id)) {
           if (links.size >= MAX_TARGETS) fail('target-budget-exceeded', source.trigger.id);
-          targets.set(id, { ticket: structuredClone(ticket), fingerprint: digest(ticket), origin: digest(store.triggers.get(ticket.origin.triggerId)), original: false });
+          targets.set(id, { ticket: structuredClone(ticket), fingerprint: digest(ticket), origin: digest(store.triggers.get(ticket.origin.triggerId)), routeable: true, original: false });
           links.set(id, new Map());
         }
         const byTrigger = links.get(id);
@@ -142,14 +151,30 @@ export function createCandidateLinks({ store, policy, candidate, repository }) {
   const enrichedCandidate = { ...snapshot, tickets: [...targets.values()].map(value => structuredClone(value.ticket)),
     ticketReferences: [...links].map(([ticketId, byTrigger]) => ({ ticketId, triggerIds: [...byTrigger.keys()], threads: [...new Set([...byTrigger.values()].flatMap(value => [...value]))] })) };
 
-  return { candidate: enrichedCandidate, verify(targetId, triggerId) {
+  function verifyAuthority(targetId, triggerId) {
     const livePolicy = verifySources();
     for (const [key, saved] of linkedThreads) if (digest(membership(store.threads.get(key))) !== saved.fingerprint) fail('referenced-thread-changed');
+    const changes = [];
     for (const [id, saved] of targets) {
       const current = store.tickets.get(id);
-      if (!current || digest(current) !== saved.fingerprint) fail('target-missing-or-changed');
+      if (!current) fail('target-missing');
+      const currentVersion = digest(current), changed = currentVersion !== saved.fingerprint;
+      const routeableNow = snapshot.triggers.some(trigger => routeable(store, livePolicy, current, [trigger]));
+      if (saved.routeable && !routeableNow) fail('target-no-longer-routeable');
+      if (changed && digest(targetAuthority(current)) !== digest(targetAuthority(saved.ticket))) fail('target-authority-or-route-changed');
+      const origin = current.origin?.triggerId && store.triggers.get(current.origin.triggerId);
+      if (digest(origin) !== saved.origin) fail('target-source-missing-or-changed');
+      if (changed) {
+        if (!saved.routeable || !routeableNow) fail('target-no-longer-routeable');
+        if (!origin) fail('target-source-missing-or-changed');
+        if (saved.original && !sources.some(({ trigger }) => !trigger.meta?.contextOnly && explicit(store, livePolicy, trigger) && routeable(store, livePolicy, current, [trigger]) &&
+          trigger.threads.some(ref => {
+            const thread = store.threads.get(threadKey(ref));
+            return thread?.subscriptions.includes(id) && !thread.context?.includes(id);
+          }))) fail('target-no-longer-routeable');
+        changes.push({ ticketId: id, previousVersion: saved.fingerprint, currentVersion, changeKind: 'ticket-snapshot' });
+      }
       if (!saved.original) {
-        if (digest(store.triggers.get(current.origin.triggerId)) !== saved.origin) fail('target-source-missing-or-changed');
         for (const [sourceId, keys] of links.get(id)) for (const key of keys) if (!related(store, livePolicy, current, store.threads.get(key), [snapshot.triggers.find(trigger => trigger.id === sourceId)], repository)) fail('target-no-longer-routeable');
       }
     }
@@ -160,6 +185,18 @@ export function createCandidateLinks({ store, policy, candidate, repository }) {
       if (!routeable(store, livePolicy, store.tickets.get(targetId), [selected])) fail('target-no-longer-routeable', selected.id);
       if (!target.original && !links.get(targetId)?.has(selected.id)) fail('target-not-referenced-by-trigger', selected.id);
     }
-    return true;
-  } };
+    return changes;
+  }
+  return { candidate: enrichedCandidate,
+    // Internal host guard: checking hard boundaries cannot accept an assessment
+    // or make its saved fingerprint current. Applying a result still uses verify.
+    verifyAuthority(targetId, triggerId) { verifyAuthority(targetId, triggerId); return true; },
+    verify(targetId, triggerId) {
+      const changes = verifyAuthority(targetId, triggerId);
+      // All hard refusals, including a different target's authority and the
+      // selected attachment's gate, win over any version change in this batch.
+      if (changes.length) throw Object.assign(new AssessmentContextChanged('candidate-target-snapshot'), { targetSnapshot: changes[0] });
+      return true;
+    },
+  };
 }

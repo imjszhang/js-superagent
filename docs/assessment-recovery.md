@@ -26,6 +26,16 @@ The host supplies current eligibility, a reason and a version for each visible r
 
 The recovery acknowledgment is committed through the existing durable outbox on the current operator entry. It reports queued recovery or an existing/blocked state, not Worker execution. The later assessment outcome follows the original request route. Retrying an event or restarting the service must not duplicate its action or acknowledgment. Upgrading does not automatically rerun historical failures.
 
+## Authorized target snapshot changes (0.15.0-alpha.9)
+
+The host fingerprints the complete candidate ticket. A concurrent input or execution-state update invalidates that snapshot, even when the proposed attachment still names the right ticket. Such a result is discarded; matching the ticket ID alone never makes an old assessment valid.
+
+Only a host-confirmed change to the same authorized target can enter the existing `AssessmentContextChanged` path. Missing targets, changed mandates/origins/reply routes, human stops, handbacks, source revisions, ownership and current policy checks remain hard refusals. Check these boundaries before material invalidation and again before recording a refresh. Stable historical tickets supplied only as context do not acquire attachment authority or block an otherwise valid assessment merely because they are not routeable.
+
+The allowance remains two automatic context refreshes per original input, sharing the existing Eval and deadline. If two material-session refreshes have already occurred, a subsequent ticket change ends with `assessment_context_stale_exhausted`, `retryable: true`; it does not obtain a third refresh. The exhausted receipt refers to admission of this input, not the execution state of an existing ticket it might supplement. The existing explicit recovery mechanism can reconsider the original input under current authority. Historical internal failures remain unchanged and require inspection followed by explicit `reevaluate <trigger-id>`; installing the fix does not replay them.
+
+Attempt diagnostics retain the target ID, previous/current snapshot hashes and change class, including when a native adapter copies or swallows a host callback exception. They contain no ticket text. This changes runtime classification and recovery plumbing only: the prototype domain, Feishu admission, Worker input ownership, material access and retry configuration remain unchanged.
+
 ## Upgrade
 
 This change retains state schema 14 and the existing project identity, prompts, source connections and task data. Stop the managed service before replacing the installed package and restart through the project's configured wrapper. A wrapper that pins a verified package version must be checked against the new package before restarting. A prepared prerelease tarball is not evidence of npm publication.
