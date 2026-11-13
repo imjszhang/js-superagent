@@ -1,3 +1,4 @@
+import { isAssessmentContextChanged } from './runtime/assessment-refresh.mjs';
 const resources = ['tickets', 'threads', 'decisions', 'triggers', 'sources', 'repository'];
 const unavailable = reason => ({ kind: 'unavailable', reason, rules: [] });
 
@@ -42,7 +43,11 @@ export async function runBoundedAssessment({ candidate, call, readContextRecord,
     if (limit < 100) return unavailable('Coordinator context byte budget exhausted');
     let record;
     try { record = await readContextRecord(outcome.resource, outcome.recordId, { offset: outcome.offset, limit, ...(version ? { version } : {}) }); }
-    catch { return unavailable('Requested context changed or could not be read; reassessment is needed'); }
+    catch (error) {
+      if (isAssessmentContextChanged(error) || signal?.aborted || error?.name === 'AbortError' || error?.failureKind === 'authority' ||
+          ['AUTH', 'UNAUTHORIZED', 'FORBIDDEN', 'MATERIAL_ACCESS_DENIED', 'MATERIAL_DESTINATION_DENIED'].includes(error?.code)) throw error;
+      return unavailable('Requested context changed or could not be read; reassessment is needed');
+    }
     if (signal?.aborted) throw new Error('Assessment cancelled');
     if (!record) return unavailable('Requested context record is no longer available');
     if (record.resource !== outcome.resource || record.id !== outcome.recordId || record.offset !== outcome.offset || typeof record.version !== 'string' || typeof record.text !== 'string' ||

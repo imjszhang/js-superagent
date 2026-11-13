@@ -22,6 +22,7 @@ import { CoordinationInbox, normalizeWorkRetry, coordinationFailure } from './ru
 import { normalizeUIEvidence, uiTree, uiEvidenceRequired, captureUIEvidence, validateUIEvidence, readUIEvidencePNG } from './runtime/ui-evidence.mjs';
 import { managementRevision, normalizeManagementIntent, managementCommand } from './runtime/operator-management.mjs';
 import { assessmentFailure } from './runtime/assessment.mjs';
+import { AssessmentContextChanged, isAssessmentContextChanged, CONTEXT_REFRESH_EXHAUSTED, refreshState, resetRefreshCycle, recordContextRefresh } from './runtime/assessment-refresh.mjs';
 import { assessmentStatus, assessmentFailureMessage, isMaterialBindingDenied, assessmentTicketReceiptProof, verifyAssessmentTicketReceipt } from './runtime/assessment-status.mjs';
 import { createCoordinationReader } from './runtime/coordination-context.mjs';
 import { feedbackDisposition } from './runtime/feedback.mjs';
@@ -1299,7 +1300,7 @@ export class ProjectRuntime {
     else if (status.ticketId) reason = 'already-owned';
     else if (['pending', 'evaluating', 'correcting'].includes(status.status)) reason = 'in-progress';
     else if (status.status !== 'failed') reason = 'not-failed';
-    else if (!['format', 'transient', 'timeout'].includes(status.failureKind)) reason = 'inspection-required';
+    else if (!['format', 'transient', 'timeout'].includes(status.failureKind) && status.code !== CONTEXT_REFRESH_EXHAUSTED) reason = 'inspection-required';
     const allowed = reason === null;
     const assessmentProvenance=this.#materialProvenance({projectionVersion:assessment?.materialProjectionVersion,
       ticketIds:assessment?.materialSources??[],freshTicketIds:assessment?.materialFreshSources,metadataTicketIds:assessment?.materialMetadataSources??[],contentVersions:assessment?.materialContentVersions});
@@ -1699,8 +1700,9 @@ export class ProjectRuntime {
   }
   #assessmentReceipt(candidate, record) {
     for (const trigger of candidate.triggers) {
+      if (record.code === CONTEXT_REFRESH_EXHAUSTED && !record.failedTriggerIds?.includes(trigger.id)) continue;
       const event = this.#assessmentOrigin(trigger.id);
-      const groupFailure = !event && record.status === 'failed' && isMaterialBindingDenied(record) && this.#materialFailureReplyAllowed(trigger);
+      const groupFailure = !event && record.status === 'failed' && (isMaterialBindingDenied(record) || record.code === CONTEXT_REFRESH_EXHAUSTED) && this.#materialFailureReplyAllowed(trigger);
       if (!groupFailure && (!event || !this.#assessmentOriginAllowed(trigger.id))) continue;
       const status = assessmentStatus(this.#store, trigger.id);
       if (record.status !== 'failed' && !['accepted', 'attached', 'ignore', 'unavailable', 'stop'].includes(status.status)) continue;
@@ -1762,11 +1764,20 @@ export class ProjectRuntime {
       for (const trigger of candidate.triggers) this.#store.setMeta(`assessment-trigger:${trigger.id}`, { evalId: candidate.evalId });
     });
     this.#assessmentAbort = new AbortController();
-    let materialSession,materialEvents;
+    let materialSession,materialEvents,authorization,inputProvenance;
+    const authorizationStamp = () => materialDigest({ policy: this.#policy().version, coordinator: this.#coordinator.current().version,
+      materialRevision: this.getMaterialSettings().revision, feishu: this.#config().feishu, github: this.#config().github,
+      origins: candidate.triggers.map(trigger => ({ trigger: this.#store.triggers.get(trigger.id), origin: this.#assessmentOrigin(trigger.id)?.actor })),
+      routes: materialEvents?.map(event => ({ channel: this.#materialEventChannel(event), route: this.#materialEventRoute(event) })) });
     const guard = fn => this.#store.atomic(() => {
       const owner = this.#store.getMeta('coordinator:owner');
       if (owner?.token !== token || this.#assessmentAbort.signal.aborted || this.#policy().version !== candidate.policyVersion) throw new Error('Stale coordinator callback');
-      if(materialSession!==undefined && this.#materialSessionScope(materialEvents)!==materialSession)throw new Error('Coordination context or policy changed; reassessment required');
+      const held = this.#engine.candidate(candidate.triggers[0].id);
+      if (held?.evalId !== candidate.evalId) throw new Later('Assessment evaluation has been superseded');
+      const evaluation = this.#store.threads.get(candidate.thread.key)?.evaluating;
+      if (evaluation?.delivered && evaluation.deadline <= this.#now()) throw new Later('Assessment deadline expired');
+      if (authorization !== undefined && authorization !== authorizationStamp()) throw Object.assign(new Error('Assessment authorization changed'), { code: 'assessment_authority', failureKind: 'authority', retryable: false });
+      if(materialSession!==undefined && this.#materialSessionScope(materialEvents)!==materialSession)throw new AssessmentContextChanged('material-session');
       return fn(owner);
     });
     let outcome, progress = {};
@@ -1785,7 +1796,8 @@ export class ProjectRuntime {
           throw Object.assign(new Error('Original material request belongs to a previous coordination identity'), { failureKind: 'authority', code: 'assessment_authority', retryable: false });
       }
       materialSession = this.#materialSessionScope(materialEvents);
-      const inputProvenance=this.#materialProvenance(...materialEvents.map(event=>this.#materialEventProvenance(event)));
+      authorization = authorizationStamp();
+      inputProvenance=this.#materialProvenance(...materialEvents.map(event=>this.#materialEventProvenance(event)));
       for(const event of materialEvents)this.#assertMaterialDisclosure([...inputProvenance.ticketIds,...inputProvenance.metadataTicketIds],materialDestination(this.#materialEventChannel(event)),{fresh:false});
       if(materialEvents.some(event=>this.#materialEventProjection(event).stale))throw materialError('MATERIAL_CHANGED','Earlier request context is no longer current; inspect it before reassessment');
       const materialAllowed = meta => materialEvents.every(event => this.#materialContextAllowed(meta, event));
@@ -1803,7 +1815,8 @@ export class ProjectRuntime {
       const materialReader = materialSession && createCoordinationReader(this.#store, {allowTicket:materialAllowed,allowSharedRecords:false,
         ticketCard:(meta,domain)=>this.#coordinationTicketCard(meta,domain,materialEvents[0]),
         ticketValue:(meta,domain,value)=>this.#materialTicketValue(meta,domain,value,materialEvents[0]),maxReads:64,maxBytes:320000});
-      const sessionKey=`coordinator:session:${settings.version}${promptAssembly?`:${promptAssembly.version}`:''}${materialSession ? `:candidate${materialSession}` : ''}`;
+      const refreshed = candidate.triggers.some(trigger => { const state = refreshState(this.#store, trigger.id); return state.refreshesUsed > 0 || state.cycle !== 'initial'; });
+      const sessionKey=`coordinator:session:${settings.version}${promptAssembly?`:${promptAssembly.version}`:''}${materialSession ? `:candidate${materialSession}` : ''}${refreshed ? `:refresh:${runId}` : ''}`;
       const rememberMaterials = () => {
         if (!materialSession) return this.#materialProvenance();
         const provenance=this.#materialProvenance(inputProvenance,
@@ -1830,7 +1843,7 @@ export class ProjectRuntime {
             if (!materialReader || resource==='triggers' && candidate.triggers.some(trigger=>trigger.id===id)) return this.readContextRecord(resource,id,options);
             const value=materialReader.read({resource,recordId:id,offset:options?.offset??0});
             if(value.missing)throw materialError('MATERIAL_ACCESS_DENIED','This context record is outside the material disclosure scope');
-            if(options?.version && options.version!==value.version)throw new Error('Context record changed; reread its current version');
+            if(options?.version && options.version!==value.version)throw new AssessmentContextChanged('record-version');
             rememberMaterials();return value;
           }));
           assertAssessment();
@@ -1853,7 +1866,7 @@ export class ProjectRuntime {
       };
       const result = guard(()=>{
         links.verify();
-        if(this.#materialSessionScope(materialEvents)!==materialSession)throw new Error('Coordination context or policy changed; reassessment required');
+        if(this.#materialSessionScope(materialEvents)!==materialSession)throw new AssessmentContextChanged('material-session');
         if(materialReader)materialReader.verify();
         const provenance=rememberMaterials(),materialSources=provenance.ticketIds,metadataSources=provenance.metadataTicketIds;
         if (candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id)))
@@ -1896,15 +1909,40 @@ export class ProjectRuntime {
       if (error instanceof Later) throw error;
       if (this.isPaused() || this.#stopping) throw new Later('Assessment is waiting for resume');
       if (this.#store.getMeta('coordinator:owner')?.token !== token || this.#assessmentAbort.signal.aborted) throw new Later('Assessment ownership changed');
+      if (isAssessmentContextChanged(error)) {
+        const refreshed = this.#store.atomic(() => {
+          const held = this.#engine.candidate(candidate.triggers[0].id);
+          if (held?.evalId !== candidate.evalId || this.#policy().version !== candidate.policyVersion) return { waiting: true };
+          if (authorization === undefined || authorization !== authorizationStamp() ||
+              candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id))) return { denied: true };
+          if (materialEvents.some(event => this.#materialEventProjection(event).stale)) return { denied: true };
+          try {
+            for (const event of materialEvents) this.#assertMaterialDisclosure([...inputProvenance.ticketIds,...inputProvenance.metadataTicketIds], materialDestination(this.#materialEventChannel(event)));
+          } catch { return { denied: true }; }
+          // A delivered input is no longer an unowned candidate's work to retry.
+          if (candidate.triggers.some(trigger => assessmentStatus(this.#store, trigger.id).ticketId)) return { waiting: true };
+          const result = recordContextRefresh(this.#store, candidate.triggers.map(trigger => trigger.id), { runId, evalId: candidate.evalId, reason: error.reason, at: this.#now() });
+          const record = { ...recordBase, ...progress, ...assessmentFailure(error), phase: 'refreshing', status: 'running', contextRefreshes: result.refreshesUsed,
+            refreshReason: error.reason, at: this.#now() };
+          this.#store.setMeta(`assessment-attempt:${runId}`, record);
+          if (!result.exhausted.length) this.#store.setMeta(`assessment:${candidate.evalId}`, record);
+          return result;
+        });
+        if (refreshed.waiting || !refreshed.denied && !refreshed.exhausted.length) throw new Later('Assessment is waiting for a fresh context snapshot');
+        error = refreshed.denied
+          ? Object.assign(new Error('Assessment context authorization changed; automatic refresh is not allowed'), { code: 'assessment_authority', failureKind: 'authority', retryable: false })
+          : Object.assign(new Error('Assessment context kept changing after two automatic refreshes'), { code: CONTEXT_REFRESH_EXHAUSTED, failureKind: 'context', retryable: true, exhausted: true, triggerId: refreshed.exhausted[0] });
+      }
       const failedTrigger = candidate.triggers.find(trigger => trigger.id === error.triggerId) ?? candidate.triggers.find(trigger => trigger.id === outcome?.triggerId) ?? candidate.triggers[0];
       const held = this.#engine.candidate(failedTrigger.id);
       this.#store.atomic(() => {
         const current = held?.evalId === candidate.evalId && this.#policy().version === candidate.policyVersion && !this.isPaused();
         const failure = assessmentFailure(error);
         if (coordinationFailure(error) === 'transient') Object.assign(failure, { failureKind: 'transient', retryable: true });
-        const record = { ...recordBase, ...progress, ...failure, status: 'failed', at: this.#now() };
+        const record = { ...recordBase, ...progress, ...failure, status: 'failed', failedTriggerIds: [failedTrigger.id], at: this.#now() };
         if (current) this.#engine.decideTrigger(failedTrigger.id, { kind: 'unavailable', reason: assessmentFailureMessage(record), evalId: candidate.evalId });
         this.#store.setMeta(`assessment:${candidate.evalId}`, record);
+        this.#store.setMeta(`assessment-attempt:${runId}`, record);
         if (current) this.#assessmentReceipt({ ...candidate, triggers: [failedTrigger] }, record);
       });
     } finally {
@@ -2543,7 +2581,10 @@ export class ProjectRuntime {
       if (status.ticketId || conversation && ['pending', 'evaluating', 'correcting'].includes(status.status)) return false;
     }
     if (trigger && !this.#assessmentOriginAllowed(triggerId)) throw new Error('Original operator authority is no longer configured');
-    return this.#engine.reevaluate(triggerId);
+    const before = trigger && assessmentStatus(this.#store, triggerId);
+    const accepted = this.#engine.reevaluate(triggerId);
+    if (accepted && before && !before.ticketId && !['pending', 'evaluating', 'correcting'].includes(before.status)) resetRefreshCycle(this.#store, triggerId);
+    return accepted;
   }); }
   requestStatus(id) { return this.#db().atomic(()=>this.#engine.requestStatus(this.#meta(id).domainId)); }
   getExecutorSettings() { return this.#db().getMeta('executor:settings') ?? { revision: 0, execution: null }; }
