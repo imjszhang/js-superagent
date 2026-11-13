@@ -30,6 +30,37 @@ test('business pause still detects stale ingress but exempts expected action bac
   assert.deepEqual(disabled.transitions.map(item => item.reason).sort(), ['business-paused', 'source-disabled']);
 });
 
+test('live success and another scope syncing cannot hide a history permission failure', () => {
+  const db = store(); let now = 1_000_000;
+  const registry = new BusinessHealthRegistry(db, { now: () => now });
+  const source = { id: 'feishu', connection: 'ready', lastAttempt: now, lastSuccess: now,
+    error: [{ scope: 'oc_group', code: 230027, category: 'permission', operation: 'history', container: { type: 'thread', id: 'omt_thread', chatId: 'oc_group' }, error: 'SECRET message', token: 'SECRET' }] };
+  let result = registry.observe({ running: true, sources: [source] });
+  assert.equal(result.sources[0].state, 'degraded'); assert.equal(result.sources[0].history.healthy, false);
+  assert.deepEqual(result.sources[0].live, { state: 'ready', healthy: true });
+  assert.equal(result.sources[0].history.issues[0].code, 230027); assert.doesNotMatch(JSON.stringify(result), /SECRET/);
+  assert.equal(result.incidents.length, 0);
+  registry.observe({ running: true, sources: [{ ...source, lastAttempt: undefined }] });
+  assert.equal(registry.observe({ running: true, sources: [source] }).sources[0].consecutiveFailures, 1);
+  for (let i = 0; i < 2; i++) {
+    source.lastAttempt = source.lastSuccess = now += 1000;
+    result = registry.observe({ running: true, sources: [source] });
+  }
+  assert.equal(result.incidents.length, 1); assert.equal(result.incidents[0].kind, 'source-failures');
+  assert.equal(result.incidents[0].facts.historyIssues[0].container.chatId, 'oc_group');
+  now += 121000;
+  result = registry.observe({ running: true, sources: [source] });
+  assert.equal(result.sources[0].state, 'stale'); assert.equal(result.sources[0].history.state, 'stale');
+  source.lastAttempt = source.lastSuccess = now += 1000;
+  assert.equal(registry.observe({ running: true, sources: [source] }).incidents.length, 1);
+  source.error = null; source.lastAttempt = source.lastSuccess = now += 1000;
+  result = registry.observe({ running: true, sources: [source] });
+  assert.equal(result.sources[0].state, 'healthy'); assert.equal(result.transitions[0].reason, 'recovered');
+  source.connection = 'error'; result = registry.observe({ running: true, sources: [source] });
+  assert.equal(result.sources[0].history.healthy, true); assert.equal(result.sources[0].live.healthy, false);
+  assert.equal(result.incidents[0].kind, 'source-connection');
+});
+
 test('incident acknowledgement is revision fenced and does not fabricate recovery', () => {
   const registry = new BusinessHealthRegistry(store(), { now: () => 1_000_000 });
   const result = registry.observe({ running: true, sources: [{ id: '__proto__', lastSuccess: 1, lastAttempt: 1 }] });

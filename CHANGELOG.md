@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.0-alpha.5 — Unreleased
+
+- Recover configured Feishu group messages and active/subscribed topic replies through bounded, resumable history scans, preserving admission rules and existing ticket associations.
+- Validate returned message/container identities, retain platform thread routing metadata, and deduplicate live and historical intake transactionally.
+- Make public business-health queries read-only; let the running owner persist observations and report connection/history failures separately without masking failed groups behind successful private-chat scans.
+- Preserve actionable platform error codes and verify migration, pagination, partial failure, offline recovery, and diagnostic-read invariants.
+
+Implementation and deployment acceptance: [Feishu history recovery](docs/feishu-history-recovery.md).
+
 ## 0.14.0-alpha.4 — Released 2026-11-11
 
 - Distinguish a completed DSH turn with no final report from an incomplete turn or an invalid report, preserving the original native evidence.

@@ -80,7 +80,7 @@ import { createHarnessRegistry } from './harness/registry.mjs';
 import { validatePolicyConfig, normalizeGitHubActorTrigger } from './policy.mjs';
 import { observeGitHubCi } from './runtime/github-ci-observation.mjs';
 import { createGitHubChannel, isGitHubReceipt } from './channels/github.mjs';
-import { createFeishuConnection, readFeishuAppSecret } from './channels/feishu.mjs';
+import { createFeishuConnection, readFeishuAppSecret, FEISHU_TOPIC_HORIZON_MS } from './channels/feishu.mjs';
 import { githubAuthority, normalizeGitHubEvent, githubRequest, githubTrigger, evaluateGitHubFeedback } from './github-intake.mjs';
 import { githubMention, isBareGitHubMention, versionGitHubMentionBody, observeGitHubMentionBody } from './github-mention.mjs';
 import { normalizePullRequest, normalizePullEvent, pullEventAllowed, pullEventActionable, pullEventText } from './github-pull-intake.mjs';
@@ -603,7 +603,24 @@ export class ProjectRuntime {
     if (!config || config.enabled === false) return;
     const sdk = this.#feishuSDK ?? await import('@larksuiteoapi/node-sdk');
     const connection = await createFeishuConnection({ ...config, appSecret: readFeishuAppSecret(config), scopes: config.chats, sdk, id: 'feishu',
-      operatorChatId: () => this.#store.getMeta(OPERATOR_CHAT_KEY)?.chatId });
+      operatorChatId: () => this.#store.getMeta(OPERATOR_CHAT_KEY)?.chatId,
+      trackedThreads: () => {
+        const now = Date.parse(this.#now()), prefix = `${config.tenantKey}:`;
+        return this.#store.threads.list().flatMap(thread => {
+          if (thread.ref.source !== 'feishu' || !thread.ref.id.startsWith(prefix) || !thread.subscriptions.length) return [];
+          const tickets = thread.subscriptions.map(id => this.#store.tickets.get(id)).filter(Boolean);
+          const lastAt = Math.max(Date.parse(thread.lastAt ?? thread.createdAt), ...tickets.map(ticket => Date.parse(ticket.ended?.at ?? thread.createdAt)));
+          if (!tickets.some(ticket => !ticket.ended) && now - lastAt >= FEISHU_TOPIC_HORIZON_MS) return [];
+          const [chatId, rootId, ...extra] = thread.ref.id.slice(prefix.length).split(':');
+          if (extra.length || !/^oc_[A-Za-z0-9_-]+$/.test(chatId) || !/^om_[A-Za-z0-9_-]+$/.test(rootId)) return [];
+          const origins = tickets.map(ticket => this.#store.triggers.get(ticket.origin.triggerId))
+            .filter(trigger => trigger?.source === 'feishu' && trigger.meta.chatId === chatId && trigger.meta.rootId === rootId);
+          const origin = origins.find(trigger => trigger.meta.threadId);
+          // A live replay may arrive after its offline follow-ups. Recover from the accepted platform request, not its receipt time.
+          const since = origins.length ? Math.min(...origins.map(trigger => Date.parse(trigger.at))) : Date.parse(thread.createdAt);
+          return [{ chatId, rootId, since, lastAt, ...(origin ? { threadId: origin.meta.threadId } : {}) }];
+        });
+      } });
     this.#sources.register(connection.source);
     this.#feishuSourceId = connection.source.id;
     this.#feishuConnection = connection;
@@ -2485,14 +2502,33 @@ export class ProjectRuntime {
     });
   }
   businessHealth() {
-    this.#db(); const github=this.#config().github, status=this.status(), registry=new BusinessHealthRegistry(this.#store);
-    const sources=this.sourceStatus().map(source=>({id:source.id,enabled:true,lastAttempt:source.active?undefined:source.lastAttempt,lastSuccess:source.lastSuccess,error:source.connection==='error'?'Feishu connection is unavailable':source.error}));
-    if(github)sources.unshift({id:'github:explicit',enabled:true,lastAttempt:this.#store.getMeta('github:sync-lock')?undefined:this.#store.getMeta('github:last-attempt')?.at,
-      lastSuccess:this.#store.getMeta('github:last-sync')?.at,error:this.#store.getMeta('github:last-error'),startedAt:this.#store.getMeta('runtime:loop')?.startedAt});
-    return registry.observe({running:status.running||this.#busy,paused:status.paused,pollIntervalMs:github?.pollIntervalMs??30000,sources,
-      queue:status.effects.filter(effect=>!effect.cancelled).map(effect=>({id:`${effect.kind}:${effect.key}`,kind:effect.kind,due:effect.due,attempts:effect.attempts,error:effect.error})),
-      executions:this.#executions().map(row=>({id:row.value.runId??row.key,heartbeatAt:row.value.heartbeatAt,
-        observation:row.value.publicId?this.#meta(row.value.publicId).executionObservation:null}))});
+    return new BusinessHealthRegistry(this.#db()).current();
+  }
+  #observeBusinessHealth() {
+    // Only the loop owner has a complete source registry. Inspection instances
+    // must never replace its observations or resolve its durable incidents.
+    this.#db();
+    return this.#store.atomic(() => {
+      if (this.#lane !== 0 || !this.#loopToken || this.#store?.getMeta('runtime:loop')?.token !== this.#loopToken) return this.businessHealth();
+      const github=this.#config().github, status=this.status(), registry=new BusinessHealthRegistry(this.#store);
+      const sources=this.sourceStatus().map(source=>({id:source.id,enabled:true,lastAttempt:source.active?undefined:source.lastAttempt,lastSuccess:source.lastSuccess,error:source.error,
+        ...(source.connection !== undefined ? { connection: source.connection } : {})}));
+      const feishu = this.#config().feishu;
+      if (feishu && !sources.some(source => source.id === 'feishu')) {
+        // SDK startup may still be registering the adapter. Retain its history
+        // diagnostics until this owner has a new observation, rather than treating
+        // absence from this in-memory registry as recovery.
+        const saved = this.#store.getMeta('source:feishu:state') ?? {};
+        sources.push({ id: 'feishu', enabled: feishu.enabled !== false, lastAttempt: saved.lastAttempt, lastSuccess: saved.lastSuccess, error: saved.error,
+          connection: feishu.enabled === false ? 'stopped' : this.#feishuState === 'stopped' ? 'starting' : this.#feishuState });
+      }
+      if(github)sources.unshift({id:'github:explicit',enabled:true,lastAttempt:this.#store.getMeta('github:sync-lock')?undefined:this.#store.getMeta('github:last-attempt')?.at,
+        lastSuccess:this.#store.getMeta('github:last-sync')?.at,error:this.#store.getMeta('github:last-error'),startedAt:this.#store.getMeta('runtime:loop')?.startedAt});
+      return registry.observe({running:status.running||this.#busy,paused:status.paused,pollIntervalMs:github?.pollIntervalMs??30000,sources,
+        queue:status.effects.filter(effect=>!effect.cancelled).map(effect=>({id:`${effect.kind}:${effect.key}`,kind:effect.kind,due:effect.due,attempts:effect.attempts,error:effect.error})),
+        executions:this.#executions().map(row=>({id:row.value.runId??row.key,heartbeatAt:row.value.heartbeatAt,
+          observation:row.value.publicId?this.#meta(row.value.publicId).executionObservation:null}))});
+    });
   }
   getIncidents(options) { return new BusinessHealthRegistry(this.#db()).listIncidents(options); }
   acknowledgeIncident(id, options) { return new BusinessHealthRegistry(this.#db()).acknowledge(id,options); }
@@ -5601,7 +5637,7 @@ export class ProjectRuntime {
     this.#children = Array.from({length: capacity - 1}, (_, index) => new ProjectRuntime({ projectRoot: this.projectRoot,
       execution: this.#executionOverride, harnessRegistry: this.#harnessRegistry, ...this.#overrides, githubChannel: this.#githubChannel, [MACHINE_GUARD]: this.#machine, [WORKER_LANE]: index + 1 }).init());
     const failed = error => { this.#lastError = String(error?.message ?? error); const owner=this.#store?.getMeta('runtime:loop'); if(owner?.token===this.#loopToken)this.#store.setMeta('runtime:loop',{...owner,lastError:this.#lastError}); };
-    void this.#connectFeishu().catch(failed);
+    void this.#connectFeishu().catch(error => { this.#setFeishuState('error'); failed(error); });
     const tick = () => {
       if (this.#stopping) return;
       try { this.#machine.assert(); } catch(error) { failed(error); this.#controller?.abort(); this.#assessmentAbort?.abort(); return; }
@@ -5612,7 +5648,7 @@ export class ProjectRuntime {
       if (!this.#machineReady || !this.#machine.isReady()) { if(Date.now()>=this.#machineRetryAt)void this.#ensureMachineReady().then(tick).catch(error=>{this.#machineReady=false;this.#machineRetryAt=Date.now()+30000;failed(error);}); return; }
       void this.#sweepManaged().catch(failed);
       void this.#sweepNative().catch(failed);
-      if(!this.#store.getMeta('health:current')?.at||Date.now()-Date.parse(this.#store.getMeta('health:current').at)>1000){try{this.businessHealth();}catch(error){failed(error);}}
+      if(!this.#store.getMeta('health:current')?.at||Date.now()-Date.parse(this.#store.getMeta('health:current').at)>1000){try{this.#observeBusinessHealth();}catch(error){failed(error);}}
       // Each loop owns its own durable claim; waiting for a model or a reply never blocks intake.
       void this.#pollSources().catch(failed);
       void this.#sources.pollDue().catch(failed);

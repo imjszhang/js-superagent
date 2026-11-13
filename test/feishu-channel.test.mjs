@@ -34,15 +34,17 @@ test('replies stay in their root thread, attachments retain references without f
 test('history establishes a baseline, paginates and emits the same message ID as realtime', async () => {
   let n = 0; const { source, calls } = fixture({ list: async request => { calls.push(['list', request]); n++;
     return { code: 0, data: { items: [{ ...message('om_polled').message, sender: { id_type: 'open_id', id: 'ou_alice', sender_type: 'user' } }], has_more: n === 1, page_token: n === 1 ? 'page-2' : undefined } }; } });
-  const baseline = await source.poll(); assert.equal(calls.length, 0); assert.equal(baseline.events.length, 0);
+  const baseline = await source.poll(); assert.equal(baseline.events.length, 0);
+  assert.equal(baseline.cursor.discovery.oc_group.complete, true); calls.length = 0; n = 0;
   const polled = await source.poll({ cursor: baseline.cursor }); assert.equal(calls.length, 2);
   assert.equal(source.normalize(polled.events[0]).id, source.normalize(message('om_polled')).id);
   assert.equal(calls[1][1].params.page_token, 'page-2'); assert.equal(polled.cursor.scopes.oc_group.since, 1793491300);
 });
 test('failed chat history keeps its cursor and records an error', async () => {
   const { source } = fixture({ list: async () => ({ code: 99991672 }) });
-  const cursor = { schemaVersion: 1, scopes: { oc_group: { since: 1 } } }, result = await source.poll({ cursor });
-  assert.deepEqual(result.cursor, cursor); assert.equal(result.errors.length, 1); assert.match(result.errors[0].error, /99991672/);
+  const cursor = { schemaVersion: 1, scopes: { oc_group: { since: 1 } }, discovery: { oc_group: { complete: true } } }, result = await source.poll({ cursor });
+  assert.deepEqual(result.cursor.scopes, cursor.scopes); assert.equal(result.cursor.schemaVersion, 2);
+  assert.equal(result.errors.length, 1); assert.match(result.errors[0].error, /99991672/);
 });
 test('delivery rechecks the destination and uses a stable platform deduplication UUID', async () => {
   const { source, calls } = fixture(); const trigger = source.normalize(message());

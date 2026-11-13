@@ -2,6 +2,19 @@ import { randomUUID, createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+/** Bounded source-location facts; never copy transport payloads, tokens or message text. */
+export function sourceDiagnostic(value) {
+  const chat = value => typeof value === 'string' && /^oc_[A-Za-z0-9_-]{1,200}$/.test(value);
+  const container = value?.container;
+  return {
+    ...(chat(value?.scope) ? { scope: value.scope } : {}),
+    ...(Number.isSafeInteger(value?.code) && value.code >= 0 ? { code: value.code } : {}),
+    ...(['permission', 'transport', 'validation'].includes(value?.category) ? { category: value.category } : {}),
+    ...(value?.operation === 'history' ? { operation: 'history' } : {}),
+    ...(container && chat(container.chatId) && (container.type === 'chat' && container.id === container.chatId || container.type === 'thread' && /^omt?_[A-Za-z0-9_-]{1,200}$/.test(container.id))
+      ? { container: { type: container.type, id: container.id, chatId: container.chatId } } : {}),
+  };
+}
 function identity(value, name) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(value)) throw new Error(`Invalid ${name}`);
   return value;
@@ -43,15 +56,15 @@ export class SourceRegistry {
     const adapter = this.#adapter(id), trigger = adapter.normalize(event);
     if (!trigger) return { status: 'ignored' };
     validTrigger(trigger, adapter.source);
-    return this.store.atomic(() => this.#save(id, trigger));
+    return this.store.atomic(() => this.#save(id, trigger, 'live'));
   }
-  #save(id, trigger) {
+  #save(id, trigger, firstReceivedVia) {
     const key = `source:${id}:event:${hash(trigger.id)}`;
     const previous = this.store.getMeta(key);
     if (previous) return { status: 'duplicate', triggerId: previous.triggerId };
     const result = this.receive(trigger);
     if (result && typeof result.then === 'function') throw new Error('Source receive must be synchronous and transactional');
-    this.store.setMeta(key, { triggerId: trigger.id, receivedAt: new Date(this.now()).toISOString(), digest: hash(trigger) });
+    this.store.setMeta(key, { triggerId: trigger.id, receivedAt: new Date(this.now()).toISOString(), firstReceivedVia, digest: hash(trigger) });
     return { status: 'received', triggerId: trigger.id };
   }
   poll(id) {
@@ -80,12 +93,12 @@ export class SourceRegistry {
         return this.store.atomic(() => {
           if (!owned() || controller.signal.aborted) throw new Error('Stale source poll result rejected');
           let received = 0, duplicates = 0;
-          for (const trigger of triggers) { const value = this.#save(id, trigger); if (value.status === 'received') received++; else duplicates++; }
+          for (const trigger of triggers) { const value = this.#save(id, trigger, 'history'); if (value.status === 'received') received++; else duplicates++; }
           const error = result.errors?.length ? result.errors.map(item => ({ scope: String(item.scope), error: String(item.error).slice(0, 1000),
             ...(item.object && ['issue', 'pull', 'comment', 'review_comment', 'check', 'status'].includes(item.object.kind) ? { object: structuredClone(item.object) } : {}),
             ...(typeof item.category === 'string' ? { category: item.category.slice(0, 64) } : {}),
             ...(item.repositoryFailure === true ? { repositoryFailure: true } : {}),
-            ...(Number.isSafeInteger(item.statusCode) ? { statusCode: item.statusCode } : {}) })) : null;
+            ...(Number.isSafeInteger(item.statusCode) ? { statusCode: item.statusCode } : {}), ...sourceDiagnostic(item) })) : null;
           this.store.setMeta(stateKey, { ...this.state(id), cursor: result.cursor ?? null, lastSuccess: new Date(this.now()).toISOString(), error });
           return { busy: false, received, duplicates, error };
         });

@@ -63,7 +63,7 @@ export interface ServiceHealth {
   staleAfterMs: number;
   reason: string|null;
   process: {pid:number|null;childPid:number|null;wrapperState:string|null;childState:string|null};
-  business: {available:boolean;paused:boolean;machineReady:boolean;active:boolean;activeIncidents:number;modelWaits:number;sources:Array<{id:string;state:string;lastSuccess:string|null}>}|null;
+  business: {available:boolean;observedAt:string|null;paused:boolean;machineReady:boolean;active:boolean;activeIncidents:number;modelWaits:number;sources:Array<{id:string;state:string;lastSuccess:string|null;live?:{state:string;healthy:boolean};history?:{state:string;healthy:boolean;failedScopes:number;codes:number[]}}> }|null;
 }
 export interface ServicePatrolResult {
   changed:boolean;notify:boolean;action:'observed'|'not-installed'|'busy'|'awaiting-confirmation'|'inspection-required'|'restarted';reason:string|null;observedAt:string;
@@ -569,6 +569,7 @@ export declare class ProjectRuntime {
   uiEvidenceStatus(id:string):UIEvidenceRecord|null;
   readUIEvidenceImage(id:string,phase:'before'|'after'):Uint8Array;
   configurePrompts(settings:PromptSettingsPatch,options:{expectedRevision:number;origin?:'sdk'|'cli'|'panel'|'migration'}):PromptSettings;
+  /** Read-only durable observation from the runtime loop owner; at is null before its first observation. */
   businessHealth():BusinessHealth;
   getIncidents(options?:{includeResolved?:boolean;limit?:number}):BusinessIncident[];
   acknowledgeIncident(id:string,options:{expectedRevision:number}):BusinessIncident;
@@ -1040,7 +1041,7 @@ export function createCodexAppServerDriver(options?:CodexDriverOptions & {enable
 export interface SourceAdapter {
   id:string;source:string;pollIntervalMs?:number;configurationKey?:string;
   normalize(raw:unknown):import('../dist/core/index.js').Trigger|null;
-  poll(input:{cursor:unknown;signal:AbortSignal}):Promise<{events:unknown[];cursor?:unknown;errors?:Array<{scope:string;error:string;repositoryFailure?:true;object?:{kind:string;id:number;number?:number};nextAt?:string}>}>;
+  poll(input:{cursor:unknown;signal:AbortSignal}):Promise<{events:unknown[];cursor?:unknown;errors?:Array<{scope:string;error:string;code?:number;category?:string;operation?:'history';container?:{type:'chat'|'thread';id:string;chatId:string};statusCode?:number;repositoryFailure?:true;object?:{kind:string;id:number;number?:number};nextAt?:string}>}>;
   deliver?(message:OutboundMessage):Promise<DeliveryReceipt|GoneDelivery>;
   readContext?(reference:unknown):Promise<unknown>;
 }
@@ -1206,8 +1207,10 @@ export interface BusinessIncident {
   resolvedAt:string|null;acknowledgedAt:string|null;resolution?:string;
 }
 export interface BusinessHealth {
-  at:string;
-  sources:Array<{id:string;state:'disabled'|'stopped'|'stale'|'degraded'|'healthy'|'starting';healthy:boolean;enabled:boolean;lastAttempt:string|null;lastSuccess:string|null;consecutiveFailures:number;staleAfterMs:number}>;
+  at:string|null;
+  sources:Array<{id:string;state:'disabled'|'stopped'|'stale'|'degraded'|'healthy'|'starting';healthy:boolean;enabled:boolean;lastAttempt:string|null;lastSuccess:string|null;consecutiveFailures:number;staleAfterMs:number;
+    connection?:'starting'|'ready'|'reconnecting'|'error'|'stopped';live?:{state:string;healthy:boolean};
+    history?:{state:string;healthy:boolean;lastAttempt:string|null;lastSuccess:string|null;consecutiveFailures:number;issues:Array<{scope?:string;code?:number;category?:'permission'|'transport'|'validation';operation?:'history';container?:{type:'chat'|'thread';id:string;chatId:string}}>}}>;
   /** Current active native waits only; an absent provider/retry time is unknown, never inferred. */
   models:Array<{runId:string;sessionId:string;driver:string;reason:NativeWaitReason;provider:string|null;attempts:number|null;since:string|null;at:string|null;nextAt:string|null}>;
   incidents:BusinessIncident[];

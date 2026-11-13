@@ -133,9 +133,10 @@ function statusView(runtime) {
   const runtimeStatus = runtimeMethod(runtime, 'status');
   const github = typeof runtime.githubStatus === 'function' ? runtime.githubStatus() : { configured: false };
   const effects = (runtimeStatus.effects ?? []).filter(effect => !effect.cancelled);
-  const sources = typeof runtime.sourceStatus === 'function' ? runtime.sourceStatus() : [];
+  const registeredSources = typeof runtime.sourceStatus === 'function' ? runtime.sourceStatus() : [];
   const scheduler = typeof runtime.schedulerStatus === 'function' ? runtime.schedulerStatus() : null;
   const business = typeof runtime.businessHealth === 'function' ? runtime.businessHealth() : null;
+  const sources = [...new Map([...(business?.sources ?? []).filter(source => source.id !== 'github:explicit'), ...registeredSources].map(source => [source.id, source])).values()];
   const ingressHealth = business?.sources?.find(source => source.id === 'github:explicit');
   const oldestDue = effects.map(effect => typeof effect.due === 'number' ? effect.due : Date.parse(effect.due)).filter(Number.isFinite).sort((a, b) => a - b)[0];
   const groups = {};
@@ -145,7 +146,7 @@ function statusView(runtime) {
   ingress: { configured: !!github.configured, repository: github.repository ?? null, lastSuccess: github.lastSync ?? null,
     lastError: github.lastError ?? null, state: ingressHealth?.state ?? null, healthy: !github.configured ? null : ingressHealth ? ingressHealth.healthy : !github.lastError && !!github.lastSync },
   sources: sources.map(source => ({ id: source.id, active: !!source.active, connection: source.connection ?? null, lastAttempt: source.lastAttempt ?? null, lastSuccess: source.lastSuccess ?? null,
-    healthy: business?.sources?.find(item => item.id === source.id)?.healthy ?? (!source.error && source.connection !== 'error' && !!source.lastSuccess), error: source.connection === 'error' ? 'Feishu connection is unavailable.' : source.error ? 'Source synchronization failed; inspect local diagnostics.' : null })),
+    healthy: business?.sources?.find(item => item.id === source.id)?.healthy ?? (!source.error && source.connection !== 'error' && !!source.lastSuccess), error: source.connection === 'error' ? 'Source live connection is unavailable.' : source.error || ['degraded', 'stale'].includes(source.history?.state) ? 'Source synchronization failed; inspect local diagnostics.' : null })),
   scheduler: scheduler ? { maxWorkers: scheduler.maxWorkers, humanReserve: scheduler.humanReserve, active: (scheduler.active ?? []).length,
     held: (scheduler.active ?? []).filter(item => !item.yielded).length, yielded: (scheduler.active ?? []).filter(item => item.yielded).length } : null,
   queue: { count: effects.length, byKind: groups, oldestDue: oldestDue === undefined ? null : new Date(oldestDue).toISOString(), oldestDueAgeMs: oldestDue === undefined ? null : Math.max(0, Date.now() - oldestDue) },

@@ -14,7 +14,7 @@ const runId = 'f77c172b-b594-4138-a8f6-a6201fac31d3';
 const now = 100000;
 const status = { installed: true, running: true, ready: true, pid: 100, childPid: 101 };
 const runtime = { healthProtocol: 1, runId, pid: 100, childPid: 101, owner: { pid: 100 }, childOwner: { pid: 101 }, startedAt: new Date(now - 1000).toISOString() };
-const business = { available: true, machineReady: true, paused: false, active: false, activeIncidents: 0, modelWaits: 0, sources: [{ id: 'github:explicit', state: 'healthy', lastSuccess: new Date(now).toISOString() }] };
+const business = { available: true, observedAt: new Date(now).toISOString(), machineReady: true, paused: false, active: false, activeIncidents: 0, modelWaits: 0, sources: [{ id: 'github:explicit', state: 'healthy', lastSuccess: new Date(now).toISOString() }] };
 const message = { type: 'js-superagent:heartbeat', runId, sequence: 1, business };
 const heartbeat = acceptServiceHeartbeat(message, { runId, pid: 100, childPid: 101, now });
 const health = patch => evaluateServiceHealth({ status, runtime, heartbeat, now, ownerState: () => 'alive', ...patch });
@@ -35,6 +35,26 @@ test('process incarnation and run identity prevent stale receipts from proving c
   assert.equal(health({ ownerState: () => 'unknown' }).state, 'unobserved');
   assert.equal(health({ ownerState: owner => owner.pid === 101 ? 'dead' : 'alive' }).state, 'stalled');
   assert.equal(health({ heartbeat: { ...heartbeat, receivedAt: new Date(now + 2000).toISOString() } }).state, 'unobserved');
+});
+
+test('a fresh heartbeat cannot turn missing or stale owner observations into healthy business', () => {
+  const withObservedAt = observedAt => health({ heartbeat: { ...heartbeat, business: { ...business, observedAt } } });
+  assert.equal(withObservedAt(null).reason, 'business-observation-pending');
+  assert.equal(withObservedAt(new Date(now - 2000).toISOString()).reason, 'business-observation-pending');
+  assert.equal(withObservedAt(new Date(now + 2000).toISOString()).reason, 'business-observation-stale');
+  const stale = health({ now: now + 20001, heartbeat: { ...heartbeat, receivedAt: new Date(now + 20001).toISOString() } });
+  assert.equal(stale.state, 'degraded'); assert.equal(stale.reason, 'business-observation-stale');
+});
+
+test('service diagnostics separate live connection and failed history without copying scope or error text', () => {
+  const source = { id: 'feishu', state: 'degraded', lastSuccess: new Date(now).toISOString(), live: { state: 'ready', healthy: true },
+    history: { state: 'degraded', healthy: false, issues: [{ code: 230027, scope: 'oc_PRIVATE', error: 'SECRET', container: { id: 'oc_PRIVATE' } }] } };
+  const accepted = acceptServiceHeartbeat({ ...message, business: { ...business, sources: [source] } }, { runId, pid: 100, childPid: 101, now });
+  const result = health({ heartbeat: accepted });
+  assert.equal(result.state, 'degraded');
+  assert.deepEqual(result.business.sources[0].live, { state: 'ready', healthy: true });
+  assert.deepEqual(result.business.sources[0].history, { state: 'degraded', healthy: false, failedScopes: 1, codes: [230027] });
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE|SECRET/);
 });
 
 test('business pause, provider/source faults and stopped states remain distinct without a restart action', () => {
@@ -63,9 +83,9 @@ test('wrapper only accepts fresh sequence from its run and persists a bounded di
 test('CLI publisher reports actual runtime snapshots, disposes timer and is inert outside wrapper IPC', () => {
   let callback, cancelled = 0; const sent = [];
   const host = { env: { JS_SUPERAGENT_SERVICE_RUN_ID: runId }, connected: true, send: value => sent.push(value) };
-  const execution = { status: () => ({ paused: true, active: false, machine: { ready: true }, lastError: 'SECRET' }), businessHealth: () => ({ sources: business.sources, incidents: [], models: [] }) };
+  const execution = { status: () => ({ paused: true, active: false, machine: { ready: true }, lastError: 'SECRET' }), businessHealth: () => ({ at: business.observedAt, sources: business.sources, incidents: [], models: [] }) };
   const stop = startServiceHeartbeat(execution, { host, setInterval: fn => { callback = fn; return {}; }, clearInterval: () => { cancelled++; } });
-  assert.equal(sent.length, 1); assert.equal(sent[0].business.paused, true); assert.equal(JSON.stringify(sent).includes('SECRET'), false);
+  assert.equal(sent.length, 1); assert.equal(sent[0].business.paused, true); assert.equal(sent[0].business.observedAt, business.observedAt); assert.equal(JSON.stringify(sent).includes('SECRET'), false);
   callback(); assert.equal(sent[1].sequence, 2); stop(); stop(); callback(); assert.equal(sent.length, 2); assert.equal(cancelled, 1);
   startServiceHeartbeat(execution, { host: { env: {} }, setInterval: () => { throw new Error('must not schedule'); } })();
 });
@@ -76,7 +96,7 @@ test('service manager health observes the actual wrapper heartbeat and does not 
   const codex = join(base, 'codex'), cliPath = join(base, 'healthy-cli.mjs'); writeFileSync(codex, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
   initializeProjectConfig(root, { execution: { driver: 'codex-app-server', executable: codex } });
   const helperUrl = new URL('../src/service-health.mjs', import.meta.url).href;
-  writeFileSync(cliPath, `import {startServiceHeartbeat} from ${JSON.stringify(helperUrl)};const stop=startServiceHeartbeat({status:()=>({machine:{ready:true},paused:true}),businessHealth:()=>({sources:[],models:[],incidents:[]})});process.send({type:'js-superagent:ready'});setTimeout(()=>{stop();process.exit(0)},40);`);
+  writeFileSync(cliPath, `import {startServiceHeartbeat} from ${JSON.stringify(helperUrl)};const stop=startServiceHeartbeat({status:()=>({machine:{ready:true},paused:true}),businessHealth:()=>({at:new Date().toISOString(),sources:[],models:[],incidents:[]})});process.send({type:'js-superagent:ready'});setTimeout(()=>{stop();process.exit(0)},40);`);
   const calls = []; let loaded = null;
   const deps = { platform: 'darwin', uid: 501, coordinationDirectory: join(base, 'machine'), ownerState: () => 'alive', launchctl(args) { calls.push(args); if (args[0] === 'print') { if (!loaded) throw Object.assign(new Error('missing'), { stderr: 'Could not find service', status: 113 }); return `state = running\npid = ${loaded.pid}`; } return ''; } };
   const manager = createServiceManager({ projectRoot: root, homeDirectory: home, cliPath }, deps); manager.install();

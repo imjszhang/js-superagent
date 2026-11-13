@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { sourceDiagnostic } from '../sources.mjs';
 
 const timestamp = value => typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : value?.at ? Date.parse(value.at) : NaN;
 const bounded = value => String(value ?? '').slice(0, 200);
@@ -40,10 +41,19 @@ export class BusinessHealthRegistry {
         else if (!failed && Number.isFinite(success) && success !== previous.success) consecutiveFailures = 0;
         const since = Number.isFinite(success) ? success : timestamp(source.startedAt ?? previous.firstObservedAt ?? at);
         const stale = snapshot.running !== false && source.enabled !== false && clock - since > staleAfter;
-        const state = source.enabled === false ? 'disabled' : snapshot.running === false ? 'stopped' : stale ? 'stale' : consecutiveFailures >= 3 ? 'degraded' : Number.isFinite(success) ? 'healthy' : 'starting';
-        observations.sources[source.id] = { attempt: Number.isFinite(attempt) ? attempt : null, success: Number.isFinite(success) ? success : null, firstObservedAt: previous.firstObservedAt ?? at, consecutiveFailures };
-        if (['stale', 'degraded'].includes(state)) problems.set(`source:${source.id}`, { kind: state === 'stale' ? 'source-stale' : 'source-failures', subject: source.id, severity: 'error', summary: state === 'stale' ? 'Source has not synchronized within its expected interval' : 'Source has failed at least three consecutive polls', action: 'Inspect source credentials, connection and synchronization logs', facts: { consecutiveFailures, staleAfterMs: staleAfter, lastSuccess: Number.isFinite(success) ? new Date(success).toISOString() : null } });
-        return { id: source.id, state, healthy: state === 'healthy', enabled: source.enabled !== false, lastAttempt: Number.isFinite(attempt) ? new Date(attempt).toISOString() : null, lastSuccess: Number.isFinite(success) ? new Date(success).toISOString() : null, consecutiveFailures, staleAfterMs: staleAfter };
+        const historyState = source.enabled === false ? 'disabled' : snapshot.running === false ? 'stopped' : stale ? 'stale' : consecutiveFailures >= 3 ? 'degraded' : Number.isFinite(success) ? 'healthy' : 'starting';
+        const connection = ['starting', 'ready', 'reconnecting', 'error', 'stopped'].includes(source.connection) ? source.connection : null;
+        const liveFailed = connection !== null && snapshot.running !== false && source.enabled !== false && ['error', 'stopped'].includes(connection);
+        const liveStarting = connection === 'starting' || connection === 'reconnecting';
+        const state = ['disabled', 'stopped', 'stale'].includes(historyState) ? historyState
+          : liveFailed || connection !== null && failed ? 'degraded' : liveStarting ? 'starting' : historyState;
+        const issues = connection === null ? [] : Array.isArray(source.error) ? source.error.slice(0, 100).map(sourceDiagnostic) : [];
+        observations.sources[source.id] = { attempt: Number.isFinite(attempt) ? attempt : previous.attempt ?? null, success: Number.isFinite(success) ? success : null, firstObservedAt: previous.firstObservedAt ?? at, consecutiveFailures };
+        if (['stale', 'degraded'].includes(historyState) || liveFailed) problems.set(`source:${source.id}`, { kind: historyState === 'stale' ? 'source-stale' : liveFailed ? 'source-connection' : 'source-failures', subject: source.id, severity: 'error', summary: historyState === 'stale' ? 'Source has not synchronized within its expected interval' : liveFailed ? 'Source live connection is unavailable' : 'Source has failed at least three consecutive polls', action: 'Inspect source credentials, connection and synchronization logs', facts: { consecutiveFailures, staleAfterMs: staleAfter, lastSuccess: Number.isFinite(success) ? new Date(success).toISOString() : null, ...(connection === null ? {} : { connection, historyIssues: issues }) } });
+        const times = { lastAttempt: Number.isFinite(attempt) ? new Date(attempt).toISOString() : null, lastSuccess: Number.isFinite(success) ? new Date(success).toISOString() : null };
+        return { id: source.id, state, healthy: state === 'healthy', enabled: source.enabled !== false, ...times, consecutiveFailures, staleAfterMs: staleAfter,
+          ...(connection === null ? {} : { connection, live: { state: connection, healthy: connection === 'ready' && source.enabled !== false && snapshot.running !== false },
+            history: { state: failed && !['disabled', 'stopped', 'stale'].includes(historyState) ? 'degraded' : historyState, healthy: !failed && historyState === 'healthy', ...times, consecutiveFailures, issues } }) };
       });
       if (snapshot.running !== false && !snapshot.paused) {
         for (const item of (snapshot.queue ?? []).slice(0, 1000)) {
