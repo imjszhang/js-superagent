@@ -78,7 +78,7 @@ import { migrateLegacy } from './migration.mjs';
 import { DEFAULT_EXECUTION_DRIVER, initializeProjectConfig, readProjectConfig, mergeProjectConfig, writeProjectConfig, validateProjectOptions } from './config.mjs';
 import { prepareWorkspace, prepareChildWorkspaceSnapshot, prepareContinuationWorkspace, inspectContinuationWorkspace, inspectWorkspace as inspectProjectWorkspace } from './workspaces.mjs';
 import { createHarnessRegistry } from './harness/registry.mjs';
-import { validatePolicyConfig, normalizeGitHubActorTrigger } from './policy.mjs';
+import { validatePolicyConfig, normalizeGitHubActorTrigger, retainedFeishuSupplementAllowed } from './policy.mjs';
 import { observeGitHubCi } from './runtime/github-ci-observation.mjs';
 import { createGitHubChannel, isGitHubReceipt } from './channels/github.mjs';
 import { createFeishuConnection, readFeishuAppSecret, FEISHU_TOPIC_HORIZON_MS } from './channels/feishu.mjs';
@@ -725,6 +725,16 @@ export class ProjectRuntime {
     }
     if (!admission.admissible) {
       if (deliverContext().delivered) return 'stored';
+      if (['observation-disabled', 'admission-disabled'].includes(admission.reason) &&
+          retainedFeishuSupplementAllowed(this.#policy(), this.#config().feishu, trigger)) {
+        // Keep the original input for the existing thread Eval. Retention never
+        // promotes its authority or bypasses per-ticket delivery checks.
+        const result = this.#engine.receive(trigger, { ticketIds: [] });
+        if (result === 'stored') this.#store.setMeta(`feishu:retained:${trigger.id}`, {
+          version: 1, digest: createHash('sha256').update(JSON.stringify(this.#store.triggers.get(trigger.id))).digest('hex'),
+        });
+        return result;
+      }
       if (!this.#botReviewGate(trigger).allowed) trigger.meta.botReview = this.#botReviewGate(trigger, { reserve: true });
       this.#store.triggers.save(trigger);
       this.#store.triggers.saveDisposition(trigger.id, {filtered:{code:admission.reason},fanout:[],
@@ -1745,6 +1755,19 @@ export class ProjectRuntime {
       .finally(() => { this.#assessing = undefined; });
     return this.#assessing;
   }
+  #assertRetainedFeishuInputs(candidate) {
+    for (const input of candidate.triggers) {
+      const retained = this.#store.getMeta(`feishu:retained:${input.id}`);
+      if (!retained) continue;
+      const trigger = this.#store.triggers.get(input.id);
+      if (retained.version !== 1 || retained.digest !== createHash('sha256').update(JSON.stringify(trigger ?? null)).digest('hex') ||
+          !retainedFeishuSupplementAllowed(this.#policy(), this.#config().feishu, trigger)) {
+        throw Object.assign(new Error('Retained Feishu supplement is no longer authorized in its original topic'), {
+          triggerId: input.id, failureKind: 'authority', code: 'assessment_authority', retryable: false,
+        });
+      }
+    }
+  }
   async #assess(candidate) {
     if (this.#stopping || this.isPaused()) throw new Later('Coordination is paused or stopping');
     const settings = this.#coordinator.current();
@@ -1783,6 +1806,7 @@ export class ProjectRuntime {
     let outcome, progress = {};
     const recordBase = { runId, evalId: candidate.evalId, policyVersion: candidate.policyVersion, triggerIds: candidate.triggers.map(trigger => trigger.id) };
     try {
+      this.#assertRetainedFeishuInputs(candidate);
       assessor = assessorOptions && this.#machine.driver(this.#harnessRegistry.createAssessor(assessorOptions), 'coordinator');
       if (!assessor) throw Object.assign(new Error('No semantic assessor configured'), { code: 'assessment_configuration' });
       if (candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id)))
@@ -1865,6 +1889,7 @@ export class ProjectRuntime {
         return result;
       };
       const result = guard(()=>{
+        this.#assertRetainedFeishuInputs(candidate);
         links.verify();
         if(this.#materialSessionScope(materialEvents)!==materialSession)throw new AssessmentContextChanged('material-session');
         if(materialReader)materialReader.verify();

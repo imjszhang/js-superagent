@@ -86,6 +86,29 @@ export function normalizeGitHubActorTrigger(policyOrConfig, trigger) {
   } } };
 }
 
+/** Retention only: a configured human's normalized topic reply grants no new work authority. */
+export function retainedFeishuSupplementAllowed(policy, feishu, trigger) {
+  const settings = policy?.settings;
+  if (!settings || !feishu || feishu.enabled === false || trigger?.source !== 'feishu' ||
+      trigger.actor?.source !== 'feishu' || trigger.human !== true || trigger.addressed ||
+      trigger.meta?.operator || trigger.meta?.contextOnly || trigger.actor.id === feishu.botOpenId) return false;
+  const meta = trigger.meta ?? {}, channel = trigger.channel, address = channel?.address;
+  if (meta.tenantKey !== feishu.tenantKey || !/^ou_[A-Za-z0-9_-]{1,200}$/.test(trigger.actor.id) ||
+      !/^om_[A-Za-z0-9_-]{1,200}$/.test(meta.messageId ?? '') || !/^om_[A-Za-z0-9_-]{1,200}$/.test(meta.rootId ?? '') ||
+      meta.parentId !== undefined && !/^om_[A-Za-z0-9_-]{1,200}$/.test(meta.parentId) ||
+      meta.threadId !== undefined && !/^omt?_[A-Za-z0-9_-]{1,200}$/.test(meta.threadId) ||
+      meta.rootId === meta.messageId && !meta.parentId) return false;
+  const chat = feishu.chats?.find(item => item.chatId === meta.chatId);
+  if (!chat || !['group', 'topic_group'].includes(chat.type) || meta.chatType !== chat.type) return false;
+  const thread = `${meta.tenantKey}:${meta.chatId}:${meta.rootId}`;
+  if (trigger.id !== `feishu:${meta.tenantKey}:${meta.messageId}` || trigger.threads?.length !== 1 ||
+      trigger.threads[0].source !== 'feishu' || trigger.threads[0].id !== thread || channel?.source !== 'feishu' ||
+      channel.thread !== thread || address?.tenantKey !== meta.tenantKey || address.chatId !== meta.chatId ||
+      address.messageId !== meta.rootId || address.sourceId !== 'feishu') return false;
+  const row = matchingRow(settings, trigger);
+  return !!row && hasIdentity(row.actors, trigger.actor.id, 'feishu') && !hasIdentity(row.bots, trigger.actor.id, 'feishu');
+}
+
 /** Existing explicit authorization remains authoritative; new observation is opt-in. */
 export function createRuntimePolicy({ config = {}, version, paused = false, explicitGate = () => ({ admissible: false, reason: 'not-authorized' }), revalidateExplicit = () => false } = {}) {
   const settings = validatePolicyConfig(config);

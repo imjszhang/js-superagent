@@ -172,7 +172,9 @@ test('history receives an unrelated unaddressed topic reply without granting a n
   try {
     assert.ok(verify.prepare('SELECT data FROM domain_triggers WHERE id = ?').get('feishu:tenant:om_unaddressed_history'), 'the reply arrived; a zero ticket count alone is not sufficient');
     const disposition = JSON.parse(verify.prepare('SELECT data FROM domain_dispositions WHERE id = ?').get('feishu:tenant:om_unaddressed_history').data);
-    assert.ok(disposition.filtered); assert.deepEqual(disposition.fanout, []);
+    assert.equal(disposition.filtered, undefined); assert.deepEqual(disposition.fanout, []);
+    const decision = JSON.parse(verify.prepare('SELECT data FROM domain_decisions WHERE id = ?').get(disposition.decisionId).data);
+    assert.equal(decision.kind, 'ignore', 'retained ordinary context still cannot independently authorize work');
   } finally { verify.close(); }
 });
 

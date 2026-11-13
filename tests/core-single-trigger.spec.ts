@@ -75,7 +75,6 @@ describe('single-trigger decisions', () => {
     const h = harness()
     const candidate = h.batch(trigger('denied', 'blocked'), trigger('allowed'))
     expect(candidate.triggers).toHaveLength(2)
-    expect(() => h.close(candidate, 'denied')).toThrow(new UserError('notAdmissible', { reason: 'sender denied' }))
     expect(h.decisions()).toEqual([])
     const result = h.engine.decideTrigger('denied', { kind: 'unavailable', evalId: candidate.evalId, reason: 'Answer not authorized' })
     expect(result).toMatchObject({ kind: 'unavailable', triggerIds: ['denied'], strength: 'inferred', audit: {
@@ -85,6 +84,20 @@ describe('single-trigger decisions', () => {
     h.engine.evaluateDue()
     expect(h.requests[1]?.triggers.map(t => t.id)).toEqual(['allowed'])
     expect(h.close(h.requests[1]!)).toMatchObject({ triggerIds: ['allowed'] })
+  })
+
+  it('can ignore a retained input without lending it its authorized sibling strength', () => {
+    const h = harness()
+    const candidate = h.batch(trigger('note', 'blocked'), trigger('request'))
+    const decision = h.engine.decideTrigger('note', { kind: 'ignore', evalId: candidate.evalId, reason: 'Unrelated input' })
+    expect(decision).toMatchObject({ kind: 'ignore', triggerIds: ['note'], strength: 'inferred', audit: {
+      triggerDecision: { gate: { admissible: false, reason: 'sender denied' }, owners: [] },
+    } })
+    expect(decision.mandate).toBeUndefined()
+    expect(h.repo.tickets.list()).toEqual([])
+    h.engine.evaluateDue()
+    expect(h.requests[1]).toMatchObject({ strength: 'explicit', triggers: [{ id: 'request' }] })
+    expect(() => h.close(candidate, 'request')).toThrow(UserError)
   })
 
   it('rejects old evals, changed policy, missing eval IDs, and repeat closures without state changes', () => {
@@ -146,6 +159,10 @@ describe('single-trigger decisions', () => {
     h.engine.deliverSubscribed('a', [ticketId])
     const ticket = h.repo.tickets.get(ticketId)
     expect(() => h.close(candidate, 'a')).toThrow(new UserError('workerDecides', { tickets: ticketId }))
+    const gate = h.policy.gate
+    h.policy.gate = () => ({ admissible: false, reason: 'observation-disabled' })
+    expect(() => h.close(candidate, 'a')).toThrow(new UserError('workerDecides', { tickets: ticketId }))
+    h.policy.gate = gate
     expect(h.decisions()).toEqual([])
     const result = h.engine.decideTrigger('a', { kind: 'unavailable', evalId: candidate.evalId, reason: 'Worker now owns this question' })
     expect(result.audit).toMatchObject({ triggerDecision: { owners: [ticketId] } })
@@ -179,6 +196,8 @@ describe('single-trigger decisions', () => {
     expect(() => h.engine.decideTrigger('a', { kind: 'accept', evalId: candidate.evalId, title: 'x', scope: 'x', reason: 'x' })).toThrow('Single-trigger decisions')
     // @ts-expect-error The per-input command cannot stop tickets.
     expect(() => h.engine.decideTrigger('a', { kind: 'stop', evalId: candidate.evalId, ticketId: 'x', reason: 'x' })).toThrow('Single-trigger decisions')
+    // @ts-expect-error The per-input command cannot route work either.
+    expect(() => h.engine.decideTrigger('a', { kind: 'attach', evalId: candidate.evalId, ticketId: 'x', reason: 'x' })).toThrow('Single-trigger decisions')
     expect(h.thread()).toEqual(before)
   })
 })
