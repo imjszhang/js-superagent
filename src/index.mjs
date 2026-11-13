@@ -138,8 +138,8 @@ export function createProjectAgent(options) { return new ProjectRuntime(options)
 export class ProjectRuntime {
   #store; #engine; #effects; #outbox; #executionOverride; #overrides; #harnessRegistry;
   #githubChannel; #channelCache; #syncing; #flushing; #cycle; #linking; #webhooks; #ingress; #coordinator; #basePolicy; #assessing; #assessmentAbort; #operation; #operationAbort; #sources; #lane = 0; #children = []; #externalSources; #activeDriver; #liveSending;
-  #busy = false; #retainLock = false; #runError; #inflight; #controller; #timer; #loop; #stopping = false; #lastError; #loopToken;
-  #repositoryRequest; #repositorySourceId; #feishuSDK; #feishuConnection; #feishuSourceId; #feishuState = 'stopped';
+  #busy = false; #retainLock = false; #runError; #inflight; #controller; #timer; #loop; #stopping = false; #stopPromise; #lastError; #loopToken;
+  #repositoryRequest; #repositorySourceId; #feishuSDK; #feishuConnection; #feishuConnecting; #feishuGeneration = 0; #feishuSourceId; #feishuState = 'stopped';
   #jobSweep; #machine; #machineDependencies; #machineHeld = false; #machineWrapped = false; #machineReady = false; #machineRetryAt = 0; #machinePreparing; #guardChannels = new WeakMap(); #guardianIdentities = new Map();
   #controlMethods = new Map(); #controlsDrain; #changeWatches = new Set();
   constructor({ projectRoot, driver, harnessRegistry, workspace, execution, github, githubChannel, repositoryRequest, assessor, sources = [], feishuSDK, [WORKER_LANE]: lane = 0, [MACHINE_DEPENDENCIES]: machineDependencies, [MACHINE_GUARD]: machineGuard } = {}) {
@@ -515,13 +515,14 @@ export class ProjectRuntime {
   }
   #ensureMachineReady() {
     if (this.#machineReady && this.#machine.isReady()) return Promise.resolve();
-    this.#machinePreparing ??= this.#machine.ready().then(() => { this.#machineReady = true; }).finally(() => { this.#machinePreparing = undefined; });
+    this.#machinePreparing ??= this.#machine.ready().then(() => { if (!this.#stopping) this.#machineReady = true; }).finally(() => { this.#machinePreparing = undefined; });
     return this.#machinePreparing;
   }
   async prepareExecution() {
+    if (this.#stopping) throw new Error('Runtime is stopping; await stop() before preparing execution');
     if (!this.#machineHeld) { this.#machine.hold(); this.#machineHeld = true; }
-    try { await this.#ensureMachineReady(); await this.#connectFeishu(); return this.machineStatus(); }
-    catch(error) { if (!this.#loop) { this.#machineHeld=false; this.#machine.unhold(); } throw error; }
+    try { await this.#ensureMachineReady(); await this.#connectFeishu(); if (this.#stopping) throw new Error('Runtime stopped during preparation'); return this.machineStatus(); }
+    catch(error) { if (!this.#loop && !this.#stopping) { this.#machineHeld=false; this.#machine.unhold(); } throw error; }
   }
   machineStatus() { this.#db(); return { ...this.#machine.status(), readOnly: this.#store.readOnly, ready: this.#machineReady && this.#machine.isReady() }; }
   githubBindingStatus() {
@@ -583,7 +584,7 @@ export class ProjectRuntime {
     });
   }
   registerSource(adapter) { this.#db(); this.#sources.register(adapter); return this; }
-  receiveSourceEvent(id, event) { this.#advanceSchema(9); return this.#sources.ingest(id, event); }
+  receiveSourceEvent(id, event) { if (this.#stopping) throw new Error('Runtime is stopping; source intake is closed'); this.#advanceSchema(9); return this.#sources.ingest(id, event); }
   sourceStatus() {
     this.#db();
     return this.#sources.status().map(source => source.id === this.#feishuSourceId ? { ...source, connection: this.#feishuState } : source);
@@ -598,11 +599,16 @@ export class ProjectRuntime {
     this.#feishuState = state;
     try { this.#store?.setMeta('feishu:connection', { state, at: this.#now() }); } catch { /* Read-only inspection must not drop the live socket. */ }
   }
-  async #connectFeishu() {
-    if (this.#lane !== 0 || this.#feishuConnection || this.#stopping) return;
+  #connectFeishu() {
+    if (this.#feishuConnecting) return this.#feishuConnecting;
+    if (this.#lane !== 0 || this.#feishuConnection || this.#stopping) return Promise.resolve();
     const config = this.#config().feishu;
-    if (!config || config.enabled === false) return;
+    if (!config || config.enabled === false) return Promise.resolve();
+    const generation = ++this.#feishuGeneration;
+    const current = () => !this.#stopping && this.#feishuGeneration === generation;
+    const connecting = (async () => { try {
     const sdk = this.#feishuSDK ?? await import('@larksuiteoapi/node-sdk');
+    if (!current()) return;
     const connection = await createFeishuConnection({ ...config, appSecret: readFeishuAppSecret(config), scopes: config.chats, sdk, id: 'feishu',
       operatorChatId: () => this.#store.getMeta(OPERATOR_CHAT_KEY)?.chatId,
       trackedThreads: () => {
@@ -622,25 +628,31 @@ export class ProjectRuntime {
           return [{ chatId, rootId, since, lastAt, ...(origin ? { threadId: origin.meta.threadId } : {}) }];
         });
       } });
+    if (!current()) { await connection.stop(); return; }
     this.#sources.register(connection.source);
     this.#feishuSourceId = connection.source.id;
     this.#feishuConnection = connection;
     this.#setFeishuState('starting');
     await connection.start({
-      receive: data => { this.receiveSourceEvent('feishu', data); },
-      ...(config.operator ? { cardAction: data => this.receiveFeishuCardAction(data) } : {}),
-      onState: state => this.#setFeishuState(state),
-      onError: () => this.#setFeishuState('error'),
+      receive: data => { if (!current()) throw new Error('Feishu connection is stopped'); return this.receiveSourceEvent('feishu', data); },
+      ...(config.operator ? { cardAction: data => { if (!current()) throw new Error('Feishu connection is stopped'); return this.receiveFeishuCardAction(data); } } : {}),
+      onState: state => { if (current()) this.#setFeishuState(state); },
+      onError: () => { if (current()) this.#setFeishuState('error'); },
     });
+    if (!current()) await connection.stop();
+    } catch (error) { if (current()) this.#setFeishuState('error'); throw error; }
+    })().finally(() => { if (this.#feishuConnecting === connecting) this.#feishuConnecting = undefined; });
+    this.#feishuConnecting = connecting;
+    return connecting;
   }
   async #disconnectFeishu() {
     const connection = this.#feishuConnection;
-    this.#feishuConnection = undefined;
-    if (connection) await connection.stop().catch(() => {});
+    if (connection) await connection.stop();
     if (this.#feishuSourceId && this.#sources) {
-      try { this.#sources.unregister(this.#feishuSourceId); } catch { /* A poll still owns the adapter; stop() releases it before close. */ }
+      this.#sources.unregister(this.#feishuSourceId);
       this.#feishuSourceId = undefined;
     }
+    this.#feishuConnection = undefined;
     // Only the process that held the connection may report it stopped; inspection clients never connected.
     if (connection) this.#setFeishuState('stopped');
   }
@@ -5703,7 +5715,7 @@ export class ProjectRuntime {
     this.#children = Array.from({length: capacity - 1}, (_, index) => new ProjectRuntime({ projectRoot: this.projectRoot,
       execution: this.#executionOverride, harnessRegistry: this.#harnessRegistry, ...this.#overrides, githubChannel: this.#githubChannel, [MACHINE_GUARD]: this.#machine, [WORKER_LANE]: index + 1 }).init());
     const failed = error => { this.#lastError = String(error?.message ?? error); const owner=this.#store?.getMeta('runtime:loop'); if(owner?.token===this.#loopToken)this.#store.setMeta('runtime:loop',{...owner,lastError:this.#lastError}); };
-    void this.#connectFeishu().catch(error => { this.#setFeishuState('error'); failed(error); });
+    void this.#connectFeishu().catch(error => { if (!this.#stopping) failed(error); });
     const tick = () => {
       if (this.#stopping) return;
       try { this.#machine.assert(); } catch(error) { failed(error); this.#controller?.abort(); this.#assessmentAbort?.abort(); return; }
@@ -5738,18 +5750,36 @@ export class ProjectRuntime {
       throw error;
     }
   }
-  async stop() {
-    if(this.#store?.readOnly)return;
+  stop() {
+    if(this.#store?.readOnly)return Promise.resolve();
+    if(this.#stopPromise)return this.#stopPromise;
     clearInterval(this.#loop); this.#loop = undefined;
-    this.#machineReady = false; this.#stopping = true; this.#controller?.abort(); this.#assessmentAbort?.abort(); this.#operationAbort?.abort();
-    try { await Promise.all([this.#controlsDrain, this.#inflight, this.#cycle, this.#syncing, this.#flushing, this.#linking, this.#webhooks, this.#ingress, this.#assessing, this.#operation, this.#sources.stop(), ...this.#children.map(worker => worker.stop())]); await this.#disconnectFeishu(); await this.#sweepManaged(); await this.#sweepNative(); } finally { this.#releaseLoop(); if(this.#machineHeld){this.#machineHeld=false;this.#machine.unhold();} this.#machine.releaseIdle(); this.#stopping = false; }
+    this.#machineReady = false; this.#stopping = true; this.#feishuGeneration++;
+    this.#controller?.abort(); this.#assessmentAbort?.abort(); this.#operationAbort?.abort();
+    // Close ingress and cancel reads immediately, before waiting on any executor or outbound response.
+    const connectionStop = this.#feishuConnection?.stop();
+    this.#stopPromise = (async () => {
+      const drained = await Promise.allSettled([connectionStop, this.#feishuConnecting, this.#machinePreparing,
+        this.#controlsDrain, this.#inflight, this.#cycle, this.#syncing, this.#flushing, this.#linking, this.#webhooks, this.#ingress,
+        this.#assessing, this.#operation, this.#sources?.stop(), ...this.#children.map(worker => worker.stop())]);
+      const failures = drained.filter(result => result.status === 'rejected').map(result => result.reason);
+      if (failures.length) throw new AggregateError(failures, 'Runtime stop did not complete; inspect active ownership before restarting');
+      await this.#disconnectFeishu();
+      const cleaned = await Promise.allSettled([this.#sweepManaged(), this.#sweepNative()]);
+      const cleanupFailures = cleaned.filter(result => result.status === 'rejected').map(result => result.reason);
+      if (cleanupFailures.length) throw new AggregateError(cleanupFailures, 'Runtime cleanup did not complete; inspect ownership before restarting');
+      this.#releaseLoop();
+      if(this.#machineHeld){this.#machineHeld=false;this.#machine.unhold();}
+      this.#machine?.releaseIdle(); this.#machineReady = false; this.#stopping = false;
+    })().finally(() => { this.#stopPromise = undefined; });
+    return this.#stopPromise;
   }
   #releaseLoop() {
     if(this.#store && this.#loopToken) this.#store.atomic(()=>{if(this.#store.getMeta('runtime:loop')?.token===this.#loopToken)this.#store.deleteMeta('runtime:loop');});
     this.#loopToken=undefined;
   }
   close() {
-    if (this.#busy || this.#cycle || this.#syncing || this.#flushing || this.#linking || this.#webhooks || this.#ingress || this.#assessing || this.#operation || this.#controlsDrain || (this.#store && this.sourceStatus().some(source => source.active))) throw new Error('Cancel active work and await runNext()/syncGitHub()/stop() before closing');
+    if (this.#stopping || this.#stopPromise || this.#feishuConnecting || this.#busy || this.#cycle || this.#syncing || this.#flushing || this.#linking || this.#webhooks || this.#ingress || this.#assessing || this.#operation || this.#controlsDrain || (this.#store && this.sourceStatus().some(source => source.active))) throw new Error('Cancel active work and await runNext()/syncGitHub()/stop() before closing');
     if(this.#nativePool().size)throw new Error('Await stop() to close native background ownership before closing');
     if(this.#jobsPool().size)throw new Error('Await stop() to close assignment-owned background jobs before closing');
     for (const unsubscribe of this.#changeWatches) unsubscribe();

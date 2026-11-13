@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { createFeishuTransport, FEISHU_HANDSHAKE_TIMEOUT_MS } from './feishu-transport.mjs';
 
 const require = createRequire(import.meta.url);
 export function feishuSdkAvailable() {
@@ -90,7 +91,7 @@ export function readFeishuAppSecret(config = {}) {
 
 /** Uses an authenticated official SDK client. normalize() accepts only verified SDK events or API results. */
 export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId, tenantKey, scopes, operator, operatorChatId = () => undefined,
-  trackedThreads = () => [], now = () => Date.now(), maxPages = 10, pollIntervalMs = 60_000 } = {}) {
+  trackedThreads = () => [], now = () => Date.now(), maxPages = 10, pollIntervalMs = 60_000, transport } = {}) {
   if (!/^[a-zA-Z0-9_.:-]{1,128}$/.test(id)) throw new Error('Invalid Feishu source id');
   identifier(botOpenId, 'ou_', 'bot open ID');
   if (botAppId !== undefined) identifier(botAppId, 'cli_', 'bot app ID');
@@ -98,6 +99,8 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
   if (typeof tenantKey !== 'string' || !tenantKey || tenantKey.length > 256) throw new Error('Feishu tenantKey is required');
   const api = client?.im?.message ?? client?.im?.v1?.message;
   if (!api || !['list', 'get', 'reply'].every(key => typeof api[key] === 'function')) throw new Error('Feishu source requires an authenticated message API client');
+  const read = (method, payload, signal) => transport ? transport.read(() => api[method](payload), { signal }) : api[method](payload);
+  const write = (method, payload) => transport ? transport.write(() => api[method](payload)) : api[method](payload);
   if (!Array.isArray(scopes) || !scopes.length || scopes.length > 100) throw new Error('Feishu scopes must list 1 to 100 chats');
   const allowed = new Map(scopes.map(scope => {
     identifier(scope.chatId, 'oc_', 'chat ID');
@@ -183,22 +186,22 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
     if (address.updateMessageId) {
       identifier(address.updateMessageId, 'om_', 'card message ID');
       if (!knownChat || address.chatId !== knownChat || typeof api.patch !== 'function') throw new Error('Feishu card update is outside the operator conversation');
-      const target = requireSuccess(await api.get({ path: { message_id: address.updateMessageId } }), 'Feishu card target');
+      const target = requireSuccess(await read('get', { path: { message_id: address.updateMessageId } }), 'Feishu card target');
       if (!target.items?.some(item => item.message_id === address.updateMessageId && item.chat_id === knownChat)) throw new Error('Feishu card does not belong to the operator conversation');
-      requireSuccess(await api.patch({ path: { message_id: address.updateMessageId }, data: { content: body(message).content } }), 'Feishu card update');
+      requireSuccess(await write('patch', { path: { message_id: address.updateMessageId }, data: { content: body(message).content } }), 'Feishu card update');
       return { id: address.updateMessageId, url: '', source: 'feishu', messageId: address.updateMessageId, chatId: knownChat, uuid };
     }
     if (address.messageId) {
       identifier(address.messageId, 'om_', 'reply message ID');
       if (!knownChat || address.chatId !== knownChat) throw new Error('Feishu reply is outside the operator conversation');
-      const target = requireSuccess(await api.get({ path: { message_id: address.messageId } }), 'Feishu reply target');
+      const target = requireSuccess(await read('get', { path: { message_id: address.messageId } }), 'Feishu reply target');
       if (!target.items?.some(item => item.message_id === address.messageId && item.chat_id === knownChat)) throw new Error('Feishu reply target does not belong to the operator conversation');
-      const data = requireSuccess(await api.reply({ path: { message_id: address.messageId }, data: { ...body(message), reply_in_thread: false, uuid } }), 'Feishu reply');
+      const data = requireSuccess(await write('reply', { path: { message_id: address.messageId }, data: { ...body(message), reply_in_thread: false, uuid } }), 'Feishu reply');
       const messageId = identifier(data.message_id, 'om_', 'receipt message ID');
       return { id: messageId, url: '', source: 'feishu', messageId, chatId: knownChat, uuid };
     }
     if (address.openId !== operatorOpenId || typeof api.create !== 'function') throw new Error('Feishu direct message is outside the operator conversation');
-    const data = requireSuccess(await api.create({ params: { receive_id_type: 'open_id' }, data: { receive_id: operatorOpenId, ...body(message), uuid } }), 'Feishu direct message');
+    const data = requireSuccess(await write('create', { params: { receive_id_type: 'open_id' }, data: { receive_id: operatorOpenId, ...body(message), uuid } }), 'Feishu direct message');
     const messageId = identifier(data.message_id, 'om_', 'receipt message ID'), chatId = identifier(data.chat_id, 'oc_', 'receipt chat ID');
     if (knownChat && knownChat !== chatId) throw new Error('Feishu returned a different operator conversation');
     return { id: messageId, url: '', source: 'feishu', messageId, chatId, uuid };
@@ -292,7 +295,7 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
         requests++;
         try {
           if (task.type === 'resolve') {
-            const data = requireSuccess(await api.get({ path: { message_id: task.id } }), 'Feishu topic reference');
+            const data = requireSuccess(await read('get', { path: { message_id: task.id } }, signal), 'Feishu topic reference');
             checkSignal(signal);
             if (!Array.isArray(data.items) || !data.items.length || data.items.some(item => item.chat_id !== task.chatId || item.message_id !== task.id)) throw invalidHistory('Feishu topic reference is outside the requested chat or message');
             const message = data.items[0];
@@ -311,10 +314,10 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
             for (const key of ['ready', 'pendingEvents', 'until', 'pageToken', 'seenTokens', 'order']) delete previous[key];
             delete current.failures[task.key]; continue;
           }
-          const response = await api.list({ params: { container_id_type: isThread ? 'thread' : 'chat', container_id: task.id,
+          const response = await read('list', { params: { container_id_type: isThread ? 'thread' : 'chat', container_id: task.id,
             ...(!isThread ? { start_time: String(Math.max(0, since - 2)), end_time: String(until) } : {}),
             sort_type: ascending ? 'ByCreateTimeAsc' : 'ByCreateTimeDesc', page_size: 50,
-            ...(pageToken ? { page_token: pageToken } : {}) } });
+            ...(pageToken ? { page_token: pageToken } : {}) } }, signal);
           checkSignal(signal);
           const data = requireSuccess(response, 'Feishu history');
           if (!Array.isArray(data.items) || data.items.length > 50 || typeof data.has_more !== 'boolean') throw invalidHistory('Invalid Feishu history page');
@@ -392,16 +395,17 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
       return { events, cursor: current, errors: Object.values(current.failures) };
     },
     async deliver(message) {
+      transport?.assertOpen();
       const address = message?.channel?.address;
       if (message.channel.source === 'feishu' && address?.sourceId === id && address.tenantKey === tenantKey && address.operator === 'true') return deliverOperator(message);
       if (message.channel.source !== 'feishu' || address?.sourceId !== id || address.tenantKey !== tenantKey || !allowed.has(address.chatId)) throw new Error('Feishu delivery is outside configured scope');
       identifier(address.messageId, 'om_', 'reply message ID');
       if (typeof message.text !== 'string' || !message.text.trim() || Buffer.byteLength(message.text) > 100 * 1024) throw new Error('Invalid Feishu reply text');
       // Recheck the destination against the server so a mismatched address cannot redirect a reply.
-      const target = requireSuccess(await api.get({ path: { message_id: address.messageId } }), 'Feishu reply target');
+      const target = requireSuccess(await read('get', { path: { message_id: address.messageId } }), 'Feishu reply target');
       if (!target.items?.some(item => item.message_id === address.messageId && item.chat_id === address.chatId)) throw new Error('Feishu reply target does not belong to configured chat');
       const uuid = createHash('sha256').update(`${id}:${message.id}`).digest('hex').slice(0, 32);
-      const data = requireSuccess(await api.reply({ path: { message_id: address.messageId }, data: { msg_type: 'text', content: JSON.stringify({ text: message.text }), reply_in_thread: true, uuid } }), 'Feishu reply');
+      const data = requireSuccess(await write('reply', { path: { message_id: address.messageId }, data: { msg_type: 'text', content: JSON.stringify({ text: message.text }), reply_in_thread: true, uuid } }), 'Feishu reply');
       const messageId = identifier(data.message_id, 'om_', 'receipt message ID');
       // Feishu does not return a browser permalink from this API; do not invent one.
       return { id: messageId, url: '', source: 'feishu', messageId, chatId: address.chatId, uuid };
@@ -409,7 +413,7 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
     async readContext({ messageId, chatId }) {
       identifier(messageId, 'om_', 'message ID');
       if (!allowed.has(chatId)) throw new Error('Feishu context is outside configured chat scope');
-      const data = requireSuccess(await api.get({ path: { message_id: messageId } }), 'Feishu context');
+      const data = requireSuccess(await read('get', { path: { message_id: messageId } }), 'Feishu context');
       const items = (data.items ?? []).filter(message => message.chat_id === chatId);
       if (!items.length) throw new Error('Feishu context message is outside configured chat scope');
       return { source: 'feishu', chatId, messageId, items };
@@ -427,28 +431,55 @@ export async function createFeishuConnection({ appId, appSecretEnv, appSecret, b
   if (!sdk) try { sdk = await import('@larksuiteoapi/node-sdk'); } catch { throw new Error('Install @larksuiteoapi/node-sdk to use the optional Feishu connection, or inject an authenticated SDK client'); }
   const credentials = { appId, appSecret: secret ?? process.env[appSecretEnv] };
   const quietLogger = { trace() {}, debug() {}, info() {}, warn() {}, error() {} };
-  const client = new sdk.Client({ ...credentials, logger: quietLogger });
-  const source = createFeishuSource({ id, client, botOpenId, botAppId: appId, tenantKey, scopes, operator, operatorChatId, trackedThreads, pollIntervalMs });
-  let ws, started = false;
+  const transport = createFeishuTransport(sdk.defaultHttpInstance);
+  const client = new sdk.Client({ ...credentials, logger: quietLogger, httpInstance: transport.httpInstance });
+  const source = createFeishuSource({ id, client, botOpenId, botAppId: appId, tenantKey, scopes, operator, operatorChatId, trackedThreads, pollIntervalMs, transport });
+  let ws, started = false, generation = 0, startPromise, stopPromise, stopped = false, stoppedCleanly = false;
   return { source,
-    async start({ receive, cardAction, onError = () => {}, onState = () => {} } = {}) {
+    start({ receive, cardAction, onError = () => {}, onState = () => {} } = {}) {
       if (typeof receive !== 'function') throw new Error('Feishu connection requires a durable receive callback');
       if (started) throw new Error('Feishu connection is already started');
+      if (stopped) {
+        if (!stoppedCleanly) throw new Error('Feishu connection stop has not completed');
+        transport.restart(); stopPromise = undefined; stopped = false;
+      }
+      transport.assertOpen();
       started = true;
-      const safeError = error => onError(new Error(`Feishu connection error: ${error?.code ?? 'transport-failed'}`));
-      ws = new sdk.WSClient({ ...credentials, logger: quietLogger, onError: safeError, onReady: () => onState('ready'),
-        onReconnecting: () => onState('reconnecting'), onReconnected: () => onState('ready') });
-      try {
-        await ws.start({ eventDispatcher: new sdk.EventDispatcher({}).register({ 'im.message.receive_v1': async data => {
+      const current = ++generation, live = () => started && current === generation;
+      const assertLive = () => { if (!live()) throw new Error('Feishu connection is stopped'); };
+      const safeError = error => { if (live()) onError(new Error(`Feishu connection error: ${error?.code ?? 'transport-failed'}`)); };
+      const state = value => { if (live()) onState(value); };
+      ws = new sdk.WSClient({ ...credentials, logger: quietLogger, onError: safeError,
+        httpInstance: transport.httpInstance, handshakeTimeoutMs: FEISHU_HANDSHAKE_TIMEOUT_MS,
+        onReady: () => state('ready'), onReconnecting: () => state('reconnecting'), onReconnected: () => state('ready') });
+      const socket = ws;
+      startPromise = (async () => { try {
+        await socket.start({ eventDispatcher: new sdk.EventDispatcher({}).register({ 'im.message.receive_v1': async data => {
           // Commit reception before acknowledging; Worker execution must happen outside this callback.
+          assertLive();
           await receive(data);
         }, ...(typeof cardAction === 'function' ? {
           // Feishu waits about 3 s; the host records the submission synchronously and returns the toast and card.
-          'card.action.trigger': async data => cardAction(data),
+          'card.action.trigger': async data => { assertLive(); return cardAction(data); },
         } : {}) }) });
-      } catch (error) { ws.close({ force: true }); ws = undefined; started = false; throw error; }
-      return this;
+        if (!live()) socket.close({ force: true });
+      } catch (error) { socket.close({ force: true }); if (current === generation) { ws = undefined; started = false; } throw error; }
+      return this; })();
+      return startPromise;
     },
-    async stop() { ws?.close({ force: true }); ws = undefined; started = false; },
+    stop() {
+      if (stopPromise) return stopPromise;
+      started = false; stopped = true; stoppedCleanly = false; generation++;
+      const socket = ws;
+      const draining = transport.stop();
+      let closeError;
+      try { socket?.close({ force: true }); if (ws === socket) ws = undefined; } catch (error) { closeError = error; }
+      stopPromise = (async () => {
+        await Promise.allSettled([startPromise, draining]);
+        if (closeError) throw closeError;
+        stoppedCleanly = true;
+      })().catch(error => { stopPromise = undefined; throw error; });
+      return stopPromise;
+    },
   };
 }

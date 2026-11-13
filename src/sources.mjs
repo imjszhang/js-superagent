@@ -29,7 +29,7 @@ function validTrigger(value, source) {
 
 /** Shared ingestion only. Model execution and outbound delivery have independent owners. */
 export class SourceRegistry {
-  #adapters = new Map(); #pending = new Map(); #closed = false; #stopping = false;
+  #adapters = new Map(); #pending = new Map(); #closed = false; #stopping = false; #stopPromise;
   constructor({ store, receive, leaseMs = 30_000, now = () => Date.now() }) {
     if (!store || typeof receive !== 'function') throw new Error('SourceRegistry requires store and receive');
     if (!Number.isSafeInteger(leaseMs) || leaseMs < 1000) throw new Error('Source lease must be at least 1000ms');
@@ -52,7 +52,7 @@ export class SourceRegistry {
   state(id) { this.#adapter(id); return this.store.getMeta(`source:${id}:state`) ?? { cursor: null, lastAttempt: null, lastSuccess: null, error: null }; }
   status() { return [...this.#adapters.keys()].map(id => ({ id, ...this.state(id), active: this.#pending.has(id) })); }
   ingest(id, event) {
-    if (this.#closed) throw new Error('Source registry is stopped');
+    if (this.#closed || this.#stopping) throw new Error('Source registry is stopped');
     const adapter = this.#adapter(id), trigger = adapter.normalize(event);
     if (!trigger) return { status: 'ignored' };
     validTrigger(trigger, adapter.source);
@@ -127,6 +127,7 @@ export class SourceRegistry {
     return Promise.allSettled(due.map(adapter => this.poll(adapter.id)));
   }
   async deliver(message) {
+    if (this.#closed || this.#stopping) throw new Error('Source registry is stopped');
     const matches = [...this.#adapters.values()].filter(adapter => adapter.source === message.channel.source && typeof adapter.deliver === 'function' &&
       (!message.channel.address?.sourceId || message.channel.address.sourceId === adapter.id));
     if (matches.length !== 1) throw new Error('No unique delivery adapter for source');
@@ -134,15 +135,18 @@ export class SourceRegistry {
     return adapter.deliver(message);
   }
   async read(id, reference) {
+    if (this.#closed || this.#stopping) throw new Error('Source registry is stopped');
     const adapter = this.#adapter(id);
     if (typeof adapter.readContext !== 'function') throw new Error('Source does not support context reads');
     return adapter.readContext(reference);
   }
-  async stop() {
+  stop() {
+    if (this.#stopPromise) return this.#stopPromise;
     this.#stopping = true;
     const active = [...this.#pending.values()]; active.forEach(entry => entry.controller.abort());
-    try { await Promise.allSettled(active.map(entry => entry.work)); }
-    finally { this.#stopping = false; }
+    this.#stopPromise = Promise.allSettled(active.map(entry => entry.work))
+      .then(() => {}).finally(() => { this.#stopping = false; this.#stopPromise = undefined; });
+    return this.#stopPromise;
   }
   async close() { this.#closed = true; await this.stop(); }
 }

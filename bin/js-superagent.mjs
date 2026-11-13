@@ -217,7 +217,12 @@ async function execute(command) {
     signalReceived = signal;
     process.exitCode = signal === 'SIGINT' ? 130 : 143;
     stopServiceHeartbeat();
-    shutdown = (async () => { await webhookServer?.close(); await managementServer?.close(); await runtime.stop(); })();
+    // Fence runtime ingress immediately; an open management request must not delay source cancellation.
+    shutdown = (async () => {
+      const results = await Promise.allSettled([runtime.stop(), webhookServer?.close(), managementServer?.close()]);
+      const failed = results.filter(result => result.status === 'rejected').map(result => result.reason);
+      if (failed.length) throw new AggregateError(failed, 'Service shutdown did not complete');
+    })();
     // Always attach rejection handling immediately, including during a one-turn run.
     shutdown.then(notifyStopped, error => {
       console.error(`js-superagent: ${error.message}`);

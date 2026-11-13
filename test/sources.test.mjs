@@ -71,3 +71,21 @@ test('pollDue respects per-source intervals and a stopped registry can be starte
   await registry.poll('test'); assert.equal(calls, 3); await registry.close();
   await assert.rejects(registry.poll('test'), /stopped/);
 });
+test('stopping closes live intake until the shared source drain completes', async t => {
+  const f = fixture(t), wait = deferred();
+  f.registry.register({ id: 'test', source: 'test', normalize: value => value, async poll() {
+    await wait.promise; return { events: [event('late-poll')], cursor: 'late' };
+  } });
+  const poll = f.registry.poll('test'), rejected = assert.rejects(poll, /Stale/);
+  const first = f.registry.stop(), second = f.registry.stop();
+  try {
+    assert.equal(first, second, 'concurrent stops must wait for the same drain');
+    assert.throws(() => f.registry.ingest('test', event('late-live')), /stopped/);
+    assert.ok(f.store.getMeta('source:test:owner'), 'a live poll retains its owner while draining');
+  } finally { wait.resolve(); await Promise.all([first, second, rejected]); }
+  assert.equal(f.store.triggers.get('late-live'), undefined);
+  assert.equal(f.store.triggers.get('late-poll'), undefined);
+  assert.equal(f.registry.state('test').cursor, null);
+  assert.equal(f.store.getMeta('source:test:owner'), undefined);
+  assert.equal(f.registry.ingest('test', event('new-cycle')).status, 'received');
+});
