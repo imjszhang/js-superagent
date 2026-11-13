@@ -22,7 +22,7 @@ import { CoordinationInbox, normalizeWorkRetry, coordinationFailure } from './ru
 import { normalizeUIEvidence, uiTree, uiEvidenceRequired, captureUIEvidence, validateUIEvidence, readUIEvidencePNG } from './runtime/ui-evidence.mjs';
 import { managementRevision, normalizeManagementIntent, managementCommand } from './runtime/operator-management.mjs';
 import { assessmentFailure } from './runtime/assessment.mjs';
-import { assessmentStatus, assessmentFailureMessage, assessmentTicketReceiptProof, verifyAssessmentTicketReceipt } from './runtime/assessment-status.mjs';
+import { assessmentStatus, assessmentFailureMessage, isMaterialBindingDenied, assessmentTicketReceiptProof, verifyAssessmentTicketReceipt } from './runtime/assessment-status.mjs';
 import { createCoordinationReader } from './runtime/coordination-context.mjs';
 import { feedbackDisposition } from './runtime/feedback.mjs';
 import { projectStateDirectory } from './state-paths.mjs';
@@ -726,11 +726,26 @@ export class ProjectRuntime {
       const disposition = this.#store.triggers.disposition(trigger.id);
       const owned = disposition?.fanout?.some(id => !disposition.context?.includes(id));
       if (!owned && admission.basis?.via !== 'followup') {
-        const decision = this.#engine.decide(trigger.id, { kind: 'accept', title: trigger.text.slice(0, 120), scope: trigger.text,
-          reason: 'Explicit Feishu request admitted by the current policy', acknowledgement: '已接单。任务将在配置的项目工作区执行，进展与问题会回传到此话题。' });
-        const domain = this.#store.tickets.get(decision.ticketId);
-        if (!domain) throw new Error('Feishu request did not produce an authorized ticket');
-        this.#recordAccepted(domain, decision, { triggers: [trigger] });
+        try {
+          this.#store.atomic(() => {
+            const decision = this.#engine.decide(trigger.id, { kind: 'accept', title: trigger.text.slice(0, 120), scope: trigger.text,
+              reason: 'Explicit Feishu request admitted by the current policy', acknowledgement: '已接单。任务将在配置的项目工作区执行，进展与问题会回传到此话题。' });
+            const domain = this.#store.tickets.get(decision.ticketId);
+            if (!domain) throw new Error('Feishu request did not produce an authorized ticket');
+            this.#recordAccepted(domain, decision, { triggers: [trigger] });
+          });
+        } catch (error) {
+          if (!isMaterialBindingDenied(error)) throw error;
+          // Retain ingress, but roll back ticket, launch and acknowledgement together.
+          const held = this.#engine.candidate(trigger.id), failure = assessmentFailure(error);
+          const outcome = { kind: 'unavailable', reason: assessmentFailureMessage(failure) };
+          const decision = held ? this.#engine.decideTrigger(trigger.id, { ...outcome, evalId: held.evalId }) : this.#engine.decide(trigger.id, outcome);
+          const evalId = held?.evalId ?? decision.evalId;
+          const record = { ...failure, evalId, policyVersion: this.#policy().version, triggerIds: [trigger.id], status: 'failed', at: this.#now() };
+          this.#store.setMeta(`assessment-trigger:${trigger.id}`, { evalId });
+          this.#store.setMeta(`assessment:${evalId}`, record);
+          this.#assessmentReceipt({ evalId, triggers: [trigger] }, record);
+        }
       }
     }
     return result;
@@ -1098,6 +1113,13 @@ export class ProjectRuntime {
       const proof = this.#store.getMeta(`material-message:${message.id}`);
       if (proof?.hostReceipt && !verifyAssessmentTicketReceipt(message, proof.hostReceipt, this.#store.getMeta(`assessment:${proof.hostReceipt.evalId}`), id => this.#store.getMeta(`public:${id}`) ?? id))
         throw materialError('MATERIAL_RECEIPT_INVALID', 'Material host receipt no longer matches its fixed assessment result');
+      if (proof?.hostReceipt?.status === 'failed') {
+        const trigger = this.#store.triggers.get(proof.hostReceipt.triggerId);
+        const allowed = proof.groupTriggerDigest
+          ? this.#materialFailureReplyAllowed(trigger, message.channel) && proof.groupTriggerDigest === createHash('sha256').update(JSON.stringify(trigger)).digest('hex')
+          : this.#assessmentOriginAllowed(proof.hostReceipt.triggerId);
+        if (!allowed) throw materialError('MATERIAL_RECEIPT_INVALID', 'Material failure receipt no longer belongs to an authorized original request');
+      }
       if ((proof || materialSources.length) && !this.#materialProofRouteAllowed(proof, this.#materialRoute(message.channel))) throw materialError('MATERIAL_ROUTE_CHANGED', 'Material reply identity is no longer authorized');
       if (proof) {
         if (proof.revision !== this.getMaterialSettings().revision || JSON.stringify(proof.destination) !== JSON.stringify(materialDestination(message.channel))) throw new Error('Material reply authorization changed');
@@ -1623,9 +1645,10 @@ export class ProjectRuntime {
       return { actor, destination };
     });
     const materialDestinations = [...new Map(materialOrigins.map(item => [JSON.stringify(item.destination), item.destination])).values()];
-    let materialBinding = this.#resolveTicketMaterials(undefined, { actor: materialOrigins[0].actor, destinations: materialDestinations });
+    const materialBinding = this.#resolveTicketMaterials(undefined, { actor: materialOrigins[0].actor, destinations: materialDestinations });
     // A merged candidate cannot borrow the first author's material grant.
-    if (materialBinding && materialOrigins.some(origin => materialBinding.sources.some(source => !source.readers.some(reader => reader.source === origin.actor.source && reader.id === origin.actor.id)))) materialBinding = null;
+    const deniedAuthor = materialBinding ? materialOrigins.findIndex(origin => materialBinding.sources.some(source => !source.readers.some(reader => reader.source === origin.actor.source && reader.id === origin.actor.id))) : -1;
+    if (deniedAuthor >= 0) throw Object.assign(materialError('MATERIAL_ACCESS_DENIED', 'Candidate author is not granted the selected material sources'), { triggerId: candidate.triggers[deniedAuthor].id });
     const meta = { id: domain.id, domainId: domain.id, projectId: this.projectId, text: trigger.text, threadId: trigger.threads[0].id,
       ...(github ? { github } : {}), ...(githubPull ? { githubPull } : {}), createdAt: domain.createdAt, updatedAt: domain.updatedAt,
       ...(materialBinding ? { materialBinding, materialDestinations, materialDisclosureRoutes: this.#materialDisclosureRoutes(materialBinding), materialObservations: [] } : {}),
@@ -1651,16 +1674,23 @@ export class ProjectRuntime {
     const feishu = this.#operatorFeishu(), original = this.#store.triggers.get(event.references?.triggerId);
     return !!feishu && event.actor?.id === feishu.operator.openId && original?.meta?.tenantKey === feishu.tenantKey;
   }
+  #materialFailureReplyAllowed(trigger, channel = trigger?.channel) {
+    if (trigger?.source !== 'feishu' || !trigger.human || trigger.addressed !== 'mention' ||
+        JSON.stringify(channel) !== JSON.stringify(trigger.channel) || !this.#materialRoute(channel)) return false;
+    const admission = this.#policy().gate(trigger);
+    return admission.admissible && admission.strength === 'explicit';
+  }
   #assessmentReceipt(candidate, record) {
     for (const trigger of candidate.triggers) {
       const event = this.#assessmentOrigin(trigger.id);
-      if (!event || !this.#assessmentOriginAllowed(trigger.id)) continue;
+      const groupFailure = !event && record.status === 'failed' && isMaterialBindingDenied(record) && this.#materialFailureReplyAllowed(trigger);
+      if (!groupFailure && (!event || !this.#assessmentOriginAllowed(trigger.id))) continue;
       const status = assessmentStatus(this.#store, trigger.id);
       if (record.status !== 'failed' && !['accepted', 'attached', 'ignore', 'unavailable', 'stop'].includes(status.status)) continue;
-      const feishu = event.source?.channel === 'feishu' && this.#operatorFeishu();
+      const feishu = event?.source?.channel === 'feishu' && this.#operatorFeishu();
       const message = { id: `assessment-result:${candidate.evalId}:${trigger.id}`, kind: 'reply',
         ...(status.ticketId ? { ticketId: status.ticketId } : {}),
-        channel: feishu ? operatorReplyChannel(feishu, event.source.chatId, event.source.messageId)
+        channel: groupFailure ? trigger.channel : feishu ? operatorReplyChannel(feishu, event.source.chatId, event.source.messageId)
           : { source: 'local', thread: event.id, address: {} },
         text: status.status === 'accepted' ? `已建立工单 ${status.ticketId}，将按授权范围执行。`
           : status.status === 'attached' ? `请求已关联到现有工单 ${status.ticketId}。`
@@ -1668,14 +1698,15 @@ export class ProjectRuntime {
           : status.status === 'unavailable' ? '本次请求评估未能建立工单，需要补充信息或核对相关条件。请求记录已保留。'
           : status.status === 'stop' ? '本次请求已按授权处理停止操作。' : '本次请求评估已结束，未创建新工单。请求记录已保留。' };
       if (this.#outbox.status(message.id) === undefined && !this.#store.getMeta(`material-message:${message.id}`)) {
-        const hostReceipt = assessmentTicketReceiptProof(message, { evalId: candidate.evalId, triggerId: trigger.id, status: status.status });
+        const hostReceipt = assessmentTicketReceiptProof(message, { evalId: candidate.evalId, triggerId: trigger.id, status: record.status === 'failed' ? 'failed' : status.status });
         if (verifyAssessmentTicketReceipt(message, hostReceipt, record, id => this.#store.getMeta(`public:${id}`) ?? id)) {
-          const provenance = this.#materialProvenance(this.#materialTicketProvenance(status.ticketId && this.#store.getMeta(`ticket:${status.ticketId}`)),
+          const provenance = record.status === 'failed' ? this.#materialProvenance() : this.#materialProvenance(this.#materialTicketProvenance(status.ticketId && this.#store.getMeta(`ticket:${status.ticketId}`)),
             this.#store.getMeta(`material-event:${event.id}`), { projectionVersion: record.materialProjectionVersion,
               ticketIds: record.materialSources ?? [], freshTicketIds: record.materialFreshSources, metadataTicketIds: record.materialMetadataSources ?? [], contentVersions: record.materialContentVersions });
           const sources = [...new Set([...provenance.ticketIds, ...provenance.metadataTicketIds])].sort();
-          if (sources.length) this.#store.setMeta(`material-message:${message.id}`, { revision: this.getMaterialSettings().revision,
+          if (sources.length || record.status === 'failed') this.#store.setMeta(`material-message:${message.id}`, { revision: this.getMaterialSettings().revision,
             destination: materialDestination(message.channel), route: this.#materialRoute(message.channel), hostReceipt,
+            ...(groupFailure ? { groupTriggerDigest: createHash('sha256').update(JSON.stringify(trigger)).digest('hex') } : {}),
             ...this.#persistMaterialProvenance({ projectionVersion: 1, ticketIds: [], metadataTicketIds: sources, contentVersions: [] }) });
         }
       }
@@ -2910,14 +2941,9 @@ export class ProjectRuntime {
   #resolveTicketMaterials(request, { actor = { source: 'local', id: 'operator' }, destinations = [] } = {}) {
     const settings = this.getMaterialSettings();
     if (request === undefined && !settings.defaults) return null;
-    try {
-      const binding = resolveMaterialBinding({ projectRoot: this.projectRoot, projectId: this.projectId, settings, request, actor, destinations });
-      for (const source of binding.sources) if (source.view.kind === 'snapshot') validateMaterialSnapshot(this.#readMaterialSnapshot(source.view.snapshotId), source);
-      return binding;
-    } catch (error) {
-      if (request === undefined && ['MATERIAL_ACCESS_DENIED', 'MATERIAL_DESTINATION_DENIED'].includes(error.code)) return null;
-      throw error;
-    }
+    const binding = resolveMaterialBinding({ projectRoot: this.projectRoot, projectId: this.projectId, settings, request, actor, destinations });
+    for (const source of binding.sources) if (source.view.kind === 'snapshot') validateMaterialSnapshot(this.#readMaterialSnapshot(source.view.snapshotId), source);
+    return binding;
   }
   #validateTicketMaterials(meta) {
     if (!meta.materialBinding) return true;

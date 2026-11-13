@@ -36,17 +36,19 @@ test('public material settings use revision checks, preserve legacy submission a
   assert.deepEqual(restored.getDetailed(ticket.id).materialBinding, detail.materialBinding);
 });
 
-test('default material grants are optional; explicit unauthorized binding cannot create a ticket', t => {
+test('selected defaults and explicit materials reject missing reader and destination grants before ticket creation', t => {
   const f = fixture(t), agent = f.open();
   const denied = { ...f.settings, entries: f.settings.entries.map(entry => ({ ...entry, readers: [{ source: 'feishu', id: 'someone' }] })), defaults: request };
   agent.configureMaterials(denied, { expectedRevision: 0 });
-  const legacy = agent.submit({ text: 'ordinary task' });
-  assert.equal(agent.getDetailed(legacy.id).materialBinding, null);
-  assert.throws(() => agent.submit({ text: 'explicit request', materials: request }), { code: 'MATERIAL_ACCESS_DENIED' });
-  assert.equal(agent.list().length, 1);
-  agent.configureMaterials({ ...f.settings, entries: f.settings.entries.map(entry => ({ ...entry, destinations: [{ source: 'github', id: 'public/repo#1' }] })), defaults: request }, { expectedRevision: 1 });
-  assert.equal(agent.getDetailed(agent.submit({ text: 'no disclosure grant' }).id).materialBinding, null);
-  assert.throws(() => agent.submit({ text: 'explicit disclosure', materials: request }), { code: 'MATERIAL_DESTINATION_DENIED' });
+  for (const materials of [undefined, request]) assert.throws(() => agent.submit({ text: 'inspect selected materials', ...(materials ? { materials } : {}) }), { code: 'MATERIAL_ACCESS_DENIED' });
+  assert.equal(agent.list().length, 0);
+  agent.configureMaterials({ ...f.settings, entries: f.settings.entries.map(entry => ({ ...entry, destinations: [{ source: 'github', id: 'fictional/repo#1' }] })), defaults: request }, { expectedRevision: 1 });
+  for (const materials of [undefined, request]) assert.throws(() => agent.submit({ text: 'report selected materials', ...(materials ? { materials } : {}) }), { code: 'MATERIAL_DESTINATION_DENIED' });
+  assert.equal(agent.list().length, 0);
+  // Having source entries alone does not opt ordinary submissions into materials.
+  agent.configureMaterials({ ...denied, defaults: null }, { expectedRevision: 2 });
+  const ordinary = agent.submit({ text: 'ordinary task without material defaults' });
+  assert.equal(agent.getDetailed(ordinary.id).materialBinding, null);
 });
 
 test('host snapshots pin uncommitted bytes and reject tampering before acceptance', t => {
