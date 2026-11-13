@@ -41,10 +41,10 @@ function fixture(t) {
     defaults: { sources: [{ id: 'project', view: { kind: 'current' } }] } }, { expectedRevision: 0 });
   const store = new Store(join(projectStateDirectory(root), 'state.sqlite'));
   t.after(async () => { await runtime.stop(); runtime.close(); store.close(); rmSync(root, { recursive: true, force: true }); rmSync(projectStateDirectory(root), { recursive: true, force: true }); });
-  const receive = (id = 'om_request', rootId) => runtime.receiveSourceEvent('feishu', {
+  const receive = (id = 'om_request', rootId, mention = true) => runtime.receiveSourceEvent('feishu', {
     sender: { sender_id: { open_id: 'ou_reader' }, sender_type: 'user', tenant_key: 'tenant' },
     message: { message_id: id, ...(rootId ? { root_id: rootId } : {}), chat_id: 'oc_group', chat_type: 'group', message_type: 'text', create_time: String(Date.now()),
-      content: JSON.stringify({ text: '@_user_1 inspect current project notes' }), mentions: [{ id: { open_id: 'ou_bot' }, key: '@_user_1' }] },
+      content: JSON.stringify({ text: mention ? '@_user_1 inspect current project notes' : 'Only read the authorized notes' }), mentions: mention ? [{ id: { open_id: 'ou_bot' }, key: '@_user_1' }] : [] },
   });
   const tick = async () => { t.mock.timers.tick(1100); return runtime.runNext(); };
   return { get runtime() { return runtime; }, store, attempts, sent, network, receive, tick, setChange: fn => { change = fn; },
@@ -199,4 +199,22 @@ test('pause and resume preserve pending assessment without consuming refresh all
   assert.equal(f.attempts.length, 1); assert.equal(refreshState(f.store, 'feishu:tenant:om_request').refreshesUsed, 0);
   f.runtime.resume(); await f.tick();
   assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_request').status, 'accepted');
+});
+
+for (const readerFailure of [false, true]) test(`an invalidated supplement cannot discard its valid primary request (${readerFailure ? 'read failure' : 'commit guard'})`, async t => {
+  const f = fixture(t); await f.runtime.prepareExecution();
+  f.receive('om_request'); f.receive('om_supplement', 'om_request', false);
+  f.setChange((_input, attempt) => {
+    if (attempt !== 1) return;
+    const trigger = f.store.triggers.get('feishu:tenant:om_supplement');
+    trigger.actor.id = 'ou_unlisted'; f.store.triggers.save(trigger);
+    if (readerFailure) throw new AssessmentContextChanged('read-set-version');
+  });
+  await f.tick();
+  assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_supplement').status, 'failed');
+  assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_request').status, 'evaluating');
+  await f.tick();
+  assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_request').status, 'accepted');
+  assert.equal(f.runtime.list().length, 1);
+  assert.deepEqual(f.attempts[1].candidate.triggers.map(row => row.id), ['feishu:tenant:om_request']);
 });

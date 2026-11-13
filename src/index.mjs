@@ -1811,6 +1811,9 @@ export class ProjectRuntime {
       if (held?.evalId !== candidate.evalId) throw new Later('Assessment evaluation has been superseded');
       const evaluation = this.#store.threads.get(candidate.thread.key)?.evaluating;
       if (evaluation?.delivered && evaluation.deadline <= this.#now()) throw new Later('Assessment deadline expired');
+      // Preserve the exact rejected supplemental input before a batch-wide
+      // authorization fingerprint can attribute its failure to the primary.
+      this.#assertRetainedFeishuInputs(candidate);
       if (authorization !== undefined && authorization !== authorizationStamp()) throw Object.assign(new Error('Assessment authorization changed'), { code: 'assessment_authority', failureKind: 'authority', retryable: false });
       if(materialSession!==undefined && this.#materialSessionScope(materialEvents)!==materialSession)throw new AssessmentContextChanged('material-session');
       return fn(owner);
@@ -1950,6 +1953,8 @@ export class ProjectRuntime {
         const refreshed = this.#store.atomic(() => {
           const held = this.#engine.candidate(candidate.triggers[0].id);
           if (held?.evalId !== candidate.evalId || this.#policy().version !== candidate.policyVersion) return { waiting: true };
+          try { this.#assertRetainedFeishuInputs(candidate); }
+          catch (error) { return { denied: true, error }; }
           if (authorization === undefined || authorization !== authorizationStamp() ||
               candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id))) return { denied: true };
           if (materialEvents.some(event => this.#materialEventProjection(event).stale)) return { denied: true };
@@ -1967,7 +1972,7 @@ export class ProjectRuntime {
         });
         if (refreshed.waiting || !refreshed.denied && !refreshed.exhausted.length) throw new Later('Assessment is waiting for a fresh context snapshot');
         error = refreshed.denied
-          ? Object.assign(new Error('Assessment context authorization changed; automatic refresh is not allowed'), { code: 'assessment_authority', failureKind: 'authority', retryable: false })
+          ? refreshed.error ?? Object.assign(new Error('Assessment context authorization changed; automatic refresh is not allowed'), { code: 'assessment_authority', failureKind: 'authority', retryable: false })
           : Object.assign(new Error('Assessment context kept changing after two automatic refreshes'), { code: CONTEXT_REFRESH_EXHAUSTED, failureKind: 'context', retryable: true, exhausted: true, triggerId: refreshed.exhausted[0] });
       }
       const failedTrigger = candidate.triggers.find(trigger => trigger.id === error.triggerId) ?? candidate.triggers.find(trigger => trigger.id === outcome?.triggerId) ?? candidate.triggers[0];
