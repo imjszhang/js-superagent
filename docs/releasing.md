@@ -27,7 +27,9 @@ Git release tags use `v<package.version>`; `RELEASE_TAG=v0.14.0-alpha.0 npm run 
 
 ## Trusted publishing from GitHub
 
-The standard release path is `.github/workflows/publish.yml` in `imjszhang/js-superagent`. It is explicitly dispatched on `main` with the expected package version:
+All subsequent npm releases must use GitHub trusted publishing. Do not run local `npm publish`, request per-release npm browser authorization, or configure a long-lived publishing token as an automatic fallback. If the workflow fails, inspect its logs and registry state, repair the GitHub path, and retry only after resolving any ambiguous publication result.
+
+The release path is `.github/workflows/publish.yml` in `imjszhang/js-superagent`. It is explicitly dispatched on `main` with the expected package version:
 
 ```bash
 gh workflow run publish.yml --ref main -f version=0.15.0-alpha.8
@@ -55,17 +57,11 @@ After success, download `npm-release-candidate` from that run, inspect the regis
 
 Official references: [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) and [npm trust](https://docs.npmjs.com/cli/v11/commands/npm-trust/).
 
-## First publication (separate explicit action)
+## Historical local publication
 
-Before publishing, authenticate locally (`npm login`), confirm the publishing account (`npm whoami`), check package-name availability/permissions and the version on the public registry, verify sourceDirty=false and the recorded SHA-512, and confirm that the commit passed CI.
+The original releases used local `npm publish` and interactive npm authentication. These are historical records, not instructions for future releases. Subsequent releases must use the trusted GitHub workflow above. Package preparation alone never changes registry trust settings or publishes.
 
-```bash
-npm publish ./release/js-superagent-0.14.0-alpha.0.tgz --access public --tag alpha --registry https://registry.npmjs.org/
-```
-
-This command is shown for the authorized release step; preparation does not run it. Complete any interactive authentication requirement. Verify the resulting version, dist-tag and integrity with npm view before recording the release as published; after an ambiguous network failure, inspect the registry before retrying. Create/push the matching annotated Git tag and GitHub prerelease with its changelog and integrity metadata. Install the exact registry version in a clean project as the final consumer check.
-
-npm's [publish documentation](https://docs.npmjs.com/cli/v11/commands/npm-publish/) describes publication and dist-tags. This historical manual path is retained for recovery; prefer the trusted GitHub workflow above for subsequent releases. Package preparation alone never changes registry trust settings or publishes. No token is stored in this repository.
+The trusted path was verified on 2026-11-13 by publishing `0.15.0-alpha.8` from `b18cbef26996b6c85d43f2eb39eb084e2939ca83`: [successful workflow](https://github.com/imjszhang/js-superagent/actions/runs/43421890534). Registry integrity, signed provenance and a clean registry consumer all passed.
 
 ## First-release registry processing
 

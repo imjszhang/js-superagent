@@ -4,7 +4,7 @@
 
 支持通过注册表接入 Codex、DSH 和 Cursor 等执行端。状态保存在项目独立的 SQLite 数据库中；初始化不会自动启动执行或后台服务。
 
-当前源码版本为 **0.15.0-alpha.7**，在项目材料与执行工作区分离、默认材料绑定失败阻断及飞书历史补收基础上，保留建单前合格话题补充、有限刷新失效的评估上下文（包括宿主回调异常经适配层脱敏的情况），并核实服务实际退出。群 @ 仍由现行规则与协调者判断是否建单，不增加配置项或材料权限；此处不代表已经发布 npm。本仓库从 x-pkm-research 的同名包独立导出；应用层的 longrun 业务系统不在本仓库。历史设计和验收文档记录各自当时的状态，不代表用户安装后的部署状态。修复范围与时间边界见[实施计划](docs/feishu-continuity-reliability-plan.md)。
+当前源码版本为 **0.15.0-alpha.8**，在项目材料与执行工作区分离、默认材料绑定失败阻断及飞书历史补收基础上，保留建单前合格话题补充、有限刷新失效的评估上下文（包括宿主回调异常经适配层脱敏的情况），并核实服务实际退出。群 @ 仍由现行规则与协调者判断是否建单，不增加配置项或材料权限；此处不代表已经发布 npm。本仓库从 x-pkm-research 的同名包独立导出；应用层的 longrun 业务系统不在本仓库。历史设计和验收文档记录各自当时的状态，不代表用户安装后的部署状态。修复范围与时间边界见[实施计划](docs/feishu-continuity-reliability-plan.md)。
 
 ```bash
 git clone https://github.com/imjszhang/js-superagent.git
@@ -15,6 +15,15 @@ node bin/js-superagent.mjs --help
 ```
 
 项目采用 [MIT 许可](LICENSE)，上游核心的版权及 MIT 许可原样保留，见 [第三方声明](THIRD_PARTY_NOTICES.md)。npm 首发版本 [`0.14.0-alpha.0`](https://www.npmjs.com/package/js-superagent/v/0.14.0-alpha.0) 已于 2026-11-09 发布，使用 `alpha` 渠道。版本与发布流程见[发布指南](docs/releasing.md)。
+
+后续 npm 发布统一使用 GitHub 的 [Publish npm](https://github.com/imjszhang/js-superagent/actions/workflows/publish.yml) 受信发布流程，不再从本地执行 `npm publish` 或逐次申请 npm 发布授权。更新版本及 CHANGELOG、通过检查并合并到 `main` 后，执行：
+
+```bash
+gh workflow run publish.yml --ref main -f version=<待发布的完整版本号>
+```
+
+流程会测试并发布该次 main 提交的安装包，通过 OIDC 认证，无需保存 npm 发布令牌。完成后核对注册表、来源证明及安装结果，再保存对应 Git 标签和 GitHub Release。失败时按[发布指南](docs/releasing.md)核查，不自动切回本地发布。此流程已通过 `0.15.0-alpha.8` 的[真实发布](https://github.com/imjszhang/js-superagent/actions/runs/43421890534)验证。
+
 
 ## 环境与本地使用
 
