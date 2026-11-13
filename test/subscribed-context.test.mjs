@@ -19,7 +19,9 @@ function fixture(t, { state = 'waiting', attention = null, onRun } = {}) {
     driver: { capabilities: { boundedContextVersion: 1, agentTools: !!onRun }, async run(input) { runs.push(input); if (onRun) { input.checkpoint({ driver: 'fixture', id: 'context-worker' }); await onRun(input); } return { version: 2, state, summary: 'Current authorized work', artifacts: [], attention }; } },
   }).init();
   t.after(async () => { await runtime.stop(); runtime.close(); rmSync(root, { recursive: true, force: true }); });
-  const comment = (text = 'Additional reproduction detail', options = {}) => { const at = new Date(clock += 1000).toISOString(); return { id: `github:${repository}:comment:${++number}`, repository, issueNumber: 7,
+  // A message created after followForContext must also be newer than its real
+  // baseline when other test processes made the preceding Worker slow.
+  const comment = (text = 'Additional reproduction detail', options = {}) => { const at = new Date(clock = Math.max(clock + 1000, Date.now() + 1)).toISOString(); return { id: `github:${repository}:comment:${++number}`, repository, issueNumber: 7,
     issueId: 700, kind: 'comment', title: 'Fix', actor: { login: 'bob', id: 11, type: 'User' }, createdAt: at, updatedAt: at, issueState: 'open', text, ...options }; };
   const inspect = fn => { const store = new Store(join(stateDir(root), 'state.sqlite')); try { return fn(store); } finally { store.close(); } };
   return { runtime, runs, sent, comment, inspect,
