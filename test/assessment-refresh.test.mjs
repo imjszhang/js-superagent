@@ -9,6 +9,7 @@ import { Store } from '../src/store.mjs';
 import { assessmentStatus } from '../src/runtime/assessment-status.mjs';
 import { AssessmentContextChanged, recordContextRefresh, refreshState, resetRefreshCycle } from '../src/runtime/assessment-refresh.mjs';
 import { runBoundedAssessment } from '../src/context-requests.mjs';
+import { executeDshTurn } from '../src/drivers/dsh.mjs';
 
 function fixture(t) {
   t.mock.timers.enable({ apis: ['Date'], now: 1800000000000 });
@@ -47,7 +48,7 @@ function fixture(t) {
       content: JSON.stringify({ text: mention ? '@_user_1 inspect current project notes' : 'Only read the authorized notes' }), mentions: mention ? [{ id: { open_id: 'ou_bot' }, key: '@_user_1' }] : [] },
   });
   const tick = async () => { t.mock.timers.tick(1100); return runtime.runNext(); };
-  return { get runtime() { return runtime; }, store, attempts, sent, network, receive, tick, setChange: fn => { change = fn; },
+  return { root, get runtime() { return runtime; }, store, attempts, sent, network, receive, tick, setChange: fn => { change = fn; },
     async reopen() { await runtime.stop(); runtime.close(); runtime = createProjectAgent(options).init(); await runtime.prepareExecution(); } };
 }
 
@@ -71,6 +72,81 @@ test('a concurrent material projection change refreshes the same evaluation with
   assert.ok(f.attempts[1].timeoutMs < f.attempts[0].timeoutMs);
   assert.equal(assessmentStatus(f.store, triggerId).status, 'accepted');
   assert.equal(f.runtime.list().length, 2);
+});
+
+for (const handling of ['copied', 'swallowed']) test(`host callback stale evidence survives a ${handling} adapter error`, async t => {
+  const f = fixture(t); await f.runtime.prepareExecution();
+  const other = f.runtime.submit({ text: 'Independent material work', operatorNotifications: false }); await f.runtime.runNext();
+  f.setChange((input, attempt) => {
+    if (attempt !== 1) return;
+    const original = f.store.getMeta(`ticket:${other.id}`);
+    f.store.setMeta(`ticket:${other.id}`, { ...original, runId: 'changed-during-native-checkpoint' });
+    let caught;
+    try { input.checkpoint({ driver: 'fixture-assessor', id: 'invalidated-checkpoint' }); }
+    catch (error) { caught = error; }
+    assert.ok(caught instanceof AssessmentContextChanged);
+    // The projection can return to its old value. A rejected attempt still
+    // cannot submit its old result just because the final comparison matches.
+    f.store.setMeta(`ticket:${other.id}`, original);
+    if (handling === 'copied') throw new Error(caught.message);
+  });
+  f.receive(); await f.tick();
+  assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_request').status, 'evaluating');
+  assert.equal(refreshState(f.store, 'feishu:tenant:om_request').refreshesUsed, 1);
+  assert.equal(f.runtime.list().length, 1);
+  await f.tick();
+  assert.equal(f.attempts.length, 2);
+  assert.equal(f.attempts[0].candidate.evalId, f.attempts[1].candidate.evalId);
+  assert.notEqual(f.attempts[0].runId, f.attempts[1].runId);
+  assert.equal(f.attempts[1].session, undefined);
+  assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_request').status, 'accepted');
+  assert.equal(f.runtime.list().length, 2);
+});
+
+test('actual DSH checkpoint redaction cannot erase the host refresh proof', async t => {
+  const f = fixture(t); await f.runtime.prepareExecution();
+  const other = f.runtime.submit({ text: 'Other material work', operatorNotifications: false }); await f.runtime.runNext();
+  const executable = join(f.root, 'checkpoint-sdk.mjs');
+  writeFileSync(executable, `#!/usr/bin/env node
+import{createInterface}from'node:readline';
+if(process.argv.includes('--version')){console.log('0.2.2-alpha.2');process.exit(0);}
+for await(const line of createInterface({input:process.stdin})){
+ const r=JSON.parse(line),answer=result=>console.log(JSON.stringify({jsonrpc:'2.0',id:r.id,result}));
+ if(r.method==='initialize')answer({serverInfo:{name:'deepseek-harness-sdk-runtime',version:'0.0.1'}});
+ else if(r.method==='session/working-directory/get')answer({cwd:process.cwd()});
+ else if(r.method==='shutdown'){answer({});process.exit(0);}
+ else throw Error('No model prompt may follow a rejected host checkpoint');
+}`, { mode: 0o700 });
+  const key = 'CALLBACK_DSH_TEST_KEY', previous = process.env[key]; process.env[key] = 'fixture-only-secret';
+  t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  const pids = [];
+  f.setChange(async (input, attempt) => {
+    if (attempt !== 1) return;
+    await assert.rejects(executeDshTurn({ executable, model: 'fixture', permission: 'read-only', killGraceMs: 30, timeoutMs: 5000,
+      backend: { auth: 'api-key', provider: 'deepseek-official', protocol: 'anthropic-messages', baseURL: 'https://example.invalid', apiKeyEnv: key } }, {
+      projectRoot: f.root, role: 'coordinator', runId: input.runId, prompt: 'Read-only classifier', signal: input.signal,
+      registerProcess(pid) { pids.push(pid); input.registerProcess(pid); },
+      checkpoint(session) {
+        const original = f.store.getMeta(`ticket:${other.id}`);
+        f.store.setMeta(`ticket:${other.id}`, { ...original, runId: 'changed-before-sdk-checkpoint' });
+        try { input.checkpoint(session); } finally { f.store.setMeta(`ticket:${other.id}`, original); }
+      },
+    }), error => {
+      // Exercise the real driver catch/redactor, not an imitation in the test.
+      assert.equal(error instanceof AssessmentContextChanged, false);
+      assert.equal(error.code, undefined);
+      assert.match(error.message, /Coordination context/);
+      throw error;
+    });
+  });
+  f.receive(); await f.tick();
+  assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_request').status, 'evaluating');
+  assert.equal(refreshState(f.store, 'feishu:tenant:om_request').refreshesUsed, 1);
+  assert.equal(pids.length, 2);
+  for (const pid of pids) assert.throws(() => process.kill(pid, 0), error => error.code === 'ESRCH');
+  await f.tick();
+  assert.equal(f.attempts.length, 2);
+  assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_request').status, 'accepted');
 });
 
 test('continuously changing context has a durable two-refresh budget and one terminal original-group receipt', async t => {
@@ -109,13 +185,123 @@ test('restart preserves refresh allowance; a duplicate or pending reevaluation c
   assert.equal(f.runtime.reevaluate('feishu:tenant:om_request'), false);
 });
 
-test('untrusted stale wording is never automatic refresh authorization', async t => {
+for (const forgedCode of [false, true]) test(`untrusted stale ${forgedCode ? 'code' : 'wording'} is never automatic refresh authorization`, async t => {
   const f = fixture(t); await f.runtime.prepareExecution();
-  f.setChange(() => { throw new Error('Coordination context or policy changed; reassessment required'); });
+  f.setChange(() => { throw Object.assign(new Error('Coordination context or policy changed; reassessment required'),
+    forgedCode ? { code: 'assessment_context_changed', reason: 'material-session' } : {}); });
   f.receive(); for (let i = 0; i < 4; i++) await f.tick();
   assert.equal(f.attempts.length, 1);
   assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_request').failureKind, 'internal');
   assert.equal(refreshState(f.store, 'feishu:tenant:om_request').refreshesUsed, 0);
+});
+
+function rejectStaleCheckpoint(f, other, input) {
+  const original = f.store.getMeta(`ticket:${other.id}`);
+  f.store.setMeta(`ticket:${other.id}`, { ...original, runId: 'temporary-invalidated-material-run' });
+  try { assert.throws(() => input.checkpoint({ driver: 'fixture-assessor', id: 'rejected-session' }), AssessmentContextChanged); }
+  finally { f.store.setMeta(`ticket:${other.id}`, original); }
+}
+
+test('a known input authority rejection wins over earlier stale proof after authority is restored', async t => {
+  const f = fixture(t); await f.runtime.prepareExecution();
+  const other = f.runtime.submit({ text: 'Earlier material work', operatorNotifications: false }); await f.runtime.runNext();
+  let rejectedInput;
+  f.setChange((input, attempt) => {
+    if (attempt === 2) {
+      assert.throws(() => rejectedInput.checkpoint({ driver: 'fixture-assessor', id: 'late-old-session' }));
+      return;
+    }
+    rejectedInput = input;
+    rejectStaleCheckpoint(f, other, input);
+    const original = f.store.triggers.get('feishu:tenant:om_supplement');
+    f.store.triggers.save({ ...original, actor: { ...original.actor, id: 'ou_unlisted' } });
+    try {
+      assert.throws(() => input.checkpoint({ driver: 'fixture-assessor', id: 'revoked-session' }),
+        error => error.code === 'assessment_authority' && error.triggerId === original.id);
+    } finally { f.store.triggers.save(original); }
+    // Both callbacks were swallowed and current authority is restored. The old
+    // attempt must still fail only its rejected input, without a fresh budget.
+  });
+  f.receive(); f.receive('om_supplement', 'om_request', false); await f.tick();
+  assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_supplement').failureKind, 'authority');
+  assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_request').status, 'evaluating');
+  for (const id of ['om_request', 'om_supplement']) assert.equal(refreshState(f.store, `feishu:tenant:${id}`).refreshesUsed, 0);
+  assert.equal(f.runtime.list().length, 1);
+  await f.tick();
+  assert.deepEqual(f.attempts[1].candidate.triggers.map(row => row.id), ['feishu:tenant:om_request']);
+  assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_request').status, 'accepted');
+  assert.equal(refreshState(f.store, 'feishu:tenant:om_request').refreshesUsed, 0);
+  assert.equal(f.runtime.list().length, 2);
+});
+
+for (const resource of ['checkpoint', 'sources']) for (const failureFirst of [false, true]) {
+  test(`ordinary ${resource} callback failure ${failureFirst ? 'before' : 'after'} stale cannot be erased or leak its text`, async t => {
+    const f = fixture(t); await f.runtime.prepareExecution();
+    const other = f.runtime.submit({ text: 'Earlier material work', operatorNotifications: false }); await f.runtime.runNext();
+    const secret = 'fixture-sensitive-callback-detail';
+    f.setChange(async input => {
+      const fail = async () => {
+        if (resource === 'checkpoint') {
+          const session = { get driver() { throw new Error(secret); }, id: 'unusable' };
+          assert.throws(() => input.checkpoint(session), error => error.message === secret);
+        } else await assert.rejects(input.readContextRecord('sources', secret));
+      };
+      if (failureFirst) await fail();
+      rejectStaleCheckpoint(f, other, input);
+      if (!failureFirst) await fail();
+    });
+    f.receive(); await f.tick();
+    const status = assessmentStatus(f.store, 'feishu:tenant:om_request');
+    assert.equal(status.status, 'failed'); assert.equal(status.failureKind, 'internal');
+    assert.equal(refreshState(f.store, 'feishu:tenant:om_request').refreshesUsed, 0);
+    const record = f.store.getMeta(`assessment:${f.attempts[0].candidate.evalId}`);
+    assert.match(JSON.stringify(record), /Assessment host callback failed/);
+    assert.equal(JSON.stringify(record).includes(secret), false);
+    assert.equal(f.runtime.list().length, 1);
+  });
+}
+
+test('a copied stale callback error cannot refresh beyond the original evaluation deadline', async t => {
+  const f = fixture(t); await f.runtime.prepareExecution();
+  const other = f.runtime.submit({ text: 'Earlier material work', operatorNotifications: false }); await f.runtime.runNext();
+  let expired = false;
+  f.setChange(input => {
+    rejectStaleCheckpoint(f, other, input);
+    const deadline = f.store.threads.get(input.candidate.thread.key).evaluating.deadline;
+    t.mock.timers.tick(Date.parse(deadline) - Date.now() + 1);
+    expired = deadline <= new Date().toISOString();
+    throw new Error('Copied adapter exception');
+  });
+  f.receive(); await f.tick();
+  assert.equal(expired, true);
+  assert.equal(f.attempts.length, 1);
+  assert.equal(refreshState(f.store, 'feishu:tenant:om_request').refreshesUsed, 0);
+  assert.equal(f.runtime.list().length, 1);
+});
+
+test('a recorded owner refusal cannot be erased by restoring the owner after a stale checkpoint', async t => {
+  const f = fixture(t); await f.runtime.prepareExecution();
+  const other = f.runtime.submit({ text: 'Earlier material work', operatorNotifications: false }); await f.runtime.runNext();
+  f.setChange(input => {
+    rejectStaleCheckpoint(f, other, input);
+    const owner = f.store.getMeta('coordinator:owner');
+    f.store.setMeta('coordinator:owner', { ...owner, token: 'other-attempt-owner' });
+    try { assert.throws(() => input.checkpoint({ driver: 'fixture-assessor', id: 'refused-owner' }), /Stale coordinator callback/); }
+    finally { f.store.setMeta('coordinator:owner', owner); }
+  });
+  f.receive(); await f.tick();
+  assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_request').status, 'failed');
+  assert.equal(refreshState(f.store, 'feishu:tenant:om_request').refreshesUsed, 0);
+  assert.equal(f.runtime.list().length, 1);
+});
+
+test('an ordinary source lookup failure without stale proof preserves assessor handling', async t => {
+  const f = fixture(t); await f.runtime.prepareExecution();
+  f.setChange(async input => { await assert.rejects(input.readContextRecord('sources', 'not-configured')); });
+  f.receive(); await f.tick();
+  assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_request').status, 'accepted');
+  assert.equal(refreshState(f.store, 'feishu:tenant:om_request').refreshesUsed, 0);
+  assert.equal(f.runtime.list().length, 1);
 });
 
 test('material authorization revision changes fail closed instead of refreshing', async t => {

@@ -1767,16 +1767,16 @@ export class ProjectRuntime {
       .finally(() => { this.#assessing = undefined; });
     return this.#assessing;
   }
-  #assertRetainedFeishuInputs(candidate) {
+  #assertRetainedFeishuInputs(candidate, reject = error => { throw error; }) {
     for (const input of candidate.triggers) {
       const retained = this.#store.getMeta(`feishu:retained:${input.id}`);
       if (!retained) continue;
       const trigger = this.#store.triggers.get(input.id);
       if (retained.version !== 1 || retained.digest !== createHash('sha256').update(JSON.stringify(trigger ?? null)).digest('hex') ||
           !retainedFeishuSupplementAllowed(this.#policy(), this.#config().feishu, trigger)) {
-        throw Object.assign(new Error('Retained Feishu supplement is no longer authorized in its original topic'), {
+        reject(Object.assign(new Error('Retained Feishu supplement is no longer authorized in its original topic'), {
           triggerId: input.id, failureKind: 'authority', code: 'assessment_authority', retryable: false,
-        });
+        }));
       }
     }
   }
@@ -1800,24 +1800,41 @@ export class ProjectRuntime {
     });
     this.#assessmentAbort = new AbortController();
     let materialSession,materialEvents,authorization,inputProvenance;
+    // Native adapters may redact/copy a callback exception or swallow it. Keep
+    // only this attempt's host proof; arbitrary adapter text/code is not proof.
+    let callbackStale, callbackRejection, callbackFailed = false;
+    const rejectCallback = error => {
+      callbackRejection ??= error instanceof Later ? new Later(error.message) : Object.assign(new Error(error.message),
+        Object.fromEntries(['code', 'failureKind', 'retryable', 'triggerId'].filter(key => error[key] !== undefined).map(key => [key, error[key]])));
+      throw error;
+    };
+    const callbackFailure = () => callbackStale && (callbackRejection ?? (callbackFailed
+      ? new Error('Assessment host callback failed; its invalidated result cannot be applied') : callbackStale));
+    const recordCallbackError = error => {
+      // Copy host-owned facts before the adapter can mutate the thrown object.
+      if (isAssessmentContextChanged(error)) callbackStale ??= new AssessmentContextChanged(error.reason);
+      else callbackFailed = true;
+    };
     const authorizationStamp = () => materialDigest({ policy: this.#policy().version, coordinator: this.#coordinator.current().version,
       materialRevision: this.getMaterialSettings().revision, feishu: this.#config().feishu, github: this.#config().github,
       origins: candidate.triggers.map(trigger => ({ trigger: this.#store.triggers.get(trigger.id), origin: this.#assessmentOrigin(trigger.id)?.actor })),
       routes: materialEvents?.map(event => ({ channel: this.#materialEventChannel(event), route: this.#materialEventRoute(event) })) });
-    const guard = fn => this.#store.atomic(() => {
-      const owner = this.#store.getMeta('coordinator:owner');
-      if (owner?.token !== token || this.#assessmentAbort.signal.aborted || this.#policy().version !== candidate.policyVersion) throw new Error('Stale coordinator callback');
-      const held = this.#engine.candidate(candidate.triggers[0].id);
-      if (held?.evalId !== candidate.evalId) throw new Later('Assessment evaluation has been superseded');
-      const evaluation = this.#store.threads.get(candidate.thread.key)?.evaluating;
-      if (evaluation?.delivered && evaluation.deadline <= this.#now()) throw new Later('Assessment deadline expired');
-      // Preserve the exact rejected supplemental input before a batch-wide
-      // authorization fingerprint can attribute its failure to the primary.
-      this.#assertRetainedFeishuInputs(candidate);
-      if (authorization !== undefined && authorization !== authorizationStamp()) throw Object.assign(new Error('Assessment authorization changed'), { code: 'assessment_authority', failureKind: 'authority', retryable: false });
-      if(materialSession!==undefined && this.#materialSessionScope(materialEvents)!==materialSession)throw new AssessmentContextChanged('material-session');
-      return fn(owner);
-    });
+    const guard = fn => {
+      try { return this.#store.atomic(() => {
+        const owner = this.#store.getMeta('coordinator:owner');
+        if (owner?.token !== token || this.#assessmentAbort.signal.aborted || this.#policy().version !== candidate.policyVersion) rejectCallback(new Error('Stale coordinator callback'));
+        const held = this.#engine.candidate(candidate.triggers[0].id);
+        if (held?.evalId !== candidate.evalId) rejectCallback(new Later('Assessment evaluation has been superseded'));
+        const evaluation = this.#store.threads.get(candidate.thread.key)?.evaluating;
+        if (evaluation?.delivered && evaluation.deadline <= this.#now()) rejectCallback(new Later('Assessment deadline expired'));
+        // Preserve the exact rejected supplemental input before a batch-wide
+        // authorization fingerprint can attribute its failure to the primary.
+        this.#assertRetainedFeishuInputs(candidate, rejectCallback);
+        if (authorization !== undefined && authorization !== authorizationStamp()) rejectCallback(Object.assign(new Error('Assessment authorization changed'), { code: 'assessment_authority', failureKind: 'authority', retryable: false }));
+        if(materialSession!==undefined && this.#materialSessionScope(materialEvents)!==materialSession)throw new AssessmentContextChanged('material-session');
+        return fn(owner);
+      }); } catch (error) { recordCallbackError(error); throw error; }
+    };
     let outcome, progress = {};
     const recordBase = { runId, evalId: candidate.evalId, policyVersion: candidate.policyVersion, triggerIds: candidate.triggers.map(trigger => trigger.id) };
     try {
@@ -1877,18 +1894,20 @@ export class ProjectRuntime {
         }),
         contextReferences:sourceContext.contextReferences,
         readContextRecord: async (resource, id, options) => {
-          assertAssessment();
-          const record = await (['sources','repository'].includes(resource) ? sourceContext.readContextRecord(resource,id,options) : guard(() => {
-            if (!materialReader || resource==='triggers' && candidate.triggers.some(trigger=>trigger.id===id)) return this.readContextRecord(resource,id,options);
-            const value=materialReader.read({resource,recordId:id,offset:options?.offset??0});
-            if(value.missing)throw materialError('MATERIAL_ACCESS_DENIED','This context record is outside the material disclosure scope');
-            if(options?.version && options.version!==value.version)throw new AssessmentContextChanged('record-version');
-            rememberMaterials();return value;
-          }));
-          assertAssessment();
-          if (contextReads.length < 64) contextReads.push({ resource, id, version: record.version, offset: record.offset,
-            ...(record.provenance ? { provenance: record.provenance } : {}) });
-          return record;
+          try {
+            assertAssessment();
+            const record = await (['sources','repository'].includes(resource) ? sourceContext.readContextRecord(resource,id,options) : guard(() => {
+              if (!materialReader || resource==='triggers' && candidate.triggers.some(trigger=>trigger.id===id)) return this.readContextRecord(resource,id,options);
+              const value=materialReader.read({resource,recordId:id,offset:options?.offset??0});
+              if(value.missing)throw materialError('MATERIAL_ACCESS_DENIED','This context record is outside the material disclosure scope');
+              if(options?.version && options.version!==value.version)throw new AssessmentContextChanged('record-version');
+              rememberMaterials();return value;
+            }));
+            assertAssessment();
+            if (contextReads.length < 64) contextReads.push({ resource, id, version: record.version, offset: record.offset,
+              ...(record.provenance ? { provenance: record.provenance } : {}) });
+            return record;
+          } catch (error) { recordCallbackError(error); throw error; }
         },
         session: this.#store.getMeta(sessionKey),
         checkpoint: session => guard(() => this.#store.setMeta(sessionKey, driverSession(session))),
@@ -1904,6 +1923,7 @@ export class ProjectRuntime {
         return result;
       };
       const result = guard(()=>{
+        if (callbackFailure()) throw callbackFailure();
         this.#assertRetainedFeishuInputs(candidate);
         links.verify();
         if(this.#materialSessionScope(materialEvents)!==materialSession)throw new AssessmentContextChanged('material-session');
@@ -1949,6 +1969,12 @@ export class ProjectRuntime {
       if (error instanceof Later) throw error;
       if (this.isPaused() || this.#stopping) throw new Later('Assessment is waiting for resume');
       if (this.#store.getMeta('coordinator:owner')?.token !== token || this.#assessmentAbort.signal.aborted) throw new Later('Assessment ownership changed');
+      if (callbackStale) {
+        const evaluation = this.#store.threads.get(candidate.thread.key)?.evaluating;
+        if (evaluation?.delivered && evaluation.deadline <= this.#now()) throw new Later('Assessment deadline expired');
+        error = callbackFailure();
+        if (error instanceof Later) throw error;
+      }
       if (isAssessmentContextChanged(error)) {
         const refreshed = this.#store.atomic(() => {
           const held = this.#engine.candidate(candidate.triggers[0].id);
