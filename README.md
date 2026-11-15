@@ -4,7 +4,7 @@
 
 支持通过注册表接入 Codex、DSH 和 Cursor 等执行端。状态保存在项目独立的 SQLite 数据库中；初始化不会自动启动执行或后台服务。
 
-当前源码版本为 **0.15.0-alpha.11**，修复配置材料保护后候选评估的上下文目录与实际读取权限不一致，以及将上下文不可用误报为材料读取未授权的问题。保持原请求身份、领域归属、Worker 执行与材料披露边界，不新增权限设置，不自动重跑历史失败。设计与验收见[评估上下文边界](docs/assessment-context-boundaries.md)。源码版本不代表已发布或已部署；发布状态以 npm 与 GitHub Release 为准。
+当前源码版本为 **0.15.0-alpha.12**，修复无关工单的材料读取及尚未展示材料正文的工单卡片过度触发评估刷新的问题。保留会话隔离、权限、材料新鲜度、领域归属及既有两次刷新上限，不新增配置或自动重跑历史失败。设计与验收见[评估上下文边界](docs/assessment-context-boundaries.md)。源码版本不代表已发布或已部署；发布状态以 npm 与 GitHub Release 为准。
 
 ```bash
 git clone https://github.com/imjszhang/js-superagent.git
