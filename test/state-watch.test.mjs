@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { mkdtempSync, realpathSync, rmSync, writeFileSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -80,6 +82,16 @@ test('directory watch follows WAL changes and requests reopen on database replac
 test('async readers serialize, retain a trailing invalidation, and report errors', async t => {
   const root = temporary(t), database = join(root, 'state.sqlite');
   writeFileSync(database, 'original');
+  // This case exercises callback serialization, not filesystem event delivery.
+  // Deliver invalidations explicitly: macOS may coalesce or delay the first WAL
+  // creation event. The three tests above cover the real filesystem watcher.
+  let invalidate;
+  const mockedWatch = t.mock.method(fs, 'watch', (_directory, listener) => {
+    invalidate = listener;
+    return { on() { return this; }, close() {} };
+  });
+  syncBuiltinESMExports();
+  t.after(() => { mockedWatch.mock.restore(); syncBuiltinESMExports(); });
   let calls = 0, active = 0, maximum = 0, release;
   const errors = [], blocked = new Promise(resolve => { release = resolve; });
   const close = watchStateChanges(database, async () => {
@@ -87,9 +99,9 @@ test('async readers serialize, retain a trailing invalidation, and report errors
     try { if (calls === 1) { await blocked; throw new Error('Reader failed'); } }
     finally { active--; }
   }, { onError: error => errors.push(error.message) }); t.after(close);
-  writeFileSync(`${database}-wal`, 'first');
+  invalidate('change', 'state.sqlite-wal');
   await until(() => calls === 1);
-  writeFileSync(`${database}-wal`, 'second');
+  invalidate('change', 'state.sqlite-wal');
   await delay(50); assert.equal(calls, 1);
   release(); await until(() => calls === 2);
   assert.equal(maximum, 1); assert.deepEqual(errors, ['Reader failed']);

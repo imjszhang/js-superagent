@@ -1026,8 +1026,8 @@ export class ProjectRuntime {
     return { ...(provenance.ticketIds.length ? {materialSources:provenance.ticketIds,materialContentVersions:provenance.contentVersions} : {}),
       ...(provenance.metadataTicketIds.length ? {materialMetadataSources:provenance.metadataTicketIds} : {}) };
   }
-  #materialTicketProjection(meta, domain, event) {
-    let projection=this.#materialProjection(this.#materialTicketProvenance(meta));
+  #materialTicketProjection(meta, domain, event, provenance=this.#materialTicketProvenance(meta)) {
+    let projection=this.#materialProjection(provenance);
     const report=latestAssignment(domain)?.report,current=meta.reportsV2?.at(-1);
     // A new run can have fresh observations while the domain still retains its
     // previous report. Only a report recorded for this run may expose its body.
@@ -1046,6 +1046,23 @@ export class ProjectRuntime {
     // Material readers receive the current card, never an unversioned history
     // whose old prose could silently become current again after a reread.
     return this.#materialDisclosureIds(meta).length ? {...this.#coordinationTicketCard(meta,domain,event),domainId:domain.id} : value;
+  }
+  #assessmentTicketValue(meta, domain, event) {
+    if (!this.#materialDisclosureIds(meta).length) return domain;
+    // A binding grants the Worker access; it does not mean this routing card
+    // already contains that Worker's material findings. Keep inherited body
+    // dependencies (including scope derived from another ticket) unchanged.
+    const provenance = this.#materialTicketProvenance(meta);
+    if (meta.materialBinding && !latestAssignment(domain)?.report && !domain.attention) {
+      provenance.ticketIds = provenance.ticketIds.filter(id => id !== meta.id);
+      provenance.contentVersions = provenance.contentVersions.filter(([id]) => id !== meta.id);
+      provenance.metadataTicketIds = [...new Set([...provenance.metadataTicketIds, meta.id])].sort();
+    }
+    const card = {...this.#coordinationTicketCard(meta, domain, event, provenance),domainId:domain.id};
+    // Candidate assessment cannot execute recovery actions. Its internal
+    // recovery token includes Worker checkpoints, not a routing fact.
+    if (card.recovery) delete card.recovery.version;
+    return card;
   }
   #materialEventProvenance(event) {
     return this.#materialProvenance(this.#store.getMeta(`material-event:${event.id}`),
@@ -1189,8 +1206,8 @@ export class ProjectRuntime {
       throw new Later('Material result is stale or no longer authorized for this destination');
     }
   }
-  #coordinationTicketCard(meta, domain, event) {
-    const projected=this.#materialTicketProjection(meta,domain,event); if(projected)return projected;
+  #coordinationTicketCard(meta, domain, event, provenance=this.#materialTicketProvenance(meta)) {
+    const projected=this.#materialTicketProjection(meta,domain,event,provenance); if(projected)return projected;
     const report = latestAssignment(domain)?.report;
     const material=this.#materialDisclosureIds(meta).length>0,recovery=this.#ticketRecoveryCard(meta,domain,event);
     if(material)delete recovery.lastReason;
@@ -1201,7 +1218,7 @@ export class ProjectRuntime {
       operatorTicket: isOperatorTicket(meta, domain),
       recovery,...(material?{materialProjectionVersion:1}:{}),
       ...(domain.attention ? { question: { answered: !!this.#attentionAnswer(domain.attention.id), choices: !!this.#attentionDecision(domain.attention.id) } } : {}),
-      ...this.#materialCardFields(this.#materialTicketProvenance(meta)),
+      ...this.#materialCardFields(provenance),
       stateVersion: createHash('sha256').update(JSON.stringify({ domain, failure: meta.failure, interrupted: meta.interrupted })).digest('hex') };
   }
   #recoveryOperatorAllowed(event) {
@@ -1840,14 +1857,17 @@ export class ProjectRuntime {
       for (const trigger of candidate.triggers) this.#store.setMeta(`assessment-trigger:${trigger.id}`, { evalId: candidate.evalId });
     });
     this.#assessmentAbort = new AbortController();
-    let materialSession,materialEvents,authorization,inputProvenance,links;
+    let materialSession,materialEvents,authorization,inputProvenance,links,verifyAssessmentContext;
     // Native adapters may redact/copy a callback exception or swallow it. Keep
     // only this attempt's host proof; arbitrary adapter text/code is not proof.
     let callbackStale, callbackRejection, callbackFailed = false;
-    const contextEvidence = error => error.targetSnapshot ? { targetSnapshot: {
+    const contextEvidence = error => ({ ...(error.targetSnapshot ? { targetSnapshot: {
       ticketId: error.targetSnapshot.ticketId, previousVersion: error.targetSnapshot.previousVersion,
       currentVersion: error.targetSnapshot.currentVersion, changeKind: error.targetSnapshot.changeKind,
-    } } : {};
+    } } : {}), ...(error.contextChange ? { contextChange: {
+      resource: error.contextChange.resource, id: error.contextChange.id, changeKind: error.contextChange.changeKind,
+      previousVersion: error.contextChange.previousVersion, currentVersion: error.contextChange.currentVersion,
+    } } : {}) });
     const rejectCallback = error => {
       callbackRejection ??= error instanceof Later ? new Later(error.message) : Object.assign(new Error(error.message),
         Object.fromEntries(['code', 'failureKind', 'retryable', 'triggerId'].filter(key => error[key] !== undefined).map(key => [key, error[key]])));
@@ -1879,7 +1899,7 @@ export class ProjectRuntime {
         // A material snapshot change must not hide a stopped, rerouted or owned
         // target. Authority checks never grant a new target or refresh by code.
         try { links?.verifyAuthority(...attachmentTarget()); } catch (error) { rejectCallback(error); }
-        if(materialSession!==undefined && this.#materialSessionScope(materialEvents)!==materialSession)throw new AssessmentContextChanged('material-session');
+        verifyAssessmentContext?.();
         return fn(owner);
       }); } catch (error) { recordCallbackError(error); throw error; }
     };
@@ -1909,7 +1929,7 @@ export class ProjectRuntime {
       const materialAllowed = meta => materialEvents.every(event => this.#materialContextAllowed(meta, event));
       const ticketMeta=ticket=>this.#store.getMeta(`ticket:${this.#store.getMeta(`public:${ticket.id}`)??ticket.id}`);
       const allowedTickets = links.candidate.tickets.filter(ticket => materialAllowed(ticketMeta(ticket)));
-      const modelTickets=allowedTickets.map(ticket=>({...this.#materialTicketValue(ticketMeta(ticket),ticket,ticket,materialEvents[0]),id:ticket.id}));
+      const modelTickets=allowedTickets.map(ticket=>({...this.#assessmentTicketValue(ticketMeta(ticket),ticket,materialEvents[0]),id:ticket.id}));
       const assessmentCandidate = { ...links.candidate, tickets:modelTickets,
         ...(materialSession?{thread:{key:links.candidate.thread.key,ref:links.candidate.thread.ref}}:{}),
         ...(links.candidate.ticketReferences ? {ticketReferences:links.candidate.ticketReferences.filter(reference => modelTickets.some(ticket => ticket.id === reference.ticketId && ticket.materialState!=='stale'))} : {}) };
@@ -1921,14 +1941,15 @@ export class ProjectRuntime {
       const conversationInputs = () => candidate.triggers.map(trigger => ({trigger,origin:this.#assessmentOrigin(trigger.id)}))
         .map(({trigger,origin}) => ({triggerId:trigger.id, ...this.#assessmentConversation(
           origin && materialEvents.every(event=>JSON.stringify(this.#materialEventRoute(event))===JSON.stringify(this.#materialEventRoute(origin))) ? origin : null)}));
-      const conversations=conversationInputs();
-      const conversationProvenance=this.#materialProvenance(...conversations.map(item=>item.provenance));
       const materialReader = (materialSession || materialEvents.some(event=>event.id)) && createAssessmentRecordView(() => {
         const currentConversations=conversationInputs();
         const rows=candidate.triggers.map(trigger=>({resource:'triggers',id:trigger.id,value:trigger}));
         for(const ticket of allowedTickets) {
           const meta=ticketMeta(ticket),domain=this.#store.tickets.get(meta?.domainId);
-          if(meta && domain && materialAllowed(meta))rows.push({resource:'tickets',id:ticket.id,value:this.#materialTicketValue(meta,domain,domain,materialEvents[0])});
+          if(meta && domain && materialAllowed(meta)) {
+            const value={...this.#assessmentTicketValue(meta,domain,materialEvents[0]),id:ticket.id};
+            rows.push({resource:'tickets',id:ticket.id,value,provenance:this.#materialCardProvenance(value)});
+          }
         }
         const threads=new Map([[candidate.thread.key,candidate.thread.ref]]);
         for(const trigger of candidate.triggers)for(const thread of trigger.threads)threads.set(`${thread.source}:${thread.id}`,thread);
@@ -1938,14 +1959,35 @@ export class ProjectRuntime {
           conversations:currentConversations.map(({triggerId,messages})=>({triggerId,messages})),
           tickets:allowedTickets.filter(ticket=>materialAllowed(ticketMeta(ticket))).map(ticket=>({id:ticket.id}))}});
         return rows;
-      });
+      }, {exposed:modelTickets.map(ticket=>({resource:'tickets',id:ticket.id}))});
       const refreshed = candidate.triggers.some(trigger => { const state = refreshState(this.#store, trigger.id); return state.refreshesUsed > 0 || state.cycle !== 'initial'; });
-      const sessionKey=`coordinator:session:${settings.version}${promptAssembly?`:${promptAssembly.version}`:''}${materialSession ? `:candidate${materialSession}` : ''}${refreshed ? `:refresh:${runId}` : ''}`;
+      const sessionKey=`coordinator:session:${settings.version}${promptAssembly?`:${promptAssembly.version}`:''}${materialSession ? `:candidate-view-2${materialSession}` : ''}${refreshed ? `:refresh:${runId}` : ''}`;
+      const savedSession=this.#store.getMeta(sessionKey),savedSessionProof=this.#store.getMeta(`material-session:${sessionKey}`);
+      // Never resume opaque model history without its host disclosure proof.
+      // Starting clean is not a failed assessment and spends no refresh budget.
+      const session=!materialSession || savedSessionProof ? savedSession : undefined;
+      const sessionProvenance=this.#materialProvenance(session ? savedSessionProof : undefined);
+      const promptProvenance=this.#materialProvenance(...modelTickets.map(ticket=>this.#materialCardProvenance(ticket)));
+      const exposedProvenance=()=>this.#materialProvenance(inputProvenance,sessionProvenance,promptProvenance,
+        ...(materialReader ? materialReader.provenances() : []));
+      verifyAssessmentContext=()=>{
+        // Preserve the domain target guard and its diagnosis before comparing
+        // derived prompt cards. A changed card cannot mask changed ownership.
+        links.verify(...attachmentTarget());
+        const provenance=exposedProvenance();
+        for(const event of materialEvents)this.#assertMaterialDisclosure([...provenance.ticketIds,...provenance.metadataTicketIds],materialDestination(this.#materialEventChannel(event)));
+        for(const id of provenance.ticketIds) {
+          const previousVersion=provenance.contentVersions.find(([source])=>source===id)?.[1]??null;
+          const currentVersion=this.#materialContentVersions([id])[0][1],fresh=this.#materialContentFresh([id]);
+          if(previousVersion!==currentVersion || !fresh)throw Object.assign(new AssessmentContextChanged('material-dependency'),{
+            contextChange:{resource:'materials',id,changeKind:previousVersion!==currentVersion?'content-version':'freshness',previousVersion,currentVersion},
+          });
+        }
+        if(materialReader)materialReader.verify();
+      };
       const rememberMaterials = () => {
         if (!materialSession) return this.#materialProvenance();
-        const provenance=this.#materialProvenance(inputProvenance,
-          ...allowedTickets.map(ticket=>this.#materialCardProvenance(this.#coordinationTicketCard(ticketMeta(ticket),ticket,materialEvents[0]))),
-          conversationProvenance,this.#store.getMeta(`material-session:${sessionKey}`));
+        const provenance=exposedProvenance();
         for(const event of materialEvents)this.#assertMaterialDisclosure([...provenance.ticketIds,...provenance.metadataTicketIds],materialDestination(this.#materialEventChannel(event)));
         this.#store.setMeta(`material-session:${sessionKey}`,this.#persistMaterialProvenance(provenance));recordBase.materialSources=this.#persistMaterialProvenance(provenance).ticketIds;recordBase.materialFreshSources=provenance.ticketIds;
         recordBase.materialProjectionVersion=1;recordBase.materialMetadataSources=provenance.metadataTicketIds;
@@ -1976,7 +2018,7 @@ export class ProjectRuntime {
             return record;
           } catch (error) { recordCallbackError(error); throw error; }
         },
-        session: this.#store.getMeta(sessionKey),
+        session,
         checkpoint: session => guard(() => this.#store.setMeta(sessionKey, driverSession(session))),
         registerProcess: pid => guard(owner => {
           if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) throw new Error('Invalid coordinator process');
@@ -1993,7 +2035,7 @@ export class ProjectRuntime {
         if (callbackFailure()) throw callbackFailure();
         this.#assertRetainedFeishuInputs(candidate);
         links.verify(...attachmentTarget());
-        if(this.#materialSessionScope(materialEvents)!==materialSession)throw new AssessmentContextChanged('material-session');
+        verifyAssessmentContext();
         if(materialReader)materialReader.verify();
         const provenance=rememberMaterials(),materialSources=provenance.ticketIds,metadataSources=provenance.metadataTicketIds;
         if (candidate.triggers.some(trigger => !this.#assessmentOriginAllowed(trigger.id)))
@@ -2042,7 +2084,7 @@ export class ProjectRuntime {
         if (error instanceof Later) throw error;
       }
       if (isAssessmentContextChanged(error)) {
-        Object.assign(recordBase, contextEvidence(error));
+        Object.assign(recordBase, contextEvidence(error), {refreshReason:error.reason});
         const refreshed = this.#store.atomic(() => {
           const held = this.#engine.candidate(candidate.triggers[0].id);
           if (held?.evalId !== candidate.evalId || this.#policy().version !== candidate.policyVersion) return { waiting: true };

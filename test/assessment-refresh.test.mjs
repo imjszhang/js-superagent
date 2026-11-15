@@ -11,19 +11,29 @@ import { AssessmentContextChanged, recordContextRefresh, refreshState, resetRefr
 import { runBoundedAssessment } from '../src/context-requests.mjs';
 import { executeDshTurn } from '../src/drivers/dsh.mjs';
 
-function fixture(t) {
+function fixture(t, { readMaterials = false } = {}) {
   t.mock.timers.enable({ apis: ['Date'], now: 1800000000000 });
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'assessment-refresh-'))), attempts = [], sent = [];
   writeFileSync(join(root, 'notes.md'), 'Fictional orchard notes');
-  let change = () => {}; const network = { hold: false };
+  let change = () => {}, contextTickets = []; const network = { hold: false };
   const api = { list: async () => ({ code: 0, data: { items: [], has_more: false } }),
     get: async input => ({ code: 0, data: { items: [{ message_id: input.path.message_id, chat_id: 'oc_group' }] } }),
     reply: async input => { if (network.hold) throw new Error('fixture response unavailable'); sent.push(input); return { code: 0, data: { message_id: `om_sent_${sent.length}` } }; } };
   const sdk = { Client: class { constructor() { this.im = { message: api }; } },
     EventDispatcher: class { register() { return this; } }, WSClient: class { async start() {} close() {} } };
-  const options = { projectRoot: root, feishuSDK: sdk,
+  const options = { projectRoot: root, feishuSDK: sdk, execution: { driver: 'fixture', enableAgentTools: true },
     driver: { capabilities: { agentTools: true, boundedMaterialReadsVersion: 1, sessionResume: true },
-      async run() { return { version: 2, state: 'waiting', summary: 'Waiting within the approved scope', artifacts: [], attention: null }; } },
+      async run(input) {
+        if (readMaterials) {
+          input.checkpoint({ driver: 'fixture', id: `worker-${input.ticketId}` });
+          let n = 0;
+          const read = ref => input.agentTools.call({ name: 'js_superagent_read', arguments: { resource: 'materials', id: ref.id },
+            callId: `material-${++n}`, sessionId: `worker-${input.ticketId}`, turnId: 'turn-one' });
+          await read(input.agentTools.contextResources().find(ref => ref.resource === 'materials' && ref.value.kind === 'directory'));
+          await read(input.agentTools.contextResources().find(ref => ref.resource === 'materials' && ref.value.kind === 'file'));
+        }
+        return { version: 2, state: 'waiting', summary: 'Waiting within the approved scope', artifacts: [], attention: null };
+      } },
     assessor: { async assess(input) {
       attempts.push(input); input.checkpoint({ driver: 'fixture-assessor', id: `attempt-${attempts.length}` });
       const result = await change(input, attempts.length);
@@ -42,13 +52,24 @@ function fixture(t) {
     defaults: { sources: [{ id: 'project', view: { kind: 'current' } }] } }, { expectedRevision: 0 });
   const store = new Store(join(projectStateDirectory(root), 'state.sqlite'));
   t.after(async () => { await runtime.stop(); runtime.close(); store.close(); rmSync(root, { recursive: true, force: true }); rmSync(projectStateDirectory(root), { recursive: true, force: true }); });
-  const receive = (id = 'om_request', rootId, mention = true) => runtime.receiveSourceEvent('feishu', {
+  const receive = (id = 'om_request', rootId, mention = true) => { const result = runtime.receiveSourceEvent('feishu', {
     sender: { sender_id: { open_id: 'ou_reader' }, sender_type: 'user', tenant_key: 'tenant' },
     message: { message_id: id, ...(rootId ? { root_id: rootId } : {}), chat_id: 'oc_group', chat_type: 'group', message_type: 'text', create_time: String(Date.now()),
       content: JSON.stringify({ text: mention ? '@_user_1 inspect current project notes' : 'Only read the authorized notes' }), mentions: mention ? [{ id: { open_id: 'ou_bot' }, key: '@_user_1' }] : [] },
   });
+    // An explicit, context-only relation makes these report bodies part of the
+    // candidate prompt; they cannot lend authority or claim the new request.
+    const trigger = store.triggers.get(`feishu:tenant:${id}`);
+    if (trigger && contextTickets.length) for (const ref of trigger.threads) {
+      const thread = store.threads.get(`${ref.source}:${ref.id}`);
+      thread.subscriptions = [...new Set([...thread.subscriptions, ...contextTickets])];
+      thread.context = [...new Set([...(thread.context ?? []), ...contextTickets])];
+      store.threads.save(thread);
+    }
+    return result;
+  };
   const tick = async () => { t.mock.timers.tick(1100); return runtime.runNext(); };
-  return { root, get runtime() { return runtime; }, store, attempts, sent, network, receive, tick, setChange: fn => { change = fn; },
+  return { root, get runtime() { return runtime; }, store, attempts, sent, network, receive, tick, setContextTickets: ids => { contextTickets = ids; }, setChange: fn => { change = fn; },
     async reopen() { await runtime.stop(); runtime.close(); runtime = createProjectAgent(options).init(); await runtime.prepareExecution(); } };
 }
 
@@ -67,6 +88,103 @@ async function pendingSupplement(f) {
   };
   return { ticket, triggerId, attach };
 }
+
+
+for (const changeKind of ['new-ticket', 'run', 'observation']) test(`unrelated ${changeKind} does not spend a root request's refresh allowance`, async t => {
+  const f = fixture(t, { readMaterials: true }); await f.runtime.prepareExecution();
+  const other = f.runtime.submit({ text: 'Independent investigation', operatorNotifications: false }); await f.runtime.runNext();
+  f.setChange(async input => {
+    assert.equal(input.candidate.tickets.length, 0, 'the other topic supplies no candidate facts');
+    if (changeKind === 'new-ticket') f.runtime.submit({ text: 'Another independent investigation', operatorNotifications: false });
+    else {
+      const meta = f.store.getMeta(`ticket:${other.id}`);
+      if (changeKind === 'run') meta.runId = 'unrelated-worker-next-run';
+      else {
+        assert.ok(meta.materialObservations.length > 0, 'the worker actually read authorized material');
+        meta.materialObservations.push(structuredClone(meta.materialObservations[0]));
+      }
+      f.store.setMeta(`ticket:${other.id}`, meta);
+    }
+    input.checkpoint({ driver: 'fixture-assessor', id: 'unrelated-churn-checkpoint' });
+    await input.readContextRecord('triggers', 'feishu:tenant:om_request');
+  });
+  f.receive(); await f.tick();
+  assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_request').status, 'accepted');
+  assert.equal(refreshState(f.store, 'feishu:tenant:om_request').refreshesUsed, 0);
+  assert.equal(f.attempts.length, 1);
+  const record = f.store.getMeta(`assessment:${f.attempts[0].candidate.evalId}`);
+  assert.deepEqual(record.materialFreshSources, []);
+  assert.equal(f.store.tickets.list().filter(row => row.origin?.triggerId === 'feishu:tenant:om_request').length, 1);
+});
+
+for (const changeKind of ['run', 'observation']) test(`a metadata-only candidate ticket's ${changeKind} does not invalidate supplemental routing`, async t => {
+  const f = fixture(t, { readMaterials: true }), { ticket, triggerId, attach } = await pendingSupplement(f);
+  // Deterministically model the pre-report execution window while keeping real
+  // bounded-read observations. No body has yet been supplied to the assessor.
+  const domain = f.runtime.getDomainTicket(ticket.id);
+  for (const assignment of domain.assignments) delete assignment.report;
+  f.store.tickets.save(domain);
+  const meta = f.store.getMeta(`ticket:${ticket.id}`); meta.reportsV2 = []; f.store.setMeta(`ticket:${ticket.id}`, meta);
+  f.setChange(async input => {
+    const card = input.candidate.tickets.find(row => row.id === domain.id);
+    assert.ok(card); assert.equal(card.summary, null);
+    const current = f.store.getMeta(`ticket:${ticket.id}`);
+    if (changeKind === 'run') current.runId = 'normal-worker-progress';
+    else {
+      assert.ok(current.materialObservations.length > 0);
+      current.materialObservations.push(structuredClone(current.materialObservations[0]));
+    }
+    f.store.setMeta(`ticket:${ticket.id}`, current);
+    input.checkpoint({ driver: 'fixture-assessor', id: 'metadata-only-routing' });
+    await input.readContextRecord('tickets', domain.id);
+    return attach(input);
+  });
+  await f.tick();
+  assert.equal(assessmentStatus(f.store, triggerId).status, 'attached', JSON.stringify(f.store.getMeta(`assessment:${f.attempts.at(-1).candidate.evalId}`)));
+  assert.equal(refreshState(f.store, triggerId).refreshesUsed, 0);
+  assert.equal(f.attempts.length, 2, 'root and one supplemental assessment only');
+  assert.equal(f.runtime.getDomainTicket(ticket.id).inputs.filter(item => item.triggerId === triggerId).length, 1);
+  const record = f.store.getMeta(`assessment:${f.attempts.at(-1).candidate.evalId}`);
+  assert.deepEqual(record.materialFreshSources, []);
+  assert.deepEqual(record.materialMetadataSources, [ticket.id], 'disclosure authorization still follows metadata');
+});
+
+
+for (const missingProof of [false, true]) test(`candidate native session ${missingProof ? 'without provenance starts clean' : 'retains hidden body dependencies'}`, async t => {
+  const f = fixture(t); await f.runtime.prepareExecution();
+  const other = f.runtime.submit({ text: 'Earlier report', operatorNotifications: false }); await f.runtime.runNext();
+  f.setContextTickets([other.id]);
+  f.setChange(input => {
+    assert.equal(input.candidate.tickets.length, 1);
+    return { kind: 'ignore', reason: 'Read the exposed report without creating work', rules: [] };
+  });
+  f.receive(); await f.tick();
+  assert.equal(assessmentStatus(f.store, 'feishu:tenant:om_request').status, 'ignore');
+  assert.equal(f.attempts[0].session, undefined);
+  if (missingProof) for (const row of f.store.listMeta('material-session:')) f.store.deleteMeta(row.key);
+  f.setContextTickets([]);
+  f.setChange((input, attempt) => {
+    assert.equal(input.candidate.tickets.length, 0, 'the next topic does not itself expose the earlier ticket');
+    if (missingProof || attempt > 2) assert.equal(input.session, undefined, 'a native session without usable source proof is not resumed');
+    else {
+      assert.ok(input.session, 'the native session still contains the previous prompt report');
+      const original = f.store.getMeta(`ticket:${other.id}`);
+      f.store.setMeta(`ticket:${other.id}`, { ...original, runId: 'changed-hidden-session-source' });
+      assert.throws(() => input.checkpoint({ driver: 'fixture-assessor', id: 'must-not-reuse-old-body' }), AssessmentContextChanged);
+    }
+    return { kind: 'ignore', reason: 'No further work requested', rules: [] };
+  });
+  f.receive('om_new_topic'); await f.tick();
+  const triggerId = 'feishu:tenant:om_new_topic';
+  assert.equal(refreshState(f.store, triggerId).refreshesUsed, missingProof ? 0 : 1);
+  if (!missingProof) {
+    assert.equal(assessmentStatus(f.store, triggerId).status, 'evaluating');
+    await f.tick();
+  }
+  assert.equal(assessmentStatus(f.store, triggerId).status, 'ignore');
+  assert.equal(f.attempts.length, missingProof ? 2 : 3);
+  assert.equal(f.runtime.list().length, 1);
+});
 
 for (const handling of ['commit', 'copied', 'swallowed']) test(`concurrent same-topic input refreshes the original supplement (${handling})`, async t => {
   const f = fixture(t), { ticket, triggerId, attach } = await pendingSupplement(f);
@@ -110,14 +228,15 @@ test('two material refreshes then a target snapshot change exhaust the original 
     deadlines.push(f.store.threads.get(input.candidate.thread.key).evaluating.deadline);
     if (attempt <= 3) {
       const meta = f.store.getMeta(`ticket:${ticket.id}`);
-      f.store.setMeta(`ticket:${ticket.id}`, { ...meta, runId: `concurrent-material-run-${attempt}` });
+      f.store.setMeta(`ticket:${ticket.id}`, { ...meta, runId: `concurrent-material-run-${attempt}`,
+        reportsV2: meta.reportsV2.map((report, index) => index === meta.reportsV2.length - 1 ? { ...report, runId: `concurrent-material-run-${attempt}` } : report) });
     } else f.receive('om_active', 'om_request', false);
     return attach(input);
   });
   for (let index = 1; index <= 2; index++) {
     await f.tick();
     assert.equal(refreshState(f.store, triggerId).refreshesUsed, index);
-    assert.equal(refreshState(f.store, triggerId).reason, 'material-session');
+    assert.equal(refreshState(f.store, triggerId).reason, 'material-dependency');
   }
   for (let index = 0; index < 3; index++) await f.tick();
   assert.equal(f.attempts.length, 4, 'one root assessment and the unchanged initial plus two refresh attempts');
@@ -236,10 +355,10 @@ test('a target snapshot callback cannot refresh after the original deadline', as
   assert.equal(f.runtime.getDomainTicket(ticket.id).inputs.some(item => item.triggerId === triggerId), false);
 });
 
-test('a concurrent material projection change refreshes the same evaluation with a fresh session', async t => {
+test('a material report exposed in the initial prompt refreshes the same evaluation with a fresh session', async t => {
   const f = fixture(t); await f.runtime.prepareExecution();
   const other = f.runtime.submit({ text: 'Earlier independent investigation', operatorNotifications: false });
-  await f.runtime.runNext();
+  await f.runtime.runNext(); f.setContextTickets([other.id]);
   f.setChange((_input, attempt) => {
     if (attempt !== 1) return;
     const meta = f.store.getMeta(`ticket:${other.id}`); meta.runId = 'a-new-independent-run'; f.store.setMeta(`ticket:${other.id}`, meta);
@@ -260,7 +379,7 @@ test('a concurrent material projection change refreshes the same evaluation with
 
 for (const handling of ['copied', 'swallowed']) test(`host callback stale evidence survives a ${handling} adapter error`, async t => {
   const f = fixture(t); await f.runtime.prepareExecution();
-  const other = f.runtime.submit({ text: 'Independent material work', operatorNotifications: false }); await f.runtime.runNext();
+  const other = f.runtime.submit({ text: 'Independent material work', operatorNotifications: false }); await f.runtime.runNext(); f.setContextTickets([other.id]);
   f.setChange((input, attempt) => {
     if (attempt !== 1) return;
     const original = f.store.getMeta(`ticket:${other.id}`);
@@ -289,7 +408,7 @@ for (const handling of ['copied', 'swallowed']) test(`host callback stale eviden
 
 test('actual DSH checkpoint redaction cannot erase the host refresh proof', async t => {
   const f = fixture(t); await f.runtime.prepareExecution();
-  const other = f.runtime.submit({ text: 'Other material work', operatorNotifications: false }); await f.runtime.runNext();
+  const other = f.runtime.submit({ text: 'Other material work', operatorNotifications: false }); await f.runtime.runNext(); f.setContextTickets([other.id]);
   const executable = join(f.root, 'checkpoint-sdk.mjs');
   writeFileSync(executable, `#!/usr/bin/env node
 import{createInterface}from'node:readline';
@@ -335,13 +454,20 @@ for await(const line of createInterface({input:process.stdin})){
 
 test('continuously changing context has a durable two-refresh budget and one terminal original-group receipt', async t => {
   const f = fixture(t); await f.runtime.prepareExecution();
-  const other = f.runtime.submit({ text: 'Independent investigation', operatorNotifications: false }); await f.runtime.runNext();
-  f.setChange((_input, attempt) => { const meta = f.store.getMeta(`ticket:${other.id}`); meta.runId = `independent-run-${attempt}`; f.store.setMeta(`ticket:${other.id}`, meta); });
+  const other = f.runtime.submit({ text: 'Independent investigation', operatorNotifications: false }); await f.runtime.runNext(); f.setContextTickets([other.id]);
+  f.setChange((_input, attempt) => { const meta = f.store.getMeta(`ticket:${other.id}`); meta.runId = `independent-run-${attempt}`; meta.reportsV2.at(-1).runId = meta.runId; f.store.setMeta(`ticket:${other.id}`, meta); });
   f.receive();
   for (let i = 0; i < 5; i++) await f.tick();
   assert.equal(f.attempts.length, 3);
   const status = assessmentStatus(f.store, 'feishu:tenant:om_request');
   assert.equal(status.status, 'failed'); assert.equal(status.code, 'assessment_context_stale_exhausted'); assert.equal(status.retryable, true);
+  const terminal = f.store.getMeta(`assessment:${status.evalId}`);
+  assert.equal(terminal.refreshReason, 'material-dependency', 'the exhausted result retains the last actual invalidation reason');
+  assert.deepEqual(Object.keys(terminal.contextChange).sort(), ['changeKind', 'currentVersion', 'id', 'previousVersion', 'resource']);
+  assert.equal(terminal.contextChange.resource, 'materials'); assert.equal(terminal.contextChange.id, other.id);
+  assert.equal(terminal.contextChange.changeKind, 'content-version');
+  for (const field of ['previousVersion', 'currentVersion']) assert.match(terminal.contextChange[field], /^[a-f\d]{64}$/);
+  assert.notEqual(terminal.contextChange.previousVersion, terminal.contextChange.currentVersion);
   assert.equal(f.runtime.list().length, 1);
   const notices = f.runtime.notifications().filter(row => row.id.startsWith('assessment-result:'));
   assert.equal(notices.length, 1); assert.equal(notices[0].channel.address.messageId, 'om_request');
@@ -352,8 +478,8 @@ test('continuously changing context has a durable two-refresh budget and one ter
 
 test('restart preserves refresh allowance; a duplicate or pending reevaluation cannot reset it', async t => {
   const f = fixture(t); await f.runtime.prepareExecution();
-  const other = f.runtime.submit({ text: 'Other investigation', operatorNotifications: false }); await f.runtime.runNext();
-  f.setChange((_input, attempt) => { const meta = f.store.getMeta(`ticket:${other.id}`); meta.runId = `changed-${attempt}`; f.store.setMeta(`ticket:${other.id}`, meta); });
+  const other = f.runtime.submit({ text: 'Other investigation', operatorNotifications: false }); await f.runtime.runNext(); f.setContextTickets([other.id]);
+  f.setChange((_input, attempt) => { const meta = f.store.getMeta(`ticket:${other.id}`); meta.runId = `changed-${attempt}`; meta.reportsV2.at(-1).runId = meta.runId; f.store.setMeta(`ticket:${other.id}`, meta); });
   f.receive(); await f.tick();
   assert.equal(refreshState(f.store, 'feishu:tenant:om_request').refreshesUsed, 1);
   f.receive(); f.runtime.reevaluate('feishu:tenant:om_request');
@@ -388,7 +514,7 @@ function rejectStaleCheckpoint(f, other, input) {
 
 test('a known input authority rejection wins over earlier stale proof after authority is restored', async t => {
   const f = fixture(t); await f.runtime.prepareExecution();
-  const other = f.runtime.submit({ text: 'Earlier material work', operatorNotifications: false }); await f.runtime.runNext();
+  const other = f.runtime.submit({ text: 'Earlier material work', operatorNotifications: false }); await f.runtime.runNext(); f.setContextTickets([other.id]);
   let rejectedInput;
   f.setChange((input, attempt) => {
     if (attempt === 2) {
@@ -421,7 +547,7 @@ test('a known input authority rejection wins over earlier stale proof after auth
 for (const resource of ['checkpoint', 'sources']) for (const failureFirst of [false, true]) {
   test(`ordinary ${resource} callback failure ${failureFirst ? 'before' : 'after'} stale cannot be erased or leak its text`, async t => {
     const f = fixture(t); await f.runtime.prepareExecution();
-    const other = f.runtime.submit({ text: 'Earlier material work', operatorNotifications: false }); await f.runtime.runNext();
+    const other = f.runtime.submit({ text: 'Earlier material work', operatorNotifications: false }); await f.runtime.runNext(); f.setContextTickets([other.id]);
     const secret = 'fixture-sensitive-callback-detail';
     f.setChange(async input => {
       const fail = async () => {
@@ -447,7 +573,7 @@ for (const resource of ['checkpoint', 'sources']) for (const failureFirst of [fa
 
 test('a copied stale callback error cannot refresh beyond the original evaluation deadline', async t => {
   const f = fixture(t); await f.runtime.prepareExecution();
-  const other = f.runtime.submit({ text: 'Earlier material work', operatorNotifications: false }); await f.runtime.runNext();
+  const other = f.runtime.submit({ text: 'Earlier material work', operatorNotifications: false }); await f.runtime.runNext(); f.setContextTickets([other.id]);
   let expired = false;
   f.setChange(input => {
     rejectStaleCheckpoint(f, other, input);
@@ -465,7 +591,7 @@ test('a copied stale callback error cannot refresh beyond the original evaluatio
 
 test('a recorded owner refusal cannot be erased by restoring the owner after a stale checkpoint', async t => {
   const f = fixture(t); await f.runtime.prepareExecution();
-  const other = f.runtime.submit({ text: 'Earlier material work', operatorNotifications: false }); await f.runtime.runNext();
+  const other = f.runtime.submit({ text: 'Earlier material work', operatorNotifications: false }); await f.runtime.runNext(); f.setContextTickets([other.id]);
   f.setChange(input => {
     rejectStaleCheckpoint(f, other, input);
     const owner = f.store.getMeta('coordinator:owner');

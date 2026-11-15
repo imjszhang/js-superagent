@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.0-alpha.12 — 2026-11-15
+
+- Scope running assessment invalidation to the context actually exposed, while retaining conservative native-session isolation and source authorization.
+- Distinguish a material binding from disclosed material body content so normal worker reads do not invalidate metadata-only routing cards.
+- Freeze exposed material proofs and preserve bounded invalidation evidence when the existing two-refresh allowance is exhausted.
+- Preserve candidate target checks, Engine ownership, Feishu intake, Worker execution and original-request recovery; no new configuration or retry counts.
+
+Details: [Assessment context boundaries](docs/assessment-context-boundaries.md).
+
 ## 0.15.0-alpha.11 — Released 2026-11-15
 
 - Align candidate context references with the host-authorized record view so enabling material protection does not advertise unreadable thread records.
