@@ -217,6 +217,8 @@ test('revoking an allowed GitHub actor prevents a queued mandate from executing'
 });
 
 test('GitHub outage leaves remote work queued while local work runs and failed polls are throttled', options, async t => {
+  // Hold the poll window constant: a busy full suite may take over its one-second interval.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const f = fixture(t); let calls = 0, polls = 0;
   const driver = { async run() { calls++; return { status: 'completed', summary: 'Verified' }; } };
   const accepted = f.open(driver);
