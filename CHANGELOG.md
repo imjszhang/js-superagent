@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.15.0-alpha.11 — Unreleased
+## 0.15.0-alpha.11 — Released 2026-11-15
 
 - Align candidate context references with the host-authorized record view so enabling material protection does not advertise unreadable thread records.
 - Preserve the original operator request while providing bounded, source-bound conversation context for routing; keep material provenance, freshness and destination checks.
