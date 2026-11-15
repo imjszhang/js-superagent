@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.15.0-alpha.12 — 2026-11-15
+## 0.15.0-alpha.12 — Released 2026-11-15
 
 - Scope running assessment invalidation to the context actually exposed, while retaining conservative native-session isolation and source authorization.
 - Distinguish a material binding from disclosed material body content so normal worker reads do not invalidate metadata-only routing cards.
