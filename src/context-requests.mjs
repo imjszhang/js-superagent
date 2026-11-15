@@ -3,11 +3,19 @@ const resources = ['tickets', 'threads', 'decisions', 'triggers', 'sources', 're
 const unavailable = reason => ({ kind: 'unavailable', reason, rules: [] });
 
 /** References are derived from stored domain records, never from model supplied IDs. */
-export function candidateReferences(candidate, additionalReferences = []) {
+export function candidateReferences(candidate, additionalReferences = [], recordReferences) {
   const refs = Object.fromEntries(resources.map(resource => [resource, new Set()]));
   for (const reference of additionalReferences) {
     if (!reference || !['sources', 'repository'].includes(reference.resource) || typeof reference.id !== 'string' || !reference.id || reference.id.length > 1024) throw new Error('Invalid trusted candidate context reference');
     refs[reference.resource].add(reference.id);
+  }
+  if (recordReferences !== undefined) {
+    if (!Array.isArray(recordReferences)) throw new Error('Invalid assessment record references');
+    for (const ref of recordReferences) {
+      if (!ref || !['tickets','threads','triggers','decisions'].includes(ref.resource) || typeof ref.id !== 'string' || !ref.id || ref.id.length > 1024) throw new Error('Invalid assessment record reference');
+      refs[ref.resource].add(ref.id);
+    }
+    return refs;
   }
   refs.threads.add(candidate.thread.key);
   for (const trigger of candidate.triggers) {
@@ -25,15 +33,15 @@ export function candidateReferences(candidate, additionalReferences = []) {
 }
 
 /** Structured read proposals consume a shared budget; only the host performs the actual lookup. */
-export async function runBoundedAssessment({ candidate, call, readContextRecord, signal, timeoutMs = 120_000, maxReads = 3, maxBytes = 32_000, now = () => Date.now(), contextReferences = [] }) {
-  const refs = candidateReferences(candidate, contextReferences), facts = [], versions = new Map(), deadline = now() + timeoutMs;
+export async function runBoundedAssessment({ candidate, call, readContextRecord, signal, timeoutMs = 120_000, maxReads = 3, maxBytes = 32_000, now = () => Date.now(), contextReferences = [], contextRecordReferences }) {
+  const refs = candidateReferences(candidate, contextReferences, contextRecordReferences), facts = [], versions = new Map(), deadline = now() + timeoutMs;
   let bytes = 0;
   for (let turn = 0; turn <= maxReads; turn++) {
     if (signal?.aborted) throw new Error('Assessment cancelled');
     const remainingMs = deadline - now();
     if (remainingMs <= 0) return unavailable('Coordinator time budget exhausted');
     const visibleReferences = ['sources', 'repository'].flatMap(resource => [...refs[resource]].map(id => ({ resource, id })));
-    const outcome = await call({ turn, facts: structuredClone(facts), remainingMs, contextReferences: visibleReferences });
+    const outcome = await call({ turn, facts: structuredClone(facts), remainingMs, contextReferences: visibleReferences, availableRecords: Object.fromEntries(Object.entries(refs).map(([resource, ids]) => [resource,[...ids]])) });
     if (outcome.kind !== 'read') return outcome;
     if (turn === maxReads) return unavailable('Coordinator context-read budget exhausted');
     if (typeof readContextRecord !== 'function') return unavailable('Required context lookup is not available in this host');
@@ -44,7 +52,7 @@ export async function runBoundedAssessment({ candidate, call, readContextRecord,
     let record;
     try { record = await readContextRecord(outcome.resource, outcome.recordId, { offset: outcome.offset, limit, ...(version ? { version } : {}) }); }
     catch (error) {
-      if (isAssessmentContextChanged(error) || signal?.aborted || error?.name === 'AbortError' || error?.failureKind === 'authority' ||
+      if (isAssessmentContextChanged(error) || signal?.aborted || error?.name === 'AbortError' || ['authority','context'].includes(error?.failureKind) ||
           ['AUTH', 'UNAUTHORIZED', 'FORBIDDEN', 'MATERIAL_ACCESS_DENIED', 'MATERIAL_DESTINATION_DENIED'].includes(error?.code)) throw error;
       return unavailable('Requested context changed or could not be read; reassessment is needed');
     }

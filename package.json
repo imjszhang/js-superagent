@@ -1,6 +1,6 @@
 {
   "name": "js-superagent",
-  "version": "0.15.0-alpha.10",
+  "version": "0.15.0-alpha.11",
   "description": "Project-local, driver-independent agent task runtime.",
   "type": "module",
   "license": "MIT",

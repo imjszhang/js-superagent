@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.15.0-alpha.10 — Unreleased
+## 0.15.0-alpha.11 — Unreleased
+
+- Align candidate context references with the host-authorized record view so enabling material protection does not advertise unreadable thread records.
+- Preserve the original operator request while providing bounded, source-bound conversation context for routing; keep material provenance, freshness and destination checks.
+- Distinguish unavailable assessment context from actual material authorization refusal, retaining original request recovery and durable receipts.
+- Preserve prototype domain ownership, Worker execution, material grants and longrun settlement boundaries; no new access settings or automatic replay of historical failures.
+
+Details: [Assessment context boundaries](docs/assessment-context-boundaries.md).
+
+## 0.15.0-alpha.10 — Released 2026-11-14
 
 - Retain bounded Feishu read failure reasons, allowlisted transport codes, HTTP status, failure stage, elapsed time and timestamp without retaining credentials or message content.
 - Distinguish read deadlines from stop/caller cancellation even when the official SDK reports a generic cancellation; retain the original error and dispatched-write lifecycle.

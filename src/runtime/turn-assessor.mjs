@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { boundedCandidate } from '../context.mjs';
-import { candidateReferences, runBoundedAssessment } from '../context-requests.mjs';
+import { runBoundedAssessment } from '../context-requests.mjs';
 import { workEventPrompt, workEventTurnSchema, runBoundedWorkEvent, WorkEventOutputError } from './coordination.mjs';
 import { continuationSchema, continuationPrompt, validateContinuationDecision } from './continuation-assessment.mjs';
 import { candidateAssessmentSchema, validateAssessmentTurn, AssessmentFormatError, assessmentFailure } from './assessment.mjs';
@@ -44,12 +44,12 @@ export function createTurnAssessor({ config, runTurn, assessmentPrompt }) {
       let session = input.session, attempts = 0, corrections = 0, retries = 0;
       const timeoutMs = Math.min(config.timeoutMs, input.timeoutMs ?? config.timeoutMs), deadline = Date.now() + timeoutMs;
       const progress = (phase, error) => input.onAssessmentAttempt?.({ attempts, corrections, retries, phase, ...(error ? { error: assessmentFailure(error) } : {}) });
-      return runBoundedAssessment({ candidate: input.candidate, contextReferences: input.contextReferences,
+      return runBoundedAssessment({ candidate: input.candidate, contextReferences: input.contextReferences, contextRecordReferences: input.contextRecordReferences,
         maxReads: config.contextLimits?.maxReads ?? 3, maxBytes: config.contextLimits?.readBytes ?? 32_000,
         readContextRecord: input.readContextRecord, signal: input.signal, timeoutMs,
-        call: async ({ turn, facts, remainingMs, contextReferences }) => {
+        call: async ({ turn, facts, remainingMs, availableRecords }) => {
           const snapshot = boundedCandidate(input.candidate);
-          snapshot.availableRecords = Object.fromEntries(Object.entries(candidateReferences(input.candidate, contextReferences)).map(([resource, ids]) => [resource, [...ids].slice(0, 100)]));
+          snapshot.availableRecords = Object.fromEntries(Object.entries(availableRecords).map(([resource, ids]) => [resource, ids.slice(0, 100)]));
           const basePrompt = assessmentPrompt({ config, snapshot, facts, rules: input.rules, schema: candidateAssessmentSchema });
           let correction, localAttempts = 0;
           while (true) {
