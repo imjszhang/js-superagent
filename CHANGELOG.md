@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.0-alpha.14 — 2026-11-16
+
+- Describe a material-protected message withdrawal without claiming that the ticket failed, its final result was not delivered, or a new investigation is required.
+- Keep exact legacy notice text verifiable with its retained digest, preserving queued messages, receipt identities and restart deduplication. New notices use the corrected fixed text.
+- Preserve material authorization and freshness checks, Engine behavior, delivery rules, configuration, budgets and retry counts.
+
 ## 0.15.0-alpha.13 — Released 2026-11-16
 
 - Project the original text of current execution inputs into one shared bounded Worker view, including inputs attached or fanned out before launch. Preserve record identities, require version-matched full consumption, and keep native pending-input adoption separate.
