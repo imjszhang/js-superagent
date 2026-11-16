@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.15.0-alpha.13 — Unreleased
+## 0.15.0-alpha.13 — Released 2026-11-16
 
 - Project the original text of current execution inputs into one shared bounded Worker view, including inputs attached or fanned out before launch. Preserve record identities, require version-matched full consumption, and keep native pending-input adoption separate.
 - Prioritize required current inputs inside the existing context limits and expose complete, truncated and missing coverage with the existing read references. No configuration, budget or retry limit is added.
