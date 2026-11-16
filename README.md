@@ -4,7 +4,7 @@
 
 支持通过注册表接入 Codex、DSH 和 Cursor 等执行端。状态保存在项目独立的 SQLite 数据库中；初始化不会自动启动执行或后台服务。
 
-当前源码版本为 **0.15.0-alpha.14**，修正材料保护通知：一条消息停止发送不代表工单执行失败，也不自动要求重新调查。旧固定通知仍按原文和证明核验，保留回执身份及去重；材料校验、执行规则、配置、预算和重试次数不变。此前的输入交接与宿主故障通知边界见[执行输入与故障通知](docs/worker-input-and-host-failure-notices.md)。源码版本不代表已发布或已部署；发布状态以 npm 与 GitHub Release 为准。
+当前源码版本为 **0.15.0-alpha.15**，为服务进程、机器租约和维护锁增加稳定机器标识与启动会话身份，避免主机名变化、重启与 PID 复用导致旧进程身份阻塞。保留未知或异机身份保护；旧记录兼容边界见[进程身份说明](docs/process-identity.md)。源码版本不代表已发布或已部署；发布状态以 npm 与 GitHub Release 为准。
 
 ```bash
 git clone https://github.com/imjszhang/js-superagent.git

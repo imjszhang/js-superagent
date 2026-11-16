@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.0-alpha.15 — 2026-11-16
 
 - Record stable machine, boot-session and PID-namespace identity for service processes, machine leases and maintenance owners; hostname changes and prior-boot PID reuse no longer strand v2 owners.
 - Share the identity inspector between service control and independent wrapper startup; preserve live/unknown owner protection and conservative legacy receipt handling.
