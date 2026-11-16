@@ -124,7 +124,7 @@ test('a stopped control intent prevents a late wrapper from spawning its child',
   assert.equal(result.status,0,result.stderr);assert.equal(existsSync(receipt),false);
 });
 
-test('service stop waits for a real wrapper and child to exit before bootout', {skip:process.platform!=='darwin'}, async t=>{
+test('native wrapper replaces renamed prior-boot receipts and stops its real child before bootout', {skip:process.platform!=='darwin'}, async t=>{
   const f=fixture(t),cliPath=join(f.options.projectRoot,'test-cli.mjs');f.manager.uninstall();
   writeFileSync(cliPath,"process.send({type:'js-superagent:ready'});setInterval(()=>{},1000);process.on('SIGTERM',()=>process.exit(0));");
   let wrapper,job=false;const signals=[];
@@ -133,7 +133,10 @@ test('service stop waits for a real wrapper and child to exit before bootout', {
     launchctl(args){if(args[0]==='print'){if(!job)throw Object.assign(new Error('missing'),{stderr:'Could not find service'});return wrapper?`state = ${captureProcessIdentity(wrapper.pid)===null?'waiting':'running'}\npid = ${wrapper.pid}\n`:'state = waiting\n';}
       if(args[0]==='bootstrap')job=true;
       if(args[0]==='bootout'){const record=JSON.parse(readFileSync(join(f.directory,'runtime.json')));assert.equal(inspectProcessOwner(record.owner),'dead');assert.equal(inspectProcessOwner(record.childOwner),'dead');job=false;}return '';}});
-  manager.install();manager.start();
+  manager.install();
+  const oldOwner={...captureProcessIdentity(process.pid),host:'old-network-name',bootSessionId:'00000000-0000-4000-8000-000000000001'};
+  f.write('runtime.json',{healthProtocol:1,runId:'cd432b56-5645-4e8d-b211-cc94f64fd111',pid:oldOwner.pid,childPid:999999,owner:oldOwner,childOwner:{...oldOwner,pid:999999},startedAt:new Date(0).toISOString()});
+  manager.start();assert.deepEqual(signals,[],'never signal a reused PID from a previous boot');
   wrapper=spawn(process.execPath,[fileURLToPath(new URL('../src/service.mjs',import.meta.url)),'run',f.options.projectRoot],{stdio:'ignore'});
   t.after(()=>{if(wrapper.exitCode===null)wrapper.kill('SIGTERM');});
   const deadline=Date.now()+3000;

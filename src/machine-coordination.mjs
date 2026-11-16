@@ -1,11 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdirSync, lstatSync, chmodSync, readFileSync, writeFileSync, renameSync, unlinkSync, realpathSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { homedir, hostname } from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { homedir } from 'node:os';
 import { join, resolve, sep, dirname, basename, isAbsolute } from 'node:path';
 import { ensureProjectIdentity, assertProjectIdentity, inspectProjectIdentity, bindProjectMachineIdentity, coordinationError } from './project-identity.mjs';
 import { projectStateDirectory } from './state-paths.mjs';
+import { currentProcessIdentity, inspectProcessOwner } from './process-identity.mjs';
+export { currentProcessIdentity, captureProcessIdentity, inspectProcessOwner, sameBoot } from './process-identity.mjs';
 
 const PROTOCOL = 1;
 const fail = (code, message, details) => { throw coordinationError(code, message, details); };
@@ -22,61 +23,6 @@ function canonicalMaintenanceRoot(value) {
 }
 export const defaultMachineDirectory = () => process.env.JS_SUPERAGENT_MACHINE_DIRECTORY || (process.platform === 'darwin' ? join(homedir(), 'Library/Application Support/js-superagent') : join(process.env.XDG_STATE_HOME || join(homedir(), '.local/state'), 'js-superagent'));
 
-let cachedBirth, cachedBoot;
-function birth(pid) {
-  try {
-    const value = execFileSync('ps', ['-p', String(pid), '-o', 'stat=', '-o', 'lstart='], { encoding: 'utf8', timeout: 1500, maxBuffer: 1024 }).trim();
-    if (!value || value.startsWith('Z')) return null;
-    return value.split(/\s+/).slice(1).join(' ');
-  } catch (error) { if (error.status === 1) return null; return undefined; }
-}
-function boot() {
-  if (cachedBoot) return cachedBoot;
-  try {
-    cachedBoot = process.platform === 'linux' ? readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()
-      : execFileSync('sysctl', ['-n', 'kern.boottime'], { encoding: 'utf8', timeout: 1500, maxBuffer: 1024 }).trim();
-  } catch { cachedBoot = null; }
-  return cachedBoot;
-}
-const DARWIN_BOOT = /^\{\s*sec\s*=\s*(\d+),\s*usec\s*=\s*\d+\s*\}/;
-// macOS shifts kern.boottime when the wall clock is corrected (observed: a 0.1 s usec change on
-// one running boot), so an exact string comparison declares live owners dead. The owner's exact
-// process start time is still required, which distinguishes processes across real reboots.
-const BOOT_DRIFT_SECONDS = 60;
-export function sameBoot(recorded, current) {
-  if (typeof recorded !== 'string' || typeof current !== 'string' || !recorded || !current) return false;
-  if (recorded === current) return true;
-  const a = DARWIN_BOOT.exec(recorded), b = DARWIN_BOOT.exec(current);
-  return !!a && !!b && Math.abs(Number(a[1]) - Number(b[1])) <= BOOT_DRIFT_SECONDS;
-}
-export function currentProcessIdentity() {
-  cachedBirth ??= birth(process.pid);
-  const bootId = boot();
-  if (!cachedBirth || !bootId) fail('PROCESS_IDENTITY_UNKNOWN', 'Cannot verify this process start identity');
-  return { host: hostname(), pid: process.pid, birth: cachedBirth, bootId };
-}
-export function captureProcessIdentity(pid) {
-  if (!positive(pid)) throw new Error('Expected a process ID');
-  const started = birth(pid), bootId = boot();
-  if (started === null) return null;
-  if (started === undefined || !bootId) return undefined;
-  return { host: hostname(), pid, birth: started, bootId };
-}
-export function inspectProcessOwner(owner) {
-  if (!owner || typeof owner.host !== 'string' || !positive(owner.pid)) return 'unknown';
-  // Without a configured HostName, macOS reports a network-derived hostname that changes with the
-  // network (a service recorded as "Mac" was later seen as "<name>.local"). A record from another
-  // host name is accepted only when it carries this machine's current boot identity.
-  const local = owner.host === hostname();
-  if (!local && (typeof owner.bootId !== 'string' || !sameBoot(owner.bootId, boot()))) return 'unknown';
-  const actual = birth(owner.pid);
-  if (actual === null) return 'dead';
-  if (typeof owner.birth !== 'string' || typeof owner.bootId !== 'string') return 'unknown';
-  const bootId = boot();
-  if (!bootId) return 'unknown';
-  if (!sameBoot(owner.bootId, bootId)) return 'dead';
-  return actual === undefined ? 'unknown' : actual !== owner.birth ? 'dead' : 'alive';
-}
 function repositoryName(repository) {
   if (typeof repository !== 'string' || !/^[a-z\d][a-z\d-]{0,38}\/[a-z\d_.-]{1,100}$/i.test(repository) || ['.', '..'].includes(repository.split('/')[1])) throw new Error('Expected owner/repository');
   return repository.toLowerCase();
