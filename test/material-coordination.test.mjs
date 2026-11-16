@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {mkdtempSync,writeFileSync,readFileSync,rmSync,realpathSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -25,8 +26,10 @@ function fixture(t,{external=false,feishu=false,question=false}={}) {
   const feishuSDK={Client:class {constructor(){this.im={message:api};}},EventDispatcher:class {register(){return this;}},WSClient:class {async start(){} close(){}}};
   let callback=input=>({summary:'Observed material context',actions:input.event.source?.channel==='feishu'?[]:[{kind:'reply',ticketId:null,text:input.context.tickets.some(card=>card.summary?.includes(secret))?secret:'No disclosed material'}]});
   let assessmentCallback=()=>({kind:'ignore',reason:'No new work',rules:[]});
-  const runtime=createProjectAgent({projectRoot:root,...(feishu?{feishuSDK}:{}),execution:{driver:'fixture',enableAgentTools:true},driver:{capabilities:{agentTools:true,boundedMaterialReadsVersion:1,sessionResume:true},async run(input){
+  let driverCallback;
+  const options={projectRoot:root,...(feishu?{feishuSDK}:{}),execution:{driver:'fixture',enableAgentTools:true},driver:{capabilities:{agentTools:true,boundedMaterialReadsVersion:1,sessionResume:true},async run(input){
     input.checkpoint({driver:'fixture',id:'material-worker'});
+    if(driverCallback)return driverCallback(input);
     if(input.agentTools.contextResources().some(ref=>ref.resource==='materials')){
       let n=0;const read=ref=>input.agentTools.call({name:'js_superagent_read',arguments:{resource:'materials',id:ref.id},callId:`read-${++n}`,sessionId:'material-worker',turnId:'turn-one'});
       await read(input.agentTools.contextResources().find(ref=>ref.resource==='materials'&&ref.value.kind==='directory'));
@@ -35,12 +38,13 @@ function fixture(t,{external=false,feishu=false,question=false}={}) {
     return {version:2,state:'waiting',summary:secret,artifacts:[],attention:question?{question:secret}:null};
   }},assessor:{async assess(input){assessments.push(input);input.checkpoint({driver:'fixture-assessor',id:input.session?.id??`candidate-${assessments.length}`});return assessmentCallback(input);},async handleEvent(input){
     events.push(input);input.checkpoint({driver:'fixture-assessor',id:input.session?.id??`coordinator-${events.length}`});return callback(input);
-  }}}).init();
+  }}};
+  let runtime=createProjectAgent(options).init();
   const settings={entries:[{id:'project',project:external?{root:source,projectId:sourceIdentity.projectId,instanceId:sourceIdentity.instanceId}:'self',include:['notes.md'],views:['current'],readers:[principal],destinations:[principal]}]};
   runtime.configureMaterials(settings,{expectedRevision:0});
   if(feishu){process.env.MATERIAL_TEST_FEISHU_SECRET='fixture-secret';runtime.configure({feishu:{appId:'cli_fixture',appSecretEnv:'MATERIAL_TEST_FEISHU_SECRET',botOpenId:'ou_bot',tenantKey:'tenant',chats:[{chatId:'oc_group',type:'group',mode:'mentions'}],operator:{openId:'ou_alice'}}});}
   runtime.configureCoordinator({assessor:{driver:'fixture-assessor'},workflowMode:'continuous'},{expectedRevision:0});
-  const store=new Store(join(projectStateDirectory(root),'state.sqlite'));
+  let store=new Store(join(projectStateDirectory(root),'state.sqlite'));
   const enqueue=value=>new CoordinationInbox(store).enqueue(value);
   t.after(async()=>{store.close();await runtime.stop();runtime.close();for(const value of new Set([root,source])){rmSync(value,{recursive:true,force:true});rmSync(projectStateDirectory(value),{recursive:true,force:true});}});
   const submit=()=>runtime.submit({text:'Inspect authorized synthetic material',materials:{sources:[{id:'project',view:{kind:'current'}}]}});
@@ -49,7 +53,9 @@ function fixture(t,{external=false,feishu=false,question=false}={}) {
     new Outbox(store,new Effects(store)).send({id,kind:'reply',...(ticketId?{ticketId}:{}),channel:{source:'local',thread:id,address:{}},text:secret});
   };
   const dm=(id,from,text)=>runtime.receiveSourceEvent('feishu',{sender:{sender_id:{open_id:from},sender_type:'user',tenant_key:'tenant'},message:{message_id:id,chat_id:'oc_dm',chat_type:'p2p',message_type:'text',create_time:'1793491200000',content:JSON.stringify({text})}});
-  return {root,source,runtime,events,assessments,settings,store,enqueue,submit,queue,dm,sent,network,setCallback:value=>callback=value,setAssessmentCallback:value=>assessmentCallback=value};
+  return {root,source,get runtime(){return runtime;},events,assessments,settings,get store(){return store;},enqueue,submit,queue,dm,sent,network,
+    setCallback:value=>callback=value,setAssessmentCallback:value=>assessmentCallback=value,setDriverCallback:value=>driverCallback=value,
+    async reopen(){await runtime.stop();runtime.close();store.close();runtime=createProjectAgent(options).init();store=new Store(join(projectStateDirectory(root),'state.sqlite'));}};
 }
 
 test('candidate assessment receives stale ticket metadata and cannot expand its old body',async t=>{
@@ -321,4 +327,52 @@ test('a withdrawn task mandate suppresses new material-change notices',async t=>
   f.runtime.configureMaterials({entries:[]},{expectedRevision:1});await f.runtime.flushNotifications();
   assert.equal(f.runtime.notifications().find(item=>item.id==='cancelled-result').status,'dropped');
   assert.equal(f.runtime.notifications().filter(item=>item.id.startsWith('material-notice:')).length,0);
+});
+
+test('a legacy pending material notice survives host reopen with its original proof and text and sends only once',async t=>{
+  const f=fixture(t,{feishu:true}),ticket=f.submit();
+  const original={id:'legacy-pending-confirmation',kind:'acknowledgement',ticketId:ticket.id,text:'Synthetic acknowledgement',
+    channel:{source:'feishu',thread:'tenant:oc_dm:operator',address:{sourceId:'feishu',tenantKey:'tenant',openId:'ou_alice',operator:'true'}}};
+  const notice=materialWithdrawalNotice(original,[ticket.id],{source:'feishu',tenantKey:'tenant',operatorId:'ou_alice'});
+  notice.message.text='材料或权限已变化，原结果未发送。请重新调查，或由项目维护者检查配置。';
+  notice.proof.messageDigest=createHash('sha256').update(JSON.stringify(notice.message)).digest('hex');
+  const proofKey=`material-host-notice:${notice.message.id}`;
+  f.store.setMeta(proofKey,notice.proof);new Outbox(f.store,new Effects(f.store)).send(notice.message);
+  assert.equal(f.runtime.notifications().find(item=>item.id===notice.message.id).status,'pending');
+  await f.reopen();await f.runtime.prepareExecution();f.network.fail=false;
+  await f.runtime.flushNotifications();
+  assert.equal(f.runtime.notifications().find(item=>item.id===notice.message.id).status,'sent');
+  assert.equal(f.sent.length,1);assert.equal(JSON.parse(f.sent[0].data.content).text,notice.message.text);
+  assert.deepEqual(f.store.getMeta(proofKey),notice.proof);
+  const delivered=f.store.getMeta(`receipt:${notice.message.id}`);assert.ok(delivered?.messageId);
+  await f.reopen();await f.runtime.prepareExecution();await f.runtime.flushNotifications();
+  assert.equal(f.sent.length,1);assert.equal(f.runtime.notifications().find(item=>item.id===notice.message.id).text,notice.message.text);
+  assert.deepEqual(f.store.getMeta(proofKey),notice.proof);assert.deepEqual(f.store.getMeta(`receipt:${notice.message.id}`),delivered);
+});
+
+test('a withdrawn worker acknowledgement gives a neutral notice while the fresh final result still sends',async t=>{
+  const f=fixture(t),ticket=f.submit();await f.runtime.runNext();
+  const current='FRESH_SYNTHETIC_RESULT';writeFileSync(join(f.source,'notes.md'),current);
+  f.runtime.reply(ticket.id,'Read the current material and preserve this supplemental requirement');
+  const triggerId=f.runtime.get(ticket.id).messages.at(-1).triggerId;
+  let acknowledgement;
+  f.setDriverCallback(async input=>{
+    let n=0;const call=(name,args)=>input.agentTools.call({name,arguments:args,callId:`next-${++n}`,sessionId:'material-worker',turnId:'turn-two'});
+    acknowledgement=await call('js_superagent_ack',{triggerId,text:'Received the supplement; starting a new material read.'});
+    const refs=()=>input.agentTools.contextResources().filter(ref=>ref.resource==='materials');
+    await call('js_superagent_read',{resource:'materials',id:refs().find(ref=>ref.value.kind==='directory').id});
+    const record=await call('js_superagent_read',{resource:'materials',id:refs().find(ref=>ref.value.kind==='file').id});
+    assert.equal(JSON.parse(record.text).text,current);
+    return {version:2,state:'ready',summary:current,artifacts:[],attention:null};
+  });
+  await f.runtime.runNext();await f.runtime.flushNotifications();
+  assert.equal(f.runtime.get(ticket.id).status,'completed');
+  const messages=f.runtime.notifications(),ack=messages.find(item=>item.id===acknowledgement.id);
+  assert.equal(ack.kind,'acknowledgement');assert.equal(ack.status,'dropped');assert.equal(ack.terminal.reason,'MATERIAL_CHANGED');
+  const notices=messages.filter(item=>item.id.startsWith('material-notice:'));
+  assert.equal(notices.length,1);assert.equal(notices[0].status,'sent');
+  assert.equal(notices[0].text,'一条消息未通过材料或权限校验，已停止继续发送。此提示不表示工单执行失败。');
+  const replies=messages.filter(item=>item.kind==='reply'&&item.text===current);
+  assert.equal(replies.length,1);assert.equal(replies[0].status,'sent');
+  await f.runtime.flushNotifications();assert.equal(f.runtime.notifications().filter(item=>item.text===current).length,1);
 });

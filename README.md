@@ -4,7 +4,7 @@
 
 支持通过注册表接入 Codex、DSH 和 Cursor 等执行端。状态保存在项目独立的 SQLite 数据库中；初始化不会自动启动执行或后台服务。
 
-当前源码版本为 **0.15.0-alpha.13**，补齐执行者当前输入的原文交接，准确记录未读输入故障，并通过原会话发送受限的宿主固定通知。保留会话隔离、材料授权、领域读屏障及现有预算和重试次数；历史阻塞工单仍须检查后显式恢复。行为边界见[执行输入与故障通知](docs/worker-input-and-host-failure-notices.md)。源码版本不代表已发布或已部署；发布状态以 npm 与 GitHub Release 为准。
+当前源码版本为 **0.15.0-alpha.14**，修正材料保护通知：一条消息停止发送不代表工单执行失败，也不自动要求重新调查。旧固定通知仍按原文和证明核验，保留回执身份及去重；材料校验、执行规则、配置、预算和重试次数不变。此前的输入交接与宿主故障通知边界见[执行输入与故障通知](docs/worker-input-and-host-failure-notices.md)。源码版本不代表已发布或已部署；发布状态以 npm 与 GitHub Release 为准。
 
 ```bash
 git clone https://github.com/imjszhang/js-superagent.git
