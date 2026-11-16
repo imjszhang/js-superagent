@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.0-alpha.15 — 2026-11-16
+
+- Record stable machine, boot-session and PID-namespace identity for service processes, machine leases and maintenance owners; hostname changes and prior-boot PID reuse no longer strand v2 owners.
+- Share the identity inspector between service control and independent wrapper startup; preserve live/unknown owner protection and conservative legacy receipt handling.
+- Add rename/reboot, foreign-machine, unavailable-probe, PID reuse, lease reclamation and actual wrapper/child lifecycle regression coverage. See [process identity](docs/process-identity.md) for upgrade and legacy boundaries.
+
 ## 0.15.0-alpha.14 — 2026-11-16
 
 - Describe a material-protected message withdrawal without claiming that the ticket failed, its final result was not delivered, or a new investigation is required.

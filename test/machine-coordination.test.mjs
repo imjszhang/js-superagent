@@ -230,7 +230,7 @@ test('a macOS boot time correction does not make a live owner look dead', () => 
   assert.equal(sameBoot('8f1c0b8e-0000-4000-8000-000000000001', '8f1c0b8e-0000-4000-8000-000000000002'), false);
   assert.equal(sameBoot('8f1c0b8e-0000-4000-8000-000000000001', '8f1c0b8e-0000-4000-8000-000000000001'), true);
   assert.equal(sameBoot(undefined, boot), false);
-  const self = currentProcessIdentity();
+  const { identityVersion, machineId, bootSessionId, pidNamespace, ...self } = currentProcessIdentity();
   assert.equal(inspectProcessOwner(self), 'alive');
   const darwin = /^\{\s*sec\s*=\s*(\d+),\s*usec\s*=\s*(\d+)\s*\}(.*)$/.exec(self.bootId);
   if (darwin) {
@@ -242,9 +242,22 @@ test('a macOS boot time correction does not make a live owner look dead', () => 
 });
 
 test('a changed macOS host name keeps the same-boot owner identity', () => {
-  const self = currentProcessIdentity();
+  const { identityVersion, machineId, bootSessionId, pidNamespace, ...self } = currentProcessIdentity();
   assert.equal(inspectProcessOwner({ ...self, host: 'Mac' }), 'alive');
   assert.equal(inspectProcessOwner({ ...self, host: 'Mac', birth: 'Thu Jan  1 00:00:00 2026' }), 'dead');
   assert.equal(inspectProcessOwner({ ...self, host: 'other-machine', bootId: 'another-boot' }), 'unknown');
   assert.equal(inspectProcessOwner({ ...self, host: 'Mac', bootId: undefined }), 'unknown');
+});
+
+import { createProcessIdentityInspector } from '../src/process-identity.mjs';
+test('renamed live machine lease is retained; renamed prior-boot lease is reclaimed without manual owner edits', t => {
+  const f=fixture(t),a=f.project('stable-owner');
+  const machineId=`sha256:${'a'.repeat(64)}`;
+  const firstBoot='11111111-1111-4111-8111-111111111111',nextBoot='22222222-2222-4222-8222-222222222222';
+  const probe=(host,boot)=>createProcessIdentityInspector({host:()=>host,pid:100,birth:()=> 'same-pid-start',scope:()=>({machineId,bootSessionId:boot,pidNamespace:'host',bootId:'same-wall-clock-value'})});
+  const old=probe('before-rename',firstBoot),renamed=probe('after-rename',firstBoot),rebooted=probe('after-rename',nextBoot);
+  const make=inspector=>createMachineCoordinator({projectRoot:a.root,projectId:a.projectId},{directory:f.directory,processIdentity:inspector.currentProcessIdentity,ownerState:inspector.inspectProcessOwner});
+  const original=make(old);t.after(()=>original.close());original.register();original.acquireLease();
+  const sameBoot=make(renamed);t.after(()=>sameBoot.close());assert.throws(()=>sameBoot.acquireLease());
+  const afterBoot=make(rebooted);t.after(()=>afterBoot.close());assert.doesNotThrow(()=>afterBoot.acquireLease());
 });

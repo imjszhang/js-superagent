@@ -5,7 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { readProjectConfig, normalizeProjectConfig } from './config.mjs';
 import { inspectProjectIdentity, ensureProjectIdentity, writeRelocatedProjectIdentity, coordinationError } from './project-identity.mjs';
-import { createMachineCoordinator, currentProcessIdentity, inspectProcessOwner, sameBoot } from './machine-coordination.mjs';
+import { sameProcessIdentity } from './process-identity.mjs';
+import { createMachineCoordinator, currentProcessIdentity, inspectProcessOwner } from './machine-coordination.mjs';
 import { inspectDatabase, databaseMaintenanceLockPath } from './database-maintenance.mjs';
 import { Store } from './store.mjs';
 import { projectStateDirectory, legacyStateDirectory, hasLegacyState } from './state-paths.mjs';
@@ -48,7 +49,7 @@ function acquireDatabaseLock(database, operationId, dependencies) {
   const path = databaseMaintenanceLockPath(database), owner = typeof dependencies.processIdentity === 'function' ? dependencies.processIdentity() : dependencies.processIdentity ?? currentProcessIdentity(), token = randomUUID();
   if (existsSync(path)) {
     const previous = json(path);
-    const sameProcess = previous.owner?.pid === owner.pid && previous.owner?.birth === owner.birth && sameBoot(previous.owner?.bootId, owner.bootId);
+    const sameProcess = sameProcessIdentity(previous.owner, owner);
     if (previous.operationId !== operationId || activeLocks.has(previous.token) || !sameProcess && (dependencies.ownerState ?? inspectProcessOwner)(previous.owner) !== 'dead') fail('PROJECT_MAINTENANCE_BUSY', 'Another operation owns the project maintenance lock');
     unlinkSync(path);
   }
