@@ -125,3 +125,14 @@ test('DSH cancellation before launch cannot acknowledge initial context', async 
   await assert.rejects(createDshSdkDriver(f.options).run({ ...f.input, signal: controller.signal }), /cancelled|aborted/i);
   assert.equal(f.received.length, 0);
 });
+
+test('DSH prioritizes assigned originals and proves only complete cards using the same native delivery boundary', async t => {
+  const f = fixture(t);
+  f.input.ticket.contextInputs = [{ id: 'short-input', kind: 'trigger', triggerId: 'original-question' }, { id: 'long-input', kind: 'trigger', triggerId: 'truncated-question' }];
+  for (let index = 0; index < 25; index++) f.input.ticket.messages.push({ id: `history-${index}`, text: `Earlier background ${index}` });
+  await createDshSdkDriver(f.options).run(f.input);
+  assert.equal(f.received.length, 1);
+  assert.ok(f.received[0].records.some(record => record.id === 'ticket-fixture:messages:0'));
+  assert.equal(f.received[0].records.some(record => record.id === 'ticket-fixture:messages:1'), false);
+  assert.ok(f.received[0].records.length <= 16);
+});

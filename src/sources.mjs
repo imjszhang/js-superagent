@@ -128,13 +128,13 @@ export class SourceRegistry {
     });
     return Promise.allSettled(due.map(adapter => this.poll(adapter.id)));
   }
-  async deliver(message) {
+  async deliver(message, options) {
     if (this.#closed || this.#stopping) throw new Error('Source registry is stopped');
     const matches = [...this.#adapters.values()].filter(adapter => adapter.source === message.channel.source && typeof adapter.deliver === 'function' &&
       (!message.channel.address?.sourceId || message.channel.address.sourceId === adapter.id));
     if (matches.length !== 1) throw new Error('No unique delivery adapter for source');
     const adapter = matches[0];
-    return adapter.deliver(message);
+    return adapter.deliver(message, options);
   }
   async read(id, reference) {
     if (this.#closed || this.#stopping) throw new Error('Source registry is stopped');

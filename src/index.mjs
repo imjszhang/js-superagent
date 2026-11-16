@@ -2,6 +2,7 @@ import {createAssessmentRecordView, ASSESSMENT_CONTEXT_UNAVAILABLE} from './runt
 import { assertMaterialDestination } from './materials.mjs';
 import { combineContextReads, materialDestination } from './runtime/material-context.mjs';
 import { materialWithdrawalNotice, verifyMaterialWithdrawalNotice } from './runtime/material-notice.mjs';
+import { WORKER_INPUT_UNREAD_CODE, createWorkerInputUnreadFailure, createHostFailureNotice, verifyHostFailureNotice } from './runtime/host-failure-notice.mjs';
 import { preparationPending, requestWorkspacePreparation as createWorkspacePreparation, preparationReport, validatePreparationOwner, activatePreparedWorkspace } from './runtime/workspace-preparation.mjs';
 import { prepareMaterialWorkspace, validateWorkspace } from './workspaces.mjs';
 import { previewLocalApplication, applyLocalApplication, recoverLocalApplication, inspectLocalApplication, listLocalApplications } from './runtime/local-application.mjs';
@@ -198,7 +199,8 @@ export class ProjectRuntime {
               throw new Later('Worker answer is no longer authorized');
             }
           }
-          const delivery = await this.#sources.deliver(message);
+          const hostFailureNotice = message.id.startsWith('host-failure-notice-');
+          const delivery = await this.#sources.deliver(message, hostFailureNotice ? { authorizeSend: () => this.#beginHostFailureNoticeSend(message) } : undefined);
           if (message.channel.address?.operator === 'true' && delivery?.chatId) this.#store.atomic(() => this.#learnOperatorChat(delivery.chatId));
           return delivery;
         }
@@ -210,7 +212,7 @@ export class ProjectRuntime {
         return channel.deliver(message, { projectId: this.projectId, sourceProjectRoot: this.projectRoot, pullRequests,
           ...(answer ? { coordinatorAnswer: { triggerId: answer.trigger.id, channel: answer.trigger.channel } } : {}),
           ...(workerAnswer ? { workerAnswer: { triggerId: workerAnswer.trigger.id, ticketId: workerAnswer.ticketId, channel: workerAnswer.trigger.channel } } : {}),
-          authorizeSend: () => {
+          authorizeSend: destination => {
             this.#machine.assert(); this.#machine.claim();
             this.#authorizeMaterialMessage(message);
             if (this.#stopping || this.isPaused()) throw new Later('Runtime is paused or stopping');
@@ -243,6 +245,11 @@ export class ProjectRuntime {
             const address = message.channel.address;
             const refs = [{ kind: address.pullNumber ? 'pull' : 'issue', number: Number(address.pullNumber ?? address.issueNumber) }];
             if (this.#githubRefsBlocked(refs)) throw new Later('GitHub reply target needs synchronization');
+            if (message.id.startsWith('host-failure-notice-')) {
+              if (address.reviewRootId && (destination.kind !== 'review-thread' || String(destination.reviewRootId) !== String(address.reviewRootId)))
+                this.#rejectHostFailureNotice(message, 'host-failure-notice-original-thread-unavailable');
+              this.#beginHostFailureNoticeSend(message);
+            }
           } });
       } });
       const policy = {
@@ -945,7 +952,7 @@ export class ProjectRuntime {
     return !!route && (proof?.route ? JSON.stringify(proof.route) === JSON.stringify(route) : route.source === 'local');
   }
   #bindMaterialMessage(message) {
-    if (message.id.startsWith('material-notice:') || this.#store.getMeta(`material-message:${message.id}`)) return;
+    if (message.id.startsWith('material-notice:') || message.id.startsWith('host-failure-notice-') || this.#store.getMeta(`material-message:${message.id}`)) return;
     const id = message.ticketId && (this.#store.getMeta(`public:${message.ticketId}`) ?? message.ticketId);
     const provenance = this.#materialTicketProvenance(id && this.#store.getMeta(`ticket:${id}`));
     if (provenance.ticketIds.length || provenance.metadataTicketIds.length) this.#store.setMeta(`material-message:${message.id}`, { revision: this.getMaterialSettings().revision,
@@ -1157,6 +1164,9 @@ export class ProjectRuntime {
     return null;
   }
   #authorizeMaterialMessage(message) {
+    // Only this host-attested, fixed, content-free status bypasses material-body
+    // freshness. Its own run, mandate and original route must still be current.
+    if (message.id.startsWith('host-failure-notice-') || this.#store.getMeta(`host-failure-notice:${message.id}`)) return this.#authorizeHostFailureNotice(message);
     const publicId = message.ticketId && (this.#store.getMeta(`public:${message.ticketId}`) ?? message.ticketId);
     const meta = publicId && this.#store.getMeta(`ticket:${publicId}`);
     const noticeProof=this.#store.getMeta(`material-host-notice:${message.id}`);
@@ -1205,6 +1215,86 @@ export class ProjectRuntime {
       });
       throw new Later('Material result is stale or no longer authorized for this destination');
     }
+  }
+  #authorizeHostFailureNotice(message) {
+    const proof = this.#store.getMeta(`host-failure-notice:${message.id}`);
+    const failure = proof && this.#store.getMeta(`host-context-failure:${proof.runId}`);
+    const meta = proof && this.#store.getMeta(`ticket:${proof.publicId}`);
+    const domain = meta && this.#store.tickets.get(meta.domainId);
+    const origin = domain && this.#hostFailureNoticeOrigin(domain, meta);
+    const assignment = domain && latestAssignment(domain);
+    const allowed = !!meta && !!domain && !!origin && verifyHostFailureNotice(message, proof, failure) && meta.domainId === proof.domainId &&
+      meta.failure?.runId === proof.runId && meta.failure?.code === WORKER_INPUT_UNREAD_CODE &&
+      assignment?.id === proof.assignmentId && assignment.report?.state === 'blocked' && !domain.ended &&
+      domain.origin?.triggerId === proof.requestTriggerId && origin?.id === proof.originTriggerId && JSON.stringify(origin.channel) === JSON.stringify(proof.channel) &&
+      this.#hostFailureNoticeAllowed(domain, origin) && this.#materialProofRouteAllowed(proof, this.#hostFailureNoticeRoute(message.channel));
+    if (allowed) return;
+    this.#rejectHostFailureNotice(message);
+  }
+  #rejectHostFailureNotice(message, reason = 'host-failure-notice-no-longer-current') {
+    this.#store.atomic(() => {
+      if (this.#outbox.status(message.id) !== 'pending') return;
+      if (this.#store.getMeta(`host-failure-notice-attempt:${message.id}`)) {
+        // Pending is not evidence of non-delivery. A process or response may
+        // have been lost after the write; never claim a remote recall.
+        this.#store.setMeta(`receipt:terminal:${message.id}`, { status: 'unknown', reason: 'host-failure-notice-authorization-changed-after-send' });
+        this.#effects.cancel('reply', message.id);
+      } else {
+        this.#store.setMeta(`receipt:terminal:${message.id}`, { status: 'withdrawn', reason });
+        this.#outbox.withdraw(message.id);
+      }
+    });
+    throw new Later('Host failure notice is no longer authorized');
+  }
+  #hostFailureNoticeRoute(channel) {
+    const route = this.#materialRoute(channel);
+    return route?.source === 'feishu' ? { ...route, botOpenId: this.#config().feishu.botOpenId, sourceId: channel.address?.sourceId } : route;
+  }
+  #hostFailureNoticeAllowed(domain, origin) {
+    if (!domain || domain.ended || !origin?.channel || !this.#policy().revalidate(domain.mandate)) return false;
+    // Listen scope uses the retained Trigger metadata (numeric issue identity
+    // and PR provenance), not the outbound address's serialized string fields.
+    if (origin.source === 'github') return this.#githubListened(origin.meta);
+    return !!this.#materialNoticeRoute({ ticketId: domain.id, channel: origin.channel }, []);
+  }
+  #hostFailureNoticeOrigin(domain, meta) {
+    const request = this.#store.triggers.get(domain.origin?.triggerId);
+    const event = request?.source === 'local' && this.#assessmentOrigin(request.id);
+    if (event?.source?.channel !== 'feishu') return request;
+    // A Coordinator request may wrap a private source message in a local
+    // domain trigger. Only its retained source link proves the original route.
+    const original = this.#store.triggers.get(event.references?.triggerId);
+    if (meta.operatorNotifications === false || !this.#assessmentOriginAllowed(request.id) || original?.source !== 'feishu' ||
+        original.channel.address?.operator !== 'true' || original.channel.address.chatId !== event.source.chatId ||
+        original.channel.address.messageId !== event.source.messageId || original.actor.id !== event.actor?.id) return null;
+    return original;
+  }
+  #beginHostFailureNoticeSend(message) {
+    this.#machine.assert(); this.#machine.claim();
+    this.#authorizeHostFailureNotice(message);
+    if (this.#stopping || this.isPaused()) throw new Later('Runtime is paused or stopping');
+    if (!this.#store.getMeta(`host-failure-notice-attempt:${message.id}`))
+      this.#store.setMeta(`host-failure-notice-attempt:${message.id}`, { runId: this.#store.getMeta(`host-failure-notice:${message.id}`).runId, startedAt: this.#now() });
+  }
+  #settleSupersededHostFailureNotices(publicId) {
+    for (const { key, value: proof } of this.#store.listMeta('host-failure-notice:')) {
+      if (proof.publicId !== publicId) continue;
+      const row = this.#store.db.prepare("SELECT data FROM receipts WHERE id = ? AND status = 'pending'").get(key.slice('host-failure-notice:'.length));
+      if (row) { try { this.#authorizeHostFailureNotice(JSON.parse(row.data)); } catch (error) { if (!(error instanceof Later)) throw error; } }
+    }
+  }
+  #queueHostFailureNotice(execution, domain, failure) {
+    const origin = this.#hostFailureNoticeOrigin(domain, this.#meta(execution.publicId)), channel = origin?.channel;
+    const route = channel && this.#hostFailureNoticeRoute(channel);
+    if (!route || !this.#hostFailureNoticeAllowed(domain, origin)) {
+      this.#store.setMeta(`host-failure-notice-unavailable:${execution.runId}`, { publicId: execution.publicId, runId: execution.runId, reason: 'original-route-unavailable' });
+      return;
+    }
+    const notice = createHostFailureNotice({ publicId: execution.publicId, domainId: domain.id, assignmentId: execution.assignmentId,
+      runId: execution.runId, failure, requestTriggerId: domain.origin.triggerId, originTriggerId: origin.id, channel, route });
+    this.#store.setMeta(`host-failure-notice:${notice.message.id}`, notice.proof);
+    this.#outbox.send(notice.message);
+    return notice.message.id;
   }
   #coordinationTicketCard(meta, domain, event, provenance=this.#materialTicketProvenance(meta)) {
     const projected=this.#materialTicketProjection(meta,domain,event,provenance); if(projected)return projected;
@@ -4570,6 +4660,7 @@ export class ProjectRuntime {
       } else this.#engine.retryTicket(meta.domainId);
       this.#invalidateRecovery(meta,'explicit-retry');
       meta.interrupted = false; delete meta.failure; this.#releaseHeldFeedback(meta); meta.updatedAt = this.#now(); this.#save(meta);
+      this.#settleSupersededHostFailureNotices(meta.id);
       return this.#view(meta);
     });
   }
@@ -4581,6 +4672,7 @@ export class ProjectRuntime {
       if (preparationPending(meta)) { meta.workspacePreparation.status = 'cancelled'; this.#effects.cancel('workspace-preparation', meta.workspacePreparation.id); }
       this.#invalidateRecovery(meta,'explicit-cancellation');
       meta.updatedAt = this.#now(); this.#save(meta);
+      this.#settleSupersededHostFailureNotices(meta.id);
       this.#syncOperatorAttention(meta.id);
       return this.#view(meta);
     });
@@ -5118,7 +5210,23 @@ export class ProjectRuntime {
     const retiredContext=new Set(contextNotices.filter(record=>record.retired).map(record=>record.inputId));
     ticket.messages=ticket.messages.filter(message=>!message.superseded && this.#botReviewMessageAllowed(message.triggerId&&this.#store.triggers.get(message.triggerId))).map((message,index)=>({...message,
       triggerId:message.triggerId??(index===0?domain.origin.triggerId:undefined)}));
-    const currentInputs=new Set(inputIds);
+    const adopted=new Set(meta.inputAdoption?.status==='active'&&meta.inputAdoption.adoptingRunId===runId?meta.inputAdoption.pending.map(item=>item.inputId):[]);
+    const assigned=domain.inputs.filter(input=>inputIds.includes(input.id)&&!input.readAt&&!retiredContext.has(input.id)&&
+      (!input.triggerId||!this.#store.getMeta(`github:retired:${domain.id}:${input.triggerId}`)&&!this.#store.getMeta(`input:retired:${domain.id}:${input.triggerId}`)&&
+        this.#botReviewMessageAllowed(this.#store.triggers.get(input.triggerId))));
+    const current=assigned.filter(input=>!adopted.has(input.id));
+    const currentInputs=new Set(current.map(input=>input.id));
+    // This transient roster is separate from record values: prioritization must not
+    // change existing message IDs/versions or grant ownership to background context.
+    ticket.contextInputs=assigned.map(input=>({id:input.id,kind:input.kind,...(input.triggerId?{triggerId:input.triggerId}:{}),...(adopted.has(input.id)?{nativePending:true}:{})}));
+    const seenTriggers=new Set(ticket.messages.filter(message=>!message.lifecycle&&typeof message.text==='string').map(message=>message.triggerId));
+    for(const input of current)if(input.kind==='trigger'&&!seenTriggers.has(input.triggerId)) {
+      const trigger=this.#store.triggers.get(input.triggerId);
+      if(typeof trigger?.text!=='string')continue;
+      ticket.messages.push({id:`worker-input:${input.id}`,triggerId:trigger.id,text:trigger.text,at:trigger.at,source:trigger.source,actor:trigger.actor,threads:trigger.threads,
+        context:!!trigger.meta?.contextOnly||!!this.#store.triggers.disposition(trigger.id)?.context?.includes(domain.id)});
+      seenTriggers.add(trigger.id);
+    }
     for(const input of domain.inputs)if(input.kind!=='trigger'&&!retiredContext.has(input.id)) {
       if(input.text)ticket.messages.push({id:input.id,inputId:input.id,text:input.text,at:input.at,context:input.kind==='note'});
       // Lifecycle records have no message text. Deliver the complete current fact through
@@ -5148,7 +5256,12 @@ export class ProjectRuntime {
     for(const thread of this.#store.threads.list())if(thread.subscriptions.includes(domain.id))resources.push({resource:'threads',id:thread.key,value:thread});
     const decision=this.#store.decisions.get(domain.decisionId);if(decision)resources.push({resource:'decisions',id:decision.id,value:decision});
     if(meta.promptAssembly)resources.push({resource:'prompts',id:meta.promptAssembly.version,value:meta.promptAssembly});
-    return {ticket,resources};
+    // Native pending delivery has its own adoption/acknowledgement protocol. A
+    // file/tool read must not impersonate consumption of that queued message.
+    const pendingTriggers=new Set(domain.inputs.filter(input=>adopted.has(input.id)&&input.kind==='trigger').map(input=>input.triggerId));
+    return {ticket,resources:resources.filter(record=>!(record.resource==='inputs'&&adopted.has(record.id)||
+      record.resource==='triggers'&&pendingTriggers.has(record.id)||record.resource==='messages'&&
+      (adopted.has(record.value.inputId)||!record.value.lifecycle&&pendingTriggers.has(record.value.triggerId))))};
   }
   #workerGitHubThreads(id) {
     const meta = this.#meta(id), domain = this.#store.tickets.get(meta.domainId), config = this.#config().github;
@@ -5523,8 +5636,10 @@ export class ProjectRuntime {
           unreadInputs=this.#store.tickets.get(execution.ticketId).inputs.filter(input=>execution.inputs.includes(input.id)&&!input.readAt&&
             (!input.triggerId||!this.#store.getMeta(`input:retired:${execution.ticketId}:${input.triggerId}`)&&!this.#store.getMeta(`github:retired:${execution.ticketId}:${input.triggerId}`))&&
             (input.kind==='trigger'?!triggerIds.has(input.triggerId):!inputIds.has(input.id))).map(input=>input.id);
-          if(unreadInputs.length)normalizedReport={version:2,sourceVersion:2,state:'blocked',artifacts:[],attention:null,
-            summary:`Some delivered inputs exceeded the verified context budget and remain unread. Inspect and retry with an executor that can read the required records. Unread inputs: ${unreadInputs.join(', ')}`};
+          if(unreadInputs.length){
+            failure = createWorkerInputUnreadFailure(unreadInputs);
+            normalizedReport={version:2,sourceVersion:2,state:'blocked',artifacts:[],attention:null,summary:failure.summary};
+          }
         }
         this.#checkWorkerAnswer(execution, normalizedReport);
         const settings = this.getDeliverySettings();
@@ -5570,6 +5685,9 @@ export class ProjectRuntime {
           this.#interrupt(execution, 'Runtime stopped during execution. Inspect external effects before retrying.');
           return;
         }
+        const hostInputFailure = failure?.code === WORKER_INPUT_UNREAD_CODE && failure.origin === 'host-context-unread';
+        let hostFailureReceipt;
+        if (hostInputFailure) this.#store.setMeta(`host-context-failure:${execution.runId}`, meta.failure);
         if (!domain.ended) {
           if (report.status !== 'failed'||failure?.origin === 'business'||unreadInputs.length) {
             let readIds=execution.inputs;
@@ -5594,6 +5712,7 @@ export class ProjectRuntime {
               (meta.nativeResultRecoveredFrom===meta.recovery.runId||meta.inputAdoption?.status==='consumed'))this.#releaseHeldFeedback(meta);
           const more = this.#activeInputs(this.#store.tickets.get(domain.id)).length > 0;
           const answerReceipt = this.#reportWorker(execution, normalizedReport, { hasPendingInput: more, answerText: workerAnswerText });
+          if (hostInputFailure) hostFailureReceipt = this.#queueHostFailureNotice(execution, domain, meta.failure);
           if (report.status === 'failed') this.#effects.cancel('delivery', domain.id);
           // Include feedback consumed during this run, without claiming an unread live input was handled.
           execution.pullRequests = pullDeliveryDestinations(domain.inputs.filter(input => input.kind === 'trigger' &&
@@ -5617,12 +5736,12 @@ export class ProjectRuntime {
                 ...(normalizedReport.attention ? { question: normalizedReport.attention.question } : {}), text: replyText });
             const receipt = this.#store.db.prepare('SELECT data FROM receipts WHERE id = ?').get(queued.id);
             if (receipt) originReplyChannel = JSON.parse(receipt.data).channel;
-          } else if (!answerReceipt && meta.github && report.status === 'failed') {
+          } else if (!hostInputFailure && !answerReceipt && meta.github && report.status === 'failed') {
             this.#outbox.send({ id: `failure-${execution.runId}`, kind: 'notice', ticketId: domain.id,
               channel: { source: 'github', thread: meta.github.thread, address: { repository: meta.github.repository, issueNumber: String(meta.github.issueNumber) } },
               text: `执行暂未完成，已保留报告与工作区。${failure?.requiresInspection === false ? '请在此补充说明，原工单将继续处理。' : '请先在本地检查后显式重试。'}\n\n${report.summary}\n\nRun: ${execution.runId}` });
           }
-          if (!answerReceipt && (!more || report.status === 'failed')) for (const pull of generalPullResultDestinations(execution.pullRequests)) {
+          if (!hostInputFailure && !answerReceipt && (!more || report.status === 'failed')) for (const pull of generalPullResultDestinations(execution.pullRequests)) {
             const binding = this.#pullBinding(pull.repository, pull.number);
             if (!binding || binding.ticketId !== meta.id) continue;
             const channel = pullReplyChannel(pull, binding.own ? binding.headSha : pull.headSha);
@@ -5635,12 +5754,12 @@ export class ProjectRuntime {
         }
         this.#reconcilePullLifecycle(meta.id);
         this.#syncOperatorAttention(meta.id);
-        const operatorNotice = !!this.#operatorFeishu() && isOperatorTicket(meta, this.#store.tickets.get(domain.id)) && !normalizedReport.attention &&
+        const operatorNotice = !hostInputFailure && !!this.#operatorFeishu() && isOperatorTicket(meta, this.#store.tickets.get(domain.id)) && !normalizedReport.attention &&
           ['ready', 'dropped', 'blocked', 'failed'].includes(normalizedReport.state);
         this.#coordinationInbox().enqueue({ id: `report:${execution.runId}`, kind: normalizedReport.attention ? 'question' : ['ready','dropped'].includes(normalizedReport.state) ? 'result' : 'report',
           ticketId: meta.id, text: normalizedReport.summary.slice(0,16000),
           requiresCoordination: operatorNotice || this.#coordinator.current().workflowMode === 'continuous' && normalizedReport.state === 'blocked' && !normalizedReport.attention && failure?.origin === 'business',
-          references: { runId: execution.runId, assignmentId: execution.assignmentId, reportState: normalizedReport.state } });
+          references: { runId: execution.runId, assignmentId: execution.assignmentId, reportState: normalizedReport.state, ...(hostFailureReceipt ? { hostFailureReceipt } : {}) } });
         this.#scheduleRecovery(meta,failure,execution);
         (meta.reportsV2 ??= []).push({ ...normalizedReport, runId: execution.runId, at: this.#now() });
         new BotReviewBudget(this.#store).report(meta.id, {runId:execution.runId,summary:normalizedReport.summary,state:normalizedReport.state,
@@ -5649,6 +5768,7 @@ export class ProjectRuntime {
         meta.reports.push({ ...report, runId: execution.runId, at: this.#now() });
         current.resultCommitted=true;this.#store.setMeta(this.#executionKey(),current);
         meta.updatedAt = this.#now(); this.#save(meta);
+        this.#settleSupersededHostFailureNotices(meta.id);
         if(jobState?.holdsSlot&&!this.#store.tickets.get(domain.id).ended){
           current.backgroundHeld=true;current.heartbeatAt=this.#now();current.yielded=false;this.#store.setMeta(this.#executionKey(),current);this.#retainLock=true;
         }

@@ -42,6 +42,12 @@ export class Outbox {
       for (const earlier of this.store.db.prepare("SELECT id, data FROM receipts WHERE rowid < ? AND status = 'pending' ORDER BY rowid").all(row.rowid)) {
         const preceding = reconcilePendingReviewDestination(this.store, JSON.parse(earlier.data));
         if (this.conversation(preceding) !== this.conversation(message)) continue;
+        // A superseded host notice with an uncertain remote outcome remains
+        // auditable, but cannot hold a later authorized result indefinitely.
+        const notice = this.store.getMeta(`host-failure-notice:${earlier.id}`);
+        if (earlier.id.startsWith('host-failure-notice-') && notice?.runId &&
+            this.store.getMeta(`host-failure-notice-attempt:${earlier.id}`)?.runId === notice.runId &&
+            this.store.getMeta(`receipt:terminal:${earlier.id}`)?.status === 'unknown') continue;
         const effect = this.store.db.prepare("SELECT attempts FROM effects WHERE kind IN ('reply','coordinator-answer','worker-answer') AND key = ? AND cancelled = 0").get(earlier.id);
         if ((effect?.attempts ?? 0) < 3) throw new Later('An earlier message for this ticket and discussion is waiting');
         skipped.push(earlier.id);
@@ -71,7 +77,11 @@ export class Outbox {
     this.store.atomic(() => {
       // A request already accepted by the remote service cannot be retracted locally.
       // Preserve that fact even if withdrawal raced with the network request.
-      if (delivery) this.store.setMeta(`receipt:${id}`, delivery);
+      if (delivery) {
+        this.store.setMeta(`receipt:${id}`, delivery);
+        if (id.startsWith('host-failure-notice-') && this.store.getMeta(`host-failure-notice:${id}`) &&
+            this.store.getMeta(`receipt:terminal:${id}`)?.status === 'unknown') this.store.deleteMeta(`receipt:terminal:${id}`);
+      }
       this.store.db.prepare("UPDATE receipts SET status = 'sent' WHERE id = ? AND status = 'pending'").run(id);
     });
   }

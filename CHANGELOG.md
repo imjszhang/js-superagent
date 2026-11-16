@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.0-alpha.13 — Unreleased
+
+- Project the original text of current execution inputs into one shared bounded Worker view, including inputs attached or fanned out before launch. Preserve record identities, require version-matched full consumption, and keep native pending-input adoption separate.
+- Prioritize required current inputs inside the existing context limits and expose complete, truncated and missing coverage with the existing read references. No configuration, budget or retry limit is added.
+- Record the host-verified `WORKER_INPUT_UNREAD` / `host-context-unread` failure without falsely attributing it to budget exhaustion. Keep the blocked report and original unread inputs; do not invoke business coordination or native automatic recovery.
+- Atomically retain a fixed, content-free host failure notice for the original authorized route. Validate run, assignment, fault, template and channel identity before sending; use existing Outbox delivery and deduplication. Ordinary model reports and historical failures do not qualify.
+- Withdraw superseded notices only before a proven first send. Preserve uncertain or accepted remote delivery facts, and prevent an uncertain superseded notice from blocking a later authorized result. No notice creates attention, a new task or an automatic retry.
+
 ## 0.15.0-alpha.12 — Released 2026-11-15
 
 - Scope running assessment invalidation to the context actually exposed, while retaining conservative native-session isolation and source authorization.

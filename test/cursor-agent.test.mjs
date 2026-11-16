@@ -163,6 +163,20 @@ test('the Cursor Worker parses its v2 report and the coordinator stays read-only
   assert.deepEqual(call.args.slice(call.args.indexOf('--mode'), call.args.indexOf('--mode') + 2), ['--mode', 'ask']);
 });
 
+test('Cursor prioritizes current originals without treating a manifest or truncated body as consumption proof', async t => {
+  const f = fixture(t), delivered = [];
+  const ticket = { id: 'ticket-inputs', scope: 'Read only the assigned originals', text: 'Read the current originals', reports: [],
+    messages: [{ id: 'current-original', triggerId: 'current-trigger', text: 'Current original [ASSIGNED]' },
+      { id: 'long-original', triggerId: 'long-trigger', text: '原文🙂'.repeat(1000) },
+      ...Array.from({ length: 25 }, (_, index) => ({ id: `history-${index}`, text: `Background ${index}` }))],
+    contextInputs: [{ id: 'current-input', kind: 'trigger', triggerId: 'current-trigger' }, { id: 'long-input', kind: 'trigger', triggerId: 'long-trigger' }] };
+  await createCursorAgentDriver(f.options).run({ ...f.input, ticket, assignmentId: 'inputs-assignment', contextDelivered: value => delivered.push(value) });
+  assert.equal(delivered.length, 1); assert.ok(delivered[0].records.some(record => record.id === 'current-original'));
+  assert.equal(delivered[0].records.some(record => record.id === 'long-original'), false);
+  assert.ok(delivered[0].records.length <= 16);
+  const prompt = f.calls().at(-1).prompt; assert.match(prompt, /manifest\.json/); assert.match(prompt, /"truncated":1/);
+});
+
 test('the Cursor adapter declares launch, login and coordinator settings without starting a model', t => {
   const f = fixture(t), registry = createHarnessRegistry();
   const listed = registry.list().find(item => item.id === 'cursor-agent');

@@ -4,7 +4,7 @@
 
 支持通过注册表接入 Codex、DSH 和 Cursor 等执行端。状态保存在项目独立的 SQLite 数据库中；初始化不会自动启动执行或后台服务。
 
-当前源码版本为 **0.15.0-alpha.12**，修复无关工单的材料读取及尚未展示材料正文的工单卡片过度触发评估刷新的问题。保留会话隔离、权限、材料新鲜度、领域归属及既有两次刷新上限，不新增配置或自动重跑历史失败。设计与验收见[评估上下文边界](docs/assessment-context-boundaries.md)。源码版本不代表已发布或已部署；发布状态以 npm 与 GitHub Release 为准。
+当前源码版本为 **0.15.0-alpha.13**，补齐执行者当前输入的原文交接，准确记录未读输入故障，并通过原会话发送受限的宿主固定通知。保留会话隔离、材料授权、领域读屏障及现有预算和重试次数；历史阻塞工单仍须检查后显式恢复。行为边界见[执行输入与故障通知](docs/worker-input-and-host-failure-notices.md)。源码版本不代表已发布或已部署；发布状态以 npm 与 GitHub Release 为准。
 
 ```bash
 git clone https://github.com/imjszhang/js-superagent.git

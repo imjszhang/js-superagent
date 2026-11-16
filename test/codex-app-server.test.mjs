@@ -273,6 +273,18 @@ test('native business tools use scoped host identity, preserve call IDs and expo
   assert.equal(delivered[0].records.length, 15);
 });
 
+test('app-server current input priority preserves complete-card acknowledgement and excludes long original receipts', async t => {
+  const f = setup(t, { finishDelay: 20, ack: ['current-original'] }), delivered = [];
+  f.input.ticket.messages = [{ id: 'current-original', triggerId: 'current-trigger', text: 'Current original [ASSIGNED]' },
+    { id: 'long-original', triggerId: 'long-trigger', text: '原文🙂'.repeat(1000) },
+    ...Array.from({ length: 25 }, (_, index) => ({ id: `history-${index}`, text: `Background ${index}` }))];
+  f.input.ticket.contextInputs = [{ id: 'current-input', kind: 'trigger', triggerId: 'current-trigger' }, { id: 'long-input', kind: 'trigger', triggerId: 'long-trigger' }];
+  await f.driver().run({ ...f.input, contextDelivered: value => delivered.push(value) });
+  assert.equal(delivered.length, 1); assert.ok(delivered[0].records.some(record => record.id === 'current-original'));
+  assert.equal(delivered[0].records.some(record => record.id === 'long-original'), false);
+  assert.ok(delivered[0].records.length <= 16);
+});
+
 test('business tool versions cannot be silently added to existing sessions and staged reports must agree', async t => {
   const f = setup(t, { finishDelay: 20 });
   await f.driver().run(f.input);
