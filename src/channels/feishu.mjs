@@ -195,7 +195,7 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
     return { msg_type: 'text', content: JSON.stringify({ text: message.text }) };
   };
   /** Messages to the operator: a reply to the operator's own message, a new direct message, or an update of a card already sent. */
-  const deliverOperator = async message => {
+  const deliverOperator = async (message, authorizeSend) => {
     const address = message.channel.address, uuid = createHash('sha256').update(`${id}:${message.id}`).digest('hex').slice(0, 32);
     if (!operatorOpenId) throw new Error('Feishu operator is not configured');
     const knownChat = operatorChatId();
@@ -204,6 +204,7 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
       if (!knownChat || address.chatId !== knownChat || typeof api.patch !== 'function') throw new Error('Feishu card update is outside the operator conversation');
       const target = requireSuccess(await read('get', { path: { message_id: address.updateMessageId } }), 'Feishu card target');
       if (!target.items?.some(item => item.message_id === address.updateMessageId && item.chat_id === knownChat)) throw new Error('Feishu card does not belong to the operator conversation');
+      await authorizeSend?.();
       requireSuccess(await write('patch', { path: { message_id: address.updateMessageId }, data: { content: body(message).content } }), 'Feishu card update');
       return { id: address.updateMessageId, url: '', source: 'feishu', messageId: address.updateMessageId, chatId: knownChat, uuid };
     }
@@ -212,11 +213,13 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
       if (!knownChat || address.chatId !== knownChat) throw new Error('Feishu reply is outside the operator conversation');
       const target = requireSuccess(await read('get', { path: { message_id: address.messageId } }), 'Feishu reply target');
       if (!target.items?.some(item => item.message_id === address.messageId && item.chat_id === knownChat)) throw new Error('Feishu reply target does not belong to the operator conversation');
+      await authorizeSend?.();
       const data = requireSuccess(await write('reply', { path: { message_id: address.messageId }, data: { ...body(message), reply_in_thread: false, uuid } }), 'Feishu reply');
       const messageId = identifier(data.message_id, 'om_', 'receipt message ID');
       return { id: messageId, url: '', source: 'feishu', messageId, chatId: knownChat, uuid };
     }
     if (address.openId !== operatorOpenId || typeof api.create !== 'function') throw new Error('Feishu direct message is outside the operator conversation');
+    await authorizeSend?.();
     const data = requireSuccess(await write('create', { params: { receive_id_type: 'open_id' }, data: { receive_id: operatorOpenId, ...body(message), uuid } }), 'Feishu direct message');
     const messageId = identifier(data.message_id, 'om_', 'receipt message ID'), chatId = identifier(data.chat_id, 'oc_', 'receipt chat ID');
     if (knownChat && knownChat !== chatId) throw new Error('Feishu returned a different operator conversation');
@@ -414,10 +417,10 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
       events.sort((a, b) => Number(a.message.create_time) - Number(b.message.create_time));
       return { events, cursor: current, errors: Object.values(current.failures) };
     },
-    async deliver(message) {
+    async deliver(message, { authorizeSend } = {}) {
       transport?.assertOpen();
       const address = message?.channel?.address;
-      if (message.channel.source === 'feishu' && address?.sourceId === id && address.tenantKey === tenantKey && address.operator === 'true') return deliverOperator(message);
+      if (message.channel.source === 'feishu' && address?.sourceId === id && address.tenantKey === tenantKey && address.operator === 'true') return deliverOperator(message, authorizeSend);
       if (message.channel.source !== 'feishu' || address?.sourceId !== id || address.tenantKey !== tenantKey || !allowed.has(address.chatId)) throw new Error('Feishu delivery is outside configured scope');
       identifier(address.messageId, 'om_', 'reply message ID');
       if (typeof message.text !== 'string' || !message.text.trim() || Buffer.byteLength(message.text) > 100 * 1024) throw new Error('Invalid Feishu reply text');
@@ -425,6 +428,7 @@ export function createFeishuSource({ id = 'feishu', client, botOpenId, botAppId,
       const target = requireSuccess(await read('get', { path: { message_id: address.messageId } }), 'Feishu reply target');
       if (!target.items?.some(item => item.message_id === address.messageId && item.chat_id === address.chatId)) throw new Error('Feishu reply target does not belong to configured chat');
       const uuid = createHash('sha256').update(`${id}:${message.id}`).digest('hex').slice(0, 32);
+      await authorizeSend?.();
       const data = requireSuccess(await write('reply', { path: { message_id: address.messageId }, data: { msg_type: 'text', content: JSON.stringify({ text: message.text }), reply_in_thread: true, uuid } }), 'Feishu reply');
       const messageId = identifier(data.message_id, 'om_', 'receipt message ID');
       // Feishu does not return a browser permalink from this API; do not invent one.

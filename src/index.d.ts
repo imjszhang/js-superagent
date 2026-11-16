@@ -233,6 +233,8 @@ export interface Ticket {
   cancelRequested: boolean;
   owner?: { pid: number; host: string };
   messages: TicketMessage[];
+  /** Transient bounded Worker projection of this run's reconciled input batch; not new authority or persisted history. */
+  contextInputs?: Array<{id:string;kind:string;triggerId?:string;nativePending?:true}>;
   reports: Report[];
   source?: { type: 'github'; repository: string; issueNumber: number; pullNumber?:number; url: string };
   pullRequests: GitHubPullRequestBinding[];
@@ -465,7 +467,7 @@ export interface GitHubChannel {
   applyReviewAction?(intent:PRReviewActionRecord['intent'],options?:{signal?:AbortSignal;beforeWrite?():void|Promise<void>}):Promise<unknown>;
   deliver(message: OutboundMessage, context: { projectId: string; sourceProjectRoot?: string; pullRequests?: GitHubTrackedPullRequest[]; coordinatorAnswer?:{triggerId:string;channel:OutboundMessage['channel']};workerAnswer?:{triggerId:string;ticketId:string;channel:OutboundMessage['channel']};authorizeSend?(destination:GitHubDeliveryDestination):void|Promise<void> }): Promise<DeliveryReceipt|GoneDelivery>;
 }
-export interface Notification extends OutboundMessage { status:'pending'|'sent'|'dropped';delivery?:DeliveryReceipt;terminal?:GoneDelivery;ordering?:{reason:'earlier-delivery-failed-three-times';skipped:string[]} }
+export interface Notification extends OutboundMessage { status:'pending'|'sent'|'dropped';delivery?:DeliveryReceipt;terminal?:GoneDelivery|{status:'withdrawn'|'unknown';reason:string};ordering?:{reason:'earlier-delivery-failed-three-times';skipped:string[]} }
 export interface GitHubSyncResult { received: number; duplicates: number; ignored: number; tickets: string[]; delivered: number; busy?: boolean }
 export interface GitHubStatus {
   configured: boolean; repository: string | null;
@@ -1054,7 +1056,8 @@ export interface SourceAdapter {
   id:string;source:string;pollIntervalMs?:number;configurationKey?:string;
   normalize(raw:unknown):import('../dist/core/index.js').Trigger|null;
   poll(input:{cursor:unknown;signal:AbortSignal}):Promise<{events:unknown[];cursor?:unknown;errors?:Array<HistoryReadDiagnostic & {scope:string;error:string;code?:number;category?:string;operation?:'history';container?:{type:'chat'|'thread';id:string;chatId:string};repositoryFailure?:true;object?:{kind:string;id:number;number?:number};nextAt?:string}>}>;
-  deliver?(message:OutboundMessage):Promise<DeliveryReceipt|GoneDelivery>;
+  /** When supplied, invoke authorizeSend after target reads and immediately before a remote write. */
+  deliver?(message:OutboundMessage,options?:{authorizeSend?():void|Promise<void>}):Promise<DeliveryReceipt|GoneDelivery>;
   readContext?(reference:unknown):Promise<unknown>;
 }
 export class SourceRegistry {
@@ -1062,7 +1065,7 @@ export class SourceRegistry {
   register(adapter:SourceAdapter):this; unregister(id:string):this; ingest(id:string,event:unknown):Record<string,unknown>;
   poll(id:string):Promise<Record<string,unknown>>;pollDue(options?:{intervalMs?:number}):Promise<PromiseSettledResult<unknown>[]>;
   pollAll():Promise<PromiseSettledResult<unknown>[]>;status():Array<Record<string,unknown>>;
-  deliver(message:OutboundMessage):Promise<DeliveryReceipt|GoneDelivery>;read(id:string,reference:unknown):Promise<unknown>;
+  deliver(message:OutboundMessage,options?:{authorizeSend?():void|Promise<void>}):Promise<DeliveryReceipt|GoneDelivery>;read(id:string,reference:unknown):Promise<unknown>;
   stop():Promise<void>;close():Promise<void>;
 }
 export function createFeishuSource(options:{id?:string;client:any;botOpenId:string;tenantKey:string;scopes:Array<{chatId:string;type:'p2p'|'group'|'topic_group';mode:'mentions'|'all'}>;maxPages?:number}):SourceAdapter;

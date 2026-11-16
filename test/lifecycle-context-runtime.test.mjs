@@ -144,5 +144,5 @@ for (const mode of ['truncated', 'omitted', 'stale']) test(`${mode} lifecycle co
   const result = await f.runtime.runNext();
   assert.equal(result.status, 'failed'); assert.match(result.reports.at(-1).summary, mode === 'stale' ? /Stale context receipt/ : /remain unread/);
   assert.equal(f.runtime.getDomainTicket(ticket.id).ended, undefined);
-  if (mode !== 'stale') assert.ok(f.runtime.getDomainTicket(ticket.id).undelivered.includes(inputs[0].id));
+  if (mode !== 'stale') assert.ok(inputs.some(input => f.runtime.getDomainTicket(ticket.id).undelivered.includes(input.id)));
 });

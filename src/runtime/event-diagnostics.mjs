@@ -97,7 +97,10 @@ function snapshot(store) {
     const ack=state.ackEvents.get(receipt.id),direct=ack?[ack]:(state.eventsByThread.get(thread)??[]).filter(id=>receipt.id===key('reply',id,receipt.text??''));
     state.replyEvents.set(receipt.id,direct);for(const id of direct)add(state.directReplies,id,receipt);
     add(state.repliesByThread,thread,receipt);add(state.repliesByTicket,state.publicId(receipt.ticketId),receipt);
-    if(receipt.status==='pending'){
+    const hostNotice=state.meta.get(`host-failure-notice:${receipt.id}`);
+    const uncertainHostNotice=receipt.id.startsWith('host-failure-notice-')&&hostNotice?.runId&&
+      state.meta.get(`host-failure-notice-attempt:${receipt.id}`)?.runId===hostNotice.runId&&state.meta.get(`receipt:terminal:${receipt.id}`)?.status==='unknown';
+    if(receipt.status==='pending'&&!uncertainHostNotice){
       const conversation=replyConversation(state,receipt),earlier=earlierReplies.get(conversation);
       // Outbox stops at the first blocker; retain that fact without building a
       // quadratic chain when a paused conversation has many pending messages.
