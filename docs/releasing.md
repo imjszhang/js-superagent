@@ -2,6 +2,8 @@
 
 ## Current status
 
+The current source version is `0.15.0-alpha.16`, prepared for the `alpha` dist-tag. Its host-context changes are described in [the changelog](../CHANGELOG.md) and [host context](host-context.md). Source preparation does not imply registry publication or deployment; verify npm and the matching GitHub Release separately.
+
 The first standalone release is `0.14.0-alpha.0`, intended for the `alpha` dist-tag. It is not a stable 1.0 release. The original implementation's version is retained rather than resetting history. The project is MIT-licensed; bundled upstream MIT notices must remain in every package.
 
 A prepared tarball, Git tag, GitHub release and npm publication are different states. Version `0.14.0-alpha.0` was published on 2026-11-09; registry integrity and clean consumer checks passed. Its annotated tag is `v0.14.0-alpha.0` at `b176f5a073a467aa499189712cdb0a222674c98a`; the [GitHub prerelease](https://github.com/imjszhang/js-superagent/releases/tag/v0.14.0-alpha.0) includes the tarball and manifest. Preparation never calls npm publish or creates a release tag.
@@ -15,7 +17,7 @@ npm ci --ignore-scripts
 npm run release:prepare
 ```
 
-This runs all checks, builds the core before checking declarations, validates package/lock/license/channel consistency and tests installation in a clean consumer. It then creates `release/js-superagent-0.14.0-alpha.0.tgz` and `release/manifest.json`, recording integrity, sizes and source commit/dirty status. `release/` is ignored. A dirty-source artifact is diagnostic, not the final release candidate: commit first, then regenerate and require sourceDirty=false.
+This runs all checks, builds the core before checking declarations, validates package/lock/license/channel consistency and tests installation in a clean consumer. It then creates `release/js-superagent-<package.version>.tgz` and `release/manifest.json`, recording integrity, sizes and source commit/dirty status. `release/` is ignored. A dirty-source artifact is diagnostic, not the final release candidate: commit first, then regenerate and require sourceDirty=false.
 
 The CI workflow performs the same preparation and retains an artifact. It cannot publish; it has only contents:read permission. The separate `publish.yml` workflow described below performs its own preparation for the exact dispatched main commit. Manual native-model/network acceptance scripts are not run by the normal test suite.
 
@@ -23,7 +25,7 @@ The CI workflow performs the same preparation and retains an artifact. It cannot
 
 Update CHANGELOG, then use `npm version <exact-version> --no-git-tag-version` so package.json and package-lock.json agree. Keep prereleases on alpha/beta/rc as appropriate in publishConfig.tag; only a stable release uses latest. Run preparation, commit and push, and regenerate the final artifact from that commit. Do not reuse a version that already exists on npm.
 
-Git release tags use `v<package.version>`; `RELEASE_TAG=v0.14.0-alpha.0 npm run check:release` checks agreement. After trusted publication succeeds, create the annotated tag and GitHub prerelease for the workflow's exact source commit and artifact, not a later main commit.
+Git release tags use `v<package.version>`; `RELEASE_TAG=v0.15.0-alpha.16 npm run check:release` checks agreement for this candidate. After trusted publication succeeds, create the annotated tag and GitHub prerelease for the workflow's exact source commit and artifact, not a later main commit.
 
 ## Trusted publishing from GitHub
 
@@ -32,7 +34,7 @@ All subsequent npm releases must use GitHub trusted publishing. Do not run local
 The release path is `.github/workflows/publish.yml` in `imjszhang/js-superagent`. It is explicitly dispatched on `main` with the expected package version:
 
 ```bash
-gh workflow run publish.yml --ref main -f version=0.15.0-alpha.8
+gh workflow run publish.yml --ref main -f version=0.15.0-alpha.16
 ```
 
 Merge the version, changelog and implementation first. The workflow publishes only its own `GITHUB_SHA`, and the input must match that commit's package and lock version. Do not change checkout to an arbitrary tag or ref: npm provenance uses the workflow's original SHA/ref. Ordinary pushes, PRs and CI checks do not publish.

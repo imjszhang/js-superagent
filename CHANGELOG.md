@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.0-alpha.16 — 2026-11-27
 
 - Persist bounded host project/ticket query facts and atomic original task references; retain explicit domain/assignment identity, saved times, semantic no-op publication and historical generations.
 - Prioritize active coordinator work and provide permission-safe, freshness-aware facts through the existing bounded reader. Keep project facts and native sessions restricted to authenticated operators.
