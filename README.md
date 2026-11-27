@@ -171,6 +171,8 @@ Codex 与 DSH 都通过同一注册表创建适配器。扩展接口只接受现
 
 本地业务任务可在提交时传 `operatorNotifications: false`，关闭该工单的操作者卡片及 Worker 完成／失败私信；默认仍为 true。`managedJobs: false` 禁止该工单获得受管子任务工具和配置，默认仍为 true。两者均为宿主提交时校验并持久化的布尔值，只缩小单工单能力，不修改项目设置，不授予其他执行权限。`0.14.0-alpha.1` 修复了 DSH 项目启用受管子任务、单工单禁用时的配置衔接：执行与恢复使用相同的工单有效配置，禁用工单不会加载 jobs 工具或索取可信任务目录。没有宿主快照文件时省略 `attentionSnapshotPaths`，不要传空数组。
 
+宿主集成可用 `publishHostFacts()` 提供有来源和观察时间的任务状态，协调者会优先看到正在运行、排队和等待的工作。`submit({hostReference})` 保留原任务关联；`cancel(id,{source,reason,expectedDomainId,expectedAssignmentId})` 记录真实停止来源并防止误停重试代次。事实不授予权限、不注入 Worker、不代替宿主结算；边界与示例见[宿主事实与协调上下文](docs/host-context.md)。
+
 ## 状态与授权边界
 
 需要调查当前项目（包括未提交内容）时，显式配置 `current` 材料入口。Worker 的读取来源与执行工作区分别记录；旧的 `workspace.mode: auto` 选择保持原语义。材料配置不由协调者文字推断，也不会因安装新包自动授予。配置、只读执行器要求、快照、准备、增量回写和 schema 15 升级边界见[项目材料指南](docs/project-materials.md)。
