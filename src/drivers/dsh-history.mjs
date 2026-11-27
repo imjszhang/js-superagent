@@ -7,7 +7,7 @@ import { hostToolSettled, nativeJsonResult, recoveryInspection } from './native-
 import { isSupportedDshVersion } from './dsh-versions.mjs';
 import { projectStateDirectory } from '../state-paths.mjs';
 import { parseDshReport } from './dsh-report.mjs';
-import { normalizeDriverReport } from '../runtime/reports.mjs';
+import { normalizeDriverReport, sameBusinessReport } from '../runtime/reports.mjs';
 
 export const dshDigest = value => createHash('sha256').update(value).digest('hex');
 export const dshHostCallId = (sessionId, runId, nativeCallId) => `dsh-${createHash('sha256').update(JSON.stringify([sessionId, runId, nativeCallId])).digest('hex').slice(0, 40)}`;
@@ -101,7 +101,31 @@ export function inspectDshInputReceipts(history, receipts) {
   }
   return { reconciled, unresolved };
 }
-export function inspectDshRecovery(options, input) {
+// A repair may repeat only the final JSON. Retain the last verified business
+// report through that explicit run lineage, never through an ordinary later turn.
+function recoveryBusinessReport(history, boundaries, anchor, input, seen = new Set()) {
+  if (seen.has(anchor.runId) || seen.size >= 2048) throw new Error('Invalid DSH repair lineage');
+  seen.add(anchor.runId);
+  const start = boundaries.find(value => value.runId === anchor.runId)?.startSequence;
+  if (!Number.isSafeInteger(start)) throw new Error('Missing DSH repair boundary');
+  const end = boundaries.find(value => value.startSequence > start)?.startSequence ?? Infinity;
+  let staged;
+  for (const [callId, call] of history.toolCalls) {
+    if (call.seq <= start || call.seq >= end || call.data.name !== 'js_superagent_report') continue;
+    const args = JSON.parse(call.data.arguments), result = history.toolResults.get(callId);
+    if (!result || result.data.message?.isError) throw new Error('Unverified DSH business report');
+    const value = nativeJsonResult(result.data.message?.content);
+    if (!hostToolSettled(input.verifyHostTool, { driver: 'dsh-sdk', runId: anchor.runId, sessionId: input.session.id, turnId: anchor.runId,
+      nativeCallId: callId, callId: dshHostCallId(input.session.id, anchor.runId, callId), name: call.data.name, arguments: args, result: value })) throw new Error('Unverified DSH business report');
+    if (args.state !== 'progress') staged = args;
+  }
+  if (staged || !anchor.recoveryContinuation) return staged;
+  const source = boundaries.find(value => value.runId === anchor.recoveryContinuation.sourceRunId);
+  if (!source || source.startSequence >= start || !['missing-final-report', 'invalid-final-report'].includes(anchor.recoveryContinuation.finalReportFailure)) throw new Error('Invalid DSH repair source');
+  return recoveryBusinessReport(history, boundaries, source, input, seen);
+}
+
+export function inspectDshRecovery(options, input, { onBusinessReport } = {}) {
   const reject = reason => recoveryInspection(input, reason);
   try {
     if (input.signal?.aborted || !id(input.runId)) return reject('recovery-cancelled-or-invalid');
@@ -181,10 +205,16 @@ export function inspectDshRecovery(options, input) {
         if (content.some(block => block.type === 'tool-call') || history.rows.some(event => event.seq > answer.seq && ['tool/result', 'job/settled'].includes(event.type))) return reject('native-result-predates-tool-completion');
         return { ...result, finalReportFailure };
       };
+      const staged = recoveryBusinessReport(history, boundaries, anchor, input);
+      if (staged) onBusinessReport?.(structuredClone(staged));
       if (!text.trim()) return repair('missing-final-report');
       let report;
       try { report = parseDshReport(text); normalizeDriverReport(report, { version: 2 }); }
       catch { return repair('invalid-final-report'); }
+      if (staged) {
+        if (!sameBusinessReport(staged, report)) return repair('invalid-final-report');
+        report.summary = staged.summary;
+      }
       return { ...result, outcome: 'completed', report };
     }
     if (end?.seq > start && !(end.data.reason?.kind === 'error' && ['RATE_LIMIT','SERVER','TIMEOUT'].includes(end.data.reason.error?.code))) return reject('native-terminal-does-not-allow-resume');

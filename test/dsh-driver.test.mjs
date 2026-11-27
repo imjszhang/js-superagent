@@ -450,3 +450,50 @@ test('runtime repairs a settled DSH reasoning-only turn in the original session 
   assert.doesNotMatch(continued, /^Execute this authorized js-superagent task/);
   assert.ok(f.pids.every(pid => !alive(pid)));
 });
+
+for (const repair of ['same', 'drift', 'new-report']) test(`public retry checks DSH business-report consistency through same-session ${repair} repair`, async t => {
+  const staged = { state: 'waiting', summary: 'Verified original summary', question: 'Review fixture?', artifacts: [], answers: null };
+  const final = question => ({ version: 2, state: 'waiting', summary: 'Model final summary', artifacts: [], attention: { question }, answers: null });
+  const f = fixture(t, `if(r.method==='session/prompt'){
+    const folder=join(process.env.DSH_HOME,'sessions','fixture',sid);mkdirSync(folder,{recursive:true});
+    const path=join(folder,'session.v4.jsonl'),existed=existsSync(path);
+    writeFileSync(join(process.env.DSH_HOME,'fake-session'),'durable');
+    if(!existed)writeFileSync(path,JSON.stringify({type:'session',version:4,id:sid,cwd:process.cwd(),isSeeded:false})+'\\n');
+    const record=(type,data)=>{const rows=readFileSync(path,'utf8').trimEnd().split('\\n'),value={seq:rows.length-1,type,data};rows.push(JSON.stringify(value));writeFileSync(path,rows.join('\\n')+'\\n');send({jsonrpc:'2.0',method:'session.event',params:{sessionId:sid,event:value}});};
+    const turn=existed?2:1,id=existed?'repair-input':'original-input';
+    answer({messageId:id});record('user/message',{id,content:r.params.contentBlocks,source:{kind:'user'}});
+    if(!existed)writeFileSync(join(process.cwd(),'operation-count.txt'),'1');
+    if(existed)writeFileSync(join(process.cwd(),'repair-prompt.txt'),r.params.contentBlocks[0].text);
+    if(!existed||${JSON.stringify(repair)}==='new-report'){
+      const args=existed?{...${JSON.stringify(staged)},question:'New authorized question',summary:'Verified replacement summary'}:${JSON.stringify(staged)};
+      const bridge=JSON.parse(process.env.JS_SUPERAGENT_DSH_BRIDGE),callId=existed?'replacement-report':'original-report';
+      record('tool/call',{turn,callId,name:'js_superagent_report',arguments:JSON.stringify(args)});
+      const response=await fetch(bridge.url,{method:'POST',headers:{authorization:'Bearer '+bridge.token,'content-type':'application/json'},body:JSON.stringify({sessionId:sid,callId,name:'js_superagent_report',arguments:args})});
+      const result=await response.json();if(!response.ok||result.accepted!==true)throw Error('Fixture report rejected: '+JSON.stringify(result));
+      record('tool/result',{turn,message:{toolCallId:callId,isError:false,content:[{type:'text',text:JSON.stringify(result)}]}});
+    }
+    const value=!existed?${JSON.stringify(final('Different question'))}:${JSON.stringify(final(repair === 'same' ? staged.question : repair === 'new-report' ? 'New authorized question' : 'Still different'))};
+    record('assistant/message',{turn,message:{content:[{type:'text',text:JSON.stringify(value)}]}});
+    record('turn/end',{turn,reason:{kind:'completed'}});continue;
+  }`, '0.2.2-rc.5');
+  const { open, stored } = runtimeFixture(t, f, { enableManagedJobs: false });
+  const runtime = open(), ticket = runtime.submit({ text: 'Inspect the temporary fixture once.', managedJobs: false });
+  await runtime.runNext();
+  assert.equal(runtime.get(ticket.id).status, 'failed');
+  assert.match(runtime.get(ticket.id).reports.at(-1).summary, /disagrees/);
+  const session = runtime.getSession(ticket.id), originalRun = stored(ticket.id).runId;
+  runtime.retry(ticket.id);
+  assert.equal(runtime.get(ticket.id).status, 'failed', 'Retry only queues inspection, not success');
+  await runtime.runNext();
+  assert.equal(stored(ticket.id).recovery.evidence.finalReportFailure, 'invalid-final-report');
+  assert.equal(runtime.get(ticket.id).status, repair === 'drift' ? 'failed' : 'waiting');
+  assert.deepEqual(runtime.getSession(ticket.id), session);
+  assert.equal(readFileSync(join(f.root, 'operation-count.txt'), 'utf8'), '1');
+  assert.match(readFileSync(join(f.root, 'repair-prompt.txt'), 'utf8'), /Verified earlier business report data/);
+  const repairedRun = stored(ticket.id).runId;
+  assert.notEqual(repairedRun, originalRun);
+  const anchor = JSON.parse(readFileSync(join(stateDir(f.root), 'harness/dsh', session.id, `run-${repairedRun}.json`)));
+  assert.equal(anchor.recoveryContinuation.sourceRunId, originalRun);
+  if (repair !== 'drift') assert.equal(runtime.get(ticket.id).reports.at(-1).summary, repair === 'same' ? staged.summary : 'Verified replacement summary');
+  assert.ok(f.pids.every(pid => !alive(pid)));
+});

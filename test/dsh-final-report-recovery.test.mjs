@@ -32,8 +32,85 @@ function fixture(t, content = [{ type: 'reasoning', text: 'synthetic placeholder
   const write = () => writeFileSync(path, [{ type: 'session', version: 4, id: session.id, cwd: root, isSeeded: false }, ...rows.map((event, seq) => ({ ...event, seq }))].map(JSON.stringify).join('\n') + '\n');
   write();
   const input = { session, runId, projectRoot: root, sourceProjectRoot: root, diagnostics: true, inputs: [] };
-  return { options, input, rows, write, save, path, inspect: () => inspectDshRecovery(options, input) };
+  return { options, input, rows, write, save, path, home, inspect: () => inspectDshRecovery(options, input) };
 }
+
+const terminalReport = { state: 'waiting', summary: 'Authoritative tool summary', question: 'Review fixture?',
+  questionForTriggerId: 'authorized-request', artifacts: ['result.json'], answers: null };
+const finalReport = { version: 2, state: 'waiting', summary: 'Native wording may differ',
+  attention: { question: terminalReport.question, triggerId: terminalReport.questionForTriggerId }, artifacts: ['result.json'], answers: null };
+function addReport(f, args, callId = 'business-report') {
+  f.rows.splice(f.rows.length - 2, 0,
+    { type: 'tool/call', data: { callId, name: 'js_superagent_report', arguments: JSON.stringify(args) } },
+    { type: 'tool/result', data: { message: { toolCallId: callId, isError: false, content: [{ type: 'text', text: JSON.stringify({ accepted: true, state: args.state }) }] } } });
+  f.write();
+}
+function businessFixture(t, report = finalReport) {
+  const f = fixture(t, [{ type: 'text', text: JSON.stringify(report) }]);
+  f.options.enableAgentTools = true;
+  f.save('binding.json', { ...JSON.parse(readFileSync(join(f.home, 'binding.json'))), agentTools: true });
+  f.verified = [];
+  f.input.verifyHostTool = query => { f.verified.push(query); return query.sessionId === f.input.session.id && query.name === 'js_superagent_report' && query.result.accepted === true; };
+  addReport(f, terminalReport);
+  return f;
+}
+function appendRepair(f, { report = finalReport, linked = true, newReport } = {}) {
+  const sourceRunId = f.input.runId, runId = `repair-${sourceRunId}`, messageId = `${runId}-input`, prompt = `Repair ${runId}`;
+  const turn = 2, start = f.rows.length;
+  f.rows.push({ type: 'user/message', data: { id: messageId, content: [{ type: 'text', text: prompt }], source: { kind: 'user' } } },
+    { type: 'assistant/message', data: { turn, message: { content: [{ type: 'text', text: JSON.stringify(report) }] } } },
+    { type: 'turn/end', data: { turn, reason: { kind: 'completed' } } });
+  f.save(`run-${runId}.json`, { version: 1, nativeVersion: '0.2.2-alpha.2', sessionId: f.input.session.id, runId,
+    messageId, startSequence: start, promptDigest: dshDigest(prompt),
+    ...(linked ? { recoveryContinuation: { sourceRunId, finalReportFailure: 'invalid-final-report' } } : {}) });
+  f.save('latest-run.json', { runId, sessionId: f.input.session.id }); f.input.runId = runId;
+  if (newReport) addReport(f, newReport, `report-${runId}`); else f.write();
+}
+
+test('DSH valid JSON that conflicts with its verified terminal tool report cannot be recovered as completed', t => {
+  for (const change of [
+    value => { value.attention.question = 'Different wording'; },
+    value => { value.attention.triggerId = 'another-request'; },
+    value => { value.artifacts = ['other.json']; },
+    value => { value.answers = 'another-request'; },
+    value => { value.state = 'ready'; value.attention = null; },
+  ]) {
+    const report = structuredClone(finalReport); change(report);
+    const f = businessFixture(t, report), before = readFileSync(f.path), proof = f.inspect();
+    assert.equal(proof.outcome, 'resume'); assert.equal(proof.finalReportFailure, 'invalid-final-report');
+    assert.equal(proof.report, undefined); assert.deepEqual(readFileSync(f.path), before);
+  }
+  const f = businessFixture(t), proof = f.inspect();
+  assert.equal(proof.outcome, 'completed'); assert.equal(proof.report.summary, terminalReport.summary);
+  f.input.verifyHostTool = () => false;
+  assert.equal(f.inspect().safeToResume, false, 'Native tool output alone is not host authorization');
+});
+
+test('DSH final-only repair retains its verified source report across later recovery inspection', t => {
+  const drift = { ...finalReport, attention: { ...finalReport.attention, question: 'Changed again' } };
+  const f = businessFixture(t, drift);
+  appendRepair(f, { report: drift });
+  assert.equal(f.inspect().finalReportFailure, 'invalid-final-report');
+  assert.equal(f.inspect().outcome, 'resume', 'A second inspection cannot silently accept the failed repair');
+  appendRepair(f);
+  assert.equal(f.inspect().outcome, 'completed');
+  assert.equal(f.inspect().report.summary, terminalReport.summary);
+  assert.ok(f.verified.some(query => query.runId === 'original-run'));
+  f.input.verifyHostTool = query => query.runId !== 'original-run';
+  assert.equal(f.inspect().safeToResume, false, 'Inherited report receipts are revalidated');
+});
+
+test('DSH repair uses its newest terminal report while an ordinary later turn inherits no old report', t => {
+  const newReport = { ...terminalReport, question: 'New authorized question', summary: 'Latest tool summary' };
+  const report = { ...finalReport, attention: { ...finalReport.attention, question: newReport.question } };
+  const f = businessFixture(t); appendRepair(f, { report, newReport });
+  addReport(f, { state: 'progress', summary: 'Later progress does not replace terminal evidence' }, 'last-progress');
+  assert.equal(f.inspect().outcome, 'completed'); assert.equal(f.inspect().report.summary, newReport.summary);
+  const g = businessFixture(t); appendRepair(g, { report, linked: false });
+  assert.equal(g.inspect().outcome, 'completed'); assert.equal(g.inspect().report.summary, report.summary);
+  const h = businessFixture(t); appendRepair(h); h.save('run-original-run.json', { runId: 'missing-source', sessionId: h.input.session.id });
+  assert.equal(h.inspect().safeToResume, false, 'A missing source anchor cannot erase its report constraint');
+});
 
 test('DSH settled reasoning-only and whitespace finals offer continuation without substituting prior output', t => {
   for (const content of [[{ type: 'reasoning', text: 'synthetic placeholder' }], [{ type: 'text', text: ' \n\t' }], []]) {

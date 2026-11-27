@@ -6,6 +6,7 @@
 - Disable newly bundled native agent-team and Office plugins alongside the existing plugin manager, scheduler and interaction restrictions. Preserve literal `session/prompt`, scoped host tools and coordinator/host-only permissions.
 - Keep older profile bytes and version bindings unchanged. Test explicit coordinator executable changes, new session selection and rollback through the existing public settings API; do not migrate Worker sessions automatically.
 - Extend profile, session, cancellation, history and handoff regressions plus opt-in native loopback acceptance. See [DSH compatibility and migration](docs/dsh-rc5-compatibility.md) for deployment and dependency-security limits.
+- Preserve the live business-report agreement check during DSH native recovery. A valid JSON report with conflicting state, question, recipient, artifacts or answers enters the existing bounded final-report repair instead of being recovered as completed; explicit repair lineage retains verified tool evidence across final-only continuations.
 
 ## 0.15.0-alpha.16 — 2026-11-27
 

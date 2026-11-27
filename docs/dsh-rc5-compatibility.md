@@ -43,7 +43,7 @@ DSH_EXECUTABLE=/absolute/path/to/isolated/node_modules/.bin/dsh \
   node --import ./test/helpers/state-home.mjs test/dsh-native-profile.mjs
 ```
 
-相同命令入口可运行 `test/dsh-native-continuity.mjs`、`test/dsh-native-reliability.mjs`、`test/dsh-native-final-report.mjs`、`test/w28-dsh-native-handoff.mjs`、`test/w34-dsh-native-preview.mjs`。分别检查实际模型工具清单、受控异步读取和 pending 保留、取消及原会话恢复、缺失终态报告恢复不重复副作用、后台收取与预览续期。它们不包含生产飞书发信、长期任务结算或真实模型质量评估。
+相同命令入口可运行 `test/dsh-native-continuity.mjs`、`test/dsh-native-reliability.mjs`、`test/dsh-native-final-report.mjs`、`test/dsh-native-business-report-recovery.mjs`、`test/w28-dsh-native-handoff.mjs`、`test/w34-dsh-native-preview.mjs`。分别检查实际模型工具清单、受控异步读取和 pending 保留、取消及原会话恢复、缺失或冲突终态报告恢复不重复副作用、后台收取与预览续期。它们不包含生产飞书发信、长期任务结算或真实模型质量评估。
 
 2026-11-27，macOS / Node.js 24.22.1 验收结果：
 
@@ -57,3 +57,15 @@ DSH_EXECUTABLE=/absolute/path/to/isolated/node_modules/.bin/dsh \
 | 原生交接 / 预览 | 分别 4 / 2 次请求，原进程回复、无模型唤醒收取、预览续期越过原运行期限、所属进程退出通过 |
 
 上述 SDK 验收使用独立 DSH 候选锁图，在 `@deepseek-ai/dsh@0.2.2-rc.5` 子树内限定覆盖 `@modelcontextprotocol/client=2.3.0`、`fflate=0.8.3`、`undici=8.12.2`；锁文件 SHA-256 为 `0e34e95880d91813c22c36a2086f6bbba39a2ed156c995def72f811552feff84`。这是已测候选环境的记录，不是向所有宿主自动添加 overrides 的要求，也不替代宿主安装及完整安全审计。原生验收只使用临时目录、假凭据和本地 provider。
+
+## 终态报告冲突的恢复边界
+
+2026-11-28 补充：模型可能先通过 `js_superagent_report` 提交问题，再在最终 JSON 中改写问题文字。即使两段话意思接近，既有严格合同仍会拒绝它们；JSON 格式正确不等于业务报告一致。这里不做相似度判断，也不绕过审核。
+
+DSH 恢复检查现与正常运行复用 `sameBusinessReport`，比较 state、question、原始请求身份、artifacts 和 answers，并保留经宿主验证的工具报告 summary。冲突只能进入既有 `invalid-final-report` 单次修复或显式检查，不能从原生日志直接回填为完成。
+
+修复继续原会话，提示中提供已验证报告的精确字段。若仅补最终 JSON，仍须符合此前报告；剩余授权工作产生新的业务工具终态报告时，以最新报告为准。适配器自己的 run anchor 保留明确的修复来源，后续重新检查仍重验原始宿主收据，不会把再次冲突当成完成。普通后续轮次不继承旧报告。旧原生日志、授权、Core 重试额度和 longrun 结算逻辑均不改变。
+
+新增合成回归覆盖合法 JSON 冲突、来源收据拒绝、修复链再次检查、最新报告优先、普通后续轮次，以及公开 `retry` 的原会话一致／再次冲突／新报告三种结果。真实 SDK 本地验收入口 `test/dsh-native-business-report-recovery.mjs` 验证公开 retry 确实启动一次报告修复，并保持已完成临时操作只执行一次。
+
+补充验证已通过：完整 `npm run check` 为 1732 个运行时测试、154 个 Core 测试、154 个 SQLite 测试及独立包检查；真实 rc.5 SDK 冲突恢复使用 4 次本地 provider 请求，副作用计数为 1、会话不变、验证后的 summary 保留。原缺失终态报告恢复的 3 次请求验收也重新通过。
