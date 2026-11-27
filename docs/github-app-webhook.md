@@ -4,8 +4,6 @@ GitHub 渠道现已支持 App installation 身份，以及经过签名校验的 
 
 **后台持续运行不要求 Webhook 或公网地址。** 可以只用 App 身份轮询，并在 macOS 上通过 `service install --mode poll`／`service start` 保持后台接单；需要 GitHub 主动推送时才配置 HTTPS 和 `webhook` 模式。后台生命周期及重启边界见[后台运行与重启恢复](background-service.md)。
 
-**当前状态：实现、本地回归及真实 GitHub App／Webhook 验收均已通过。**2026-11-01 从本地 tarball 安装，在 [Issue #5](https://github.com/imjszhang/x-pkm-research/issues/5) 跑通真实签名接单、两轮 Codex 修改与验证、同工单反馈续作和 App Bot 回传，证据见 [App／Webhook 验收记录](phase5-app-webhook-acceptance.json)。此前使用 `gh` 的 [Issue 验收](phase5-acceptance.json) 与 [PR／CI 验收](phase5-pr-ci-acceptance.json) 分别保留。
-
 早先网页注册阻塞保存在 [阶段状态记录](phase5-app-webhook-status.json)，用于说明历史过程；当前以完成后的实际验收记录为准。
 
 ## 事件如何进入原工单
@@ -139,8 +137,6 @@ App 私钥和 Webhook secret 引用在项目内时，普通副本准备会同时
 | App 身份回传 | 接单确认与两轮结果共 3 条评论，均由注册 App 的 Bot 发送，收据中的 Bot ID 和 App ID 与远端一致 |
 | 本机 HTTP 负例与去重 | 捕获交付原样重放返回 `200`；篡改原始字节返回 `401`；同 ID 不同内容返回 `409`；新 delivery ID 的同事件不会重复执行 |
 | 重启与轮询兼容 | 重启后交付去重仍有效，额外轮询不新增工单／执行／评论；本地 CLI/SDK 入口及安装包回归继续通过 |
-
-完整时间、交付元数据、收据链接、独立测试结果和源码摘要保存在 [phase5-app-webhook-acceptance.json](phase5-app-webhook-acceptance.json)。首次专用 [Issue #4](https://github.com/imjszhang/x-pkm-research/issues/4) 尝试因验收脚本将 GitHub delivery 数值 ID 当成 JavaScript 安全整数而断言失败；这是证据采集脚本的问题，运行时使用的 delivery GUID 未受影响。脚本改为按精确字符串处理后，在新 Issue #5 完整复跑通过。
 
 验收收尾已关闭专用 Issue #4／#5、临时公网隧道和本机注册服务，App 与 installation 保留。长期使用 Webhook 仍需持续运行的 HTTPS 入口和运行时；只用轮询可以不部署 HTTPS。本次记录不代表已完成生产部署，后台服务单独说明与验收。复跑入口为：
 

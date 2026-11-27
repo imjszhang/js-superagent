@@ -2,8 +2,6 @@
 
 后续更新（2026-11-04）：下文前两项已在 `0.12.0-alpha.0`／schema 13 工作区源码中补齐，实际行为与验证边界见 [Worker 原问题答复与 PR 重关联补投](worker-answers-and-pr-redelivery.md)。本轮尚未提交、推送或部署；第三项面板排序仍待处理，W18 和飞书继续暂缓。下文保留 0.11 复核时的发现与证据。
 
-日期：2026-11-03（Asia/Shanghai）。本轮实现已提交并推送 `main`：[`24816475`](https://github.com/imjszhang/x-pkm-research/commit/24816475f48e64327060fa12610781ee4342248b)，版本 `0.11.0-alpha.0`／schema 12。提交仅包含 `packages/js-superagent` 的 37 个文件，其他工作区改动与暂存内容未纳入。
-
 比较采用本次从公开上游拉取的固定快照 [`16ab4f56`](https://github.com/deepseek-ai/dsh-superagent-prototype/tree/16ab4f56e5ca2af11f955ac0a06080070c3d135f)。其 Git tree 为 `3efbb036e5a56183c6bf642e2e1856a1f64e7be3`，216 个受版本控制的文件与上一轮 `6337fc8` 的完整 tree 相同；提交编号变化没有带来新的源码能力。没有修改现有上游参考仓库。
 
 ## 范围与结论

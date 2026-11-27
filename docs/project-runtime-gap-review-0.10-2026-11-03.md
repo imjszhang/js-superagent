@@ -2,8 +2,6 @@
 
 后续实现更新：本文第 1、2 项已在 `0.11.0-alpha.0`／schema 12 工作区补齐，详见[跨讨论关联与合批逐条答疑](candidate-routing-and-batched-answers.md)。以下缺口描述和排序保留为 `0.10` 比较快照；可选增强、真实验收缺口以及 W18、飞书暂缓状态不变。
 
-日期：2026-11-03（Asia/Shanghai）。本地基线为已提交并推送到 `main` 的 [`8eebf0ad`](https://github.com/imjszhang/x-pkm-research/commit/8eebf0adc7888b5432a2b660c22aba4b7a66638d)，`0.10.0-alpha.0` / schema 11。本次通过 GitHub API 和远端引用重新核验，公开上游 main 仍是 [`6337fc8`](https://github.com/deepseek-ai/dsh-superagent-prototype/tree/6337fc823ce20251c8de8085948165c81aaa701e)，本地只读比较副本与其一致。
-
 ## 判断范围与结论
 
 目标仍是每项目独立安装、保存状态和管理后台的持久 Agent 运行时，支持 CLI/SDK、Codex app-server、DSH SDK 和本地/GitHub 工作流程。本文比较实际公开源码及接线，不把上游文章中的未来设计、完整 DSH 聊天宿主或跨项目控制平台列为本包应补能力。

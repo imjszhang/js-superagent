@@ -4,8 +4,6 @@
 
 目前的服务管理器面向 **macOS 当前用户的 launchd 登录会话**。本地 CLI、SDK 和前台 `serve`／`github listen` 保留。导入包或初始化项目不会安装、启动服务，也不会创建公网地址。
 
-**2026-11-01 已通过真实后台轮询与进程恢复验收。** 从本地安装包运行，在 [Issue #7](https://github.com/imjszhang/x-pkm-research/issues/7) 完成三轮真实 Codex 工作、App Bot 回传、停止期间反馈补收，以及空闲和执行中两种进程崩溃恢复。证据见[后台服务验收记录](phase5-background-acceptance.json)。本轮未配置固定 HTTPS，也未重启整台 Mac 或注销再登录。
-
 ## 与上游后台方式的关系
 
 上游 `dsh-superagent-prototype` 的启动脚本在 `tmux` 会话中运行独立 DSH profile。GitHub Source 通过专用机器人账户的 `gh` 登录轮询通知和关联讨论，默认约一分钟；Runtime 内部每两秒推进已持久化的动作和到期评估。进程重启后恢复任务状态；另一个持续运行的 DSH profile 可按部署文档配置每小时健康检查，在异常退出后重新启动服务。`tmux` 自身不提供崩溃拉起或开机启动。[启动脚本](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/scripts/dsh-superagent)、[部署说明](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/006-deployment.md)、[架构说明](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/007-architecture.md)
@@ -170,22 +168,6 @@ npm run test:service:real -- --write --mode poll \
 ```
 
 使用 `--local-only` 可单独检查本地提交与进程恢复，但不能替代真实 GitHub 接单证据。固定 HTTPS 的验收还需真实 GitHub 投递和重启后的 URL 连续可用，不能用本地 HTTP、模拟投递或临时地址代替。本轮没有配置或验证这部分；此前的 [App／Webhook 记录](phase5-app-webhook-acceptance.json) 保留独立事件链路证据。
-
-## 本仓库的常驻部署
-
-2026-11-01 已在 `x-pkm-research` 仓库根目录安装并启动独立的本地安装包，采用 App 身份、30 秒轮询、`imjszhang` 允许名单和 `/js-superagent` 明确接单命令。安装位置为 `.js-superagent/installation/20261101-background/`，项目状态及安装包均在本地 Git 忽略范围内。配置引用已有受保护的 App 私钥文件，服务使用安装时记录的本机代理。
-
-正式服务已再次执行停止／启动，核对新进程完成 GitHub 同步、无渠道错误，核对时没有待执行工单。此服务保留运行；验收用的临时服务已移除。时间与状态是核对时的快照，见 [部署记录](phase5-background-status.json)。日常可在仓库根目录执行 `node packages/js-superagent/bin/js-superagent.mjs service status` 或 `service stop` 管理。
-
-工作区使用 Git worktree，从已提交的 Git 修订建立；当前未提交的文件和改动不会自动复制进去。`js-superagent` 改造已在 `f7468ba` 提交并推送，新工单可以访问包源码。通过 Issue #8 完成了包自身 CLI 版本选项的真实修改、提问回复和结果回传，见 [自身代码验收](phase5-self-host-acceptance.json)。固定 HTTPS 未部署，当前服务不启用 HTTP 监听；持续接单依靠主动轮询。
-
-### 当前安装：0.2.0-alpha.0
-
-2026-11-01 已将上述常驻服务升级到固定的 `0.2.0-alpha.0` 安装包，当前安装位置是 `.js-superagent/installation/20261101-v02-complete/`。包 SHA256 为 `c5714956a7ceeca1ad1d221324388fa3f7f7054516c7e321af5643c5601c1bcd`。服务仍以原 GitHub App 身份、30 秒轮询、原允许名单和 `/js-superagent` 命令接单，保留单 Worker、Codex 执行端、Git worktree 及原代理设置；没有启用主动接单策略或自动 PR 交付。
-
-升级先核对空闲状态并停止服务，保存受保护的原服务定义、配置及一致性 DB2 备份，再升级到 DB3。随后观察两次真实 App 轮询，显式重启并核对再次同步成功。最后安装包含交付恢复约束与完整角色设置的固定包，并再次核对 App 同步；现有配置没有启用自定义 Worker 提示词，默认执行方式保持不变；原工单、报告、通知及业务表摘要保持一致，没有重复执行或回传。旧安装目录、DB2 备份及最终替换前的 DB3 备份保留在本地 Git 忽略目录内。
-
-核对时最终服务进程为 `21552`，CLI 子进程为 `21554`，服务保持运行。进程号和运行状态是验收时的快照；以 `service status` 与 `github status` 查询当前情况。脱敏摘要见 [phase12-deployment-acceptance.json](phase12-deployment-acceptance.json)。本次没有重启整台机器或注销再登录。
 
 ## 稳定进程身份
 

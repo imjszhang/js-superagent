@@ -2,8 +2,6 @@
 
 日期：2026-11-03。工作区版本 `0.11.0-alpha.0`，项目数据库 schema 12。本轮补齐 [0.10 差距复核](project-runtime-gap-review-0.10-2026-11-03.md)的前两项，范围仍为单项目持久后台运行时，保留 CLI/SDK、Codex app-server 和 DSH SDK。W18 与飞书继续暂缓。
 
-提交状态更新：实现已由 [`24816475`](https://github.com/imjszhang/x-pkm-research/commit/24816475f48e64327060fa12610781ee4342248b) 推送到 `main`，未部署。后续实际功能差距见 [0.11 复核](project-runtime-gap-review-0.11-2026-11-03.md)。
-
 ## 同项目跨讨论关联既有工单
 
 授权真人在当前配置仓库的 Issue/PR 中明确引用 `#123`、`owner/repo#123` 或该仓库的 GitHub Issue/PR URL 时，宿主从本项目已保存的讨论订阅发现相关工单，将工单卡及引用它的原始消息 ID 提供给协调器。协调器可以读取受限工单上下文，并用 `attach` 把选定输入交给原工单；工单 ID、会话及工作区沿用原有接续流程。

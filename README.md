@@ -107,7 +107,7 @@ node bin/js-superagent.mjs --project /absolute/path/to/project github listen
 node bin/js-superagent.mjs --project /absolute/path/to/project github webhook-status
 ```
 
-`github listen` 在前台接收签名事件并持续执行，仍保留轮询。Webhook 落盘后触发既有 REST 同步，与轮询共享原生事件 ID；签名不会扩大任务授权。只有 Webhook 主动投递需要公网 HTTPS，后台轮询和 App 认证本身不需要；此前临时隧道仅用于验收。尚未创建 App 时可使用本机注册 helper；配置、SDK、凭据边界与 [Issue #5](https://github.com/imjszhang/x-pkm-research/issues/5) 的真实验收证据见 [GitHub App 与 Webhook](docs/github-app-webhook.md)。
+`github listen` receives signed events and keeps polling enabled. Webhook signatures do not expand task authority. Public HTTPS is needed only for inbound webhook delivery; polling and App authentication do not require it. See [GitHub App and Webhook](docs/github-app-webhook.md) for setup and credential boundaries.
 
 ## SDK
 

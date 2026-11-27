@@ -1,7 +1,5 @@
 # 0.12：项目级后台运行时差距复核
 
-日期：2026-11-04（Asia/Shanghai）。本轮实现已提交并推送 `main`：[`0fe9bebe`](https://github.com/imjszhang/x-pkm-research/commit/0fe9bebef38588d8a359b0747d4cc64357633387)，版本 `0.12.0-alpha.0`／schema 13。提交包含 `packages/js-superagent` 的 36 个文件，其他工作区与暂存内容未纳入；没有部署。
-
 本次重新拉取公开上游，固定快照为 [`8c32a9dc`](https://github.com/deepseek-ai/dsh-superagent-prototype/tree/8c32a9dc5d72c033816c6a8110b37f40cf94fba4)。完整 Git tree `3efbb036e5a56183c6bf642e2e1856a1f64e7be3`、216 个受控文件，与前两轮比较快照相同。提交编号变化没有带来新的源码能力；现有参考仓库未修改。
 
 ## 范围与结论

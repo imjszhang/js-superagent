@@ -1,7 +1,5 @@
 # Worker 原问题答复与 PR 重关联补投
 
-日期：2026-11-04（Asia/Shanghai）。版本 `0.12.0-alpha.0`／schema 13 已由 [`0fe9bebe`](https://github.com/imjszhang/x-pkm-research/commit/0fe9bebef38588d8a359b0747d4cc64357633387) 提交并推送，未部署。本轮补齐 [0.11 差距复核](project-runtime-gap-review-0.11-2026-11-03.md)的前两项，继续保持单项目持久后台运行时、CLI/SDK、Codex app-server 和 DSH SDK 的边界。W18、飞书及面板历史工单排序不在本轮范围；后续实际差距见 [0.12 复核](project-runtime-gap-review-0.12-2026-11-04.md)。
-
 ## 已有 Worker 按原问题回传
 
 授权人在另一个讨论中明确关联已有工单后，原 Worker 可以回答该条问题，由宿主回到原讨论发送答案，不需要结束原任务。例如 Issue #1 的工单收到 Issue #2 的问题，Worker 使用 #2 对应的原始 `triggerId`，答案回到 #2；原任务仍可保持 waiting。

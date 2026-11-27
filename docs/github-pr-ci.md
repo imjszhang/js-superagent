@@ -100,8 +100,6 @@ try {
 
 过期输入处理回归已通过：关联新提交后不执行旧提交反馈；同一检查的最新成功结果不再触发旧失败修复；旧输入保留审计且不标为 Worker 已读，后续有效反馈仍能执行。启动前远端 head 检查、停止等待在途关联、跨实例关联锁也已通过验证。
 
-2026-11-01 已从本地 tarball 安装后完成真实验收：[Issue #2](https://github.com/imjszhang/x-pkm-research/issues/2) → [PR #3 的真实审阅](https://github.com/imjszhang/x-pkm-research/pull/3#pullrequestreview-5727171405) → 同工单修复并回传 → [真实 Actions 失败](https://github.com/imjszhang/x-pkm-research/actions/runs/41288835692/job/124795633280) → 再次修复并回传 → [Actions 成功](https://github.com/imjszhang/x-pkm-research/actions/runs/41288947574/job/124795971915)。
-
 三轮真实 Codex 使用同一工单、原生会话和 Git worktree，测试分别通过 3、4、5 项；最后独立验证负数数量抛出 `ValueError`。6 条远端收据与实际评论一一对应，重复同步不产生新执行或评论，源项目文件、HEAD 与暂存区保持不变。两次发布仅更新专用分支的两个 Python fixture 文件，PR 没有合并。完整结果、源码哈希和测试资源收尾记录见 [phase5-pr-ci-acceptance.json](phase5-pr-ci-acceptance.json)；之前的 [Issue 验收记录](phase5-acceptance.json) 保持原样。
 
 最终包级检查通过 174 项 Node 测试，以及内存、SQLite 各 144 项上游领域测试；安装包协议、外部类型消费、仓库整体检查均通过。真实入口为 `npm run test:github:pr:real`，默认 `npm run check` 不访问 GitHub 或模型。

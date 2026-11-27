@@ -4,8 +4,6 @@
 
 后续实现更新（2026-11-03）：下文前两项已在 `0.10.0-alpha.0`／schema 11 工作区补齐，并完成相关离线验证，详见[交付记录](coordinator-answers-and-code-context.md)。W18 和飞书继续暂缓。下文保留 `582c6f44` 时的原始差距判断，不能再将这两项计为当前源码缺失；新包真实模型/GitHub 持续验收仍未完成。
 
-日期：2026-11-03（Asia/Shanghai）。本地实现基线为已推送的 [`582c6f44`](https://github.com/imjszhang/x-pkm-research/commit/582c6f44c95e27bfba8d1ee6f5d5a19fc10e1283)，`0.9.0-alpha.0` / schema 10。通过 GitHub API 重新核对，公开 `deepseek-ai/dsh-superagent-prototype` 的 main 仍为 [`6337fc8`](https://github.com/deepseek-ai/dsh-superagent-prototype/tree/6337fc823ce20251c8de8085948165c81aaa701e)。源码比较使用相同提交的本地副本；没有把文章中的未来设计当作已发布能力。
-
 ## 判断边界
 
 目标是每个项目独立安装、保存状态和管理后台的持久 Agent 运行时，保留 CLI/SDK、Codex app-server、DSH SDK，以及本地/GitHub 工作流程。参见[多项目定位](multi-project-runtime.md)。本次只检查实际工作链路的差距，不实施下一轮功能，不部署或启动服务。

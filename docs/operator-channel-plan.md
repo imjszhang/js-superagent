@@ -153,65 +153,6 @@ Worker 报告里的提问增加一个可选字段 `decision`，和现有的 `que
 多个操作者、群里的决策卡片、加急和电话通知、一个机器人服务多个项目、协调者自动回答提问。
 
 
-## 2026-11-09 私信部署与旧提问补发
+## Deployment acceptance
 
-用户明确选择飞书私信通知 R0003。沿用项目来源策略中唯一登记的人类飞书账号作为 `feishu.operator`，通过公开 SDK 配置；没有在业务层选择收件人或直接调用飞书发送 API。停服务前确认无 running/queued 工单并保存配置，设置后启动原后台服务。
-
-- 协调者：DSH / DeepSeek Flash、read-only、continuous，修订 2。原来源策略 mode=off 保持，未扩大群消息主动受理范围。
-- 补上旧提问补发：`flushNotifications` 对操作者工单核对未回答的提问；按 attention ID 去重。仅补通知，不恢复执行、不填写回答，不给群来源工单另发私信。
-- R0003 原工单 `ad8cd008a13ac7f2f5939b776c906566`、原问题及五张候选保留。它的旧提问没有结构化 decision，因此发文字私信，不伪造卡片或替换用户问题。
-- 宿主发送记录 `operator-attention:2cb98e6125d4715a7481ef4be106e833` 的通道为 feishu、状态为 sent。服务启动状态 ready。
-- 定向测试 14/14 通过，新增“启用私信后旧问题仅发送一次、工单不续跑”的回归测试。
-- 实际用户私信回答→协调者转交→Worker续接，以及真实卡片回调，尚未验收。发送成功不等于用户已经阅读或作出决定。
-
-本机配置备份在项目运行状态目录的 `operator-deployment-20261109/`，未复制凭据文件。检查客户端的 `feishuStatus()` 返回的是该客户端连接状态，不能单凭 stopped 判断后台长连接已断开；部署验收使用后台服务状态与真实发送回执。
-
-
-协调者真实只读验收：事件 `r0003-operator-deployment-check-20261109` 首次因 reply 错填 ticketId 被宿主拒绝，未影响工单。已在共享提示中明确 reply/request 的 ticketId 必须为 null，并更新提示快照测试；重启服务后重试同一事件，第二次 completed，只向本地回复 R0003 仍 waiting。没有重发私信或向 Worker 注入内容。最终定向测试 16/16、longrun 测试 41/41 通过；工作流与技能检查通过。全项目检查仍因既有媒体资料未纳入 Git及成品缺失而未通过。
-
-
-## 2026-11-09 R0003 卡片升级
-
-用户要求修复并以卡片重发。新增公开 SDK `attachDecision(ticketId, { attentionId, decision })`，只允许为当前 waiting、未回答的本地操作者工单附加结构化选项。保留原 attention ID 和问题正文，不恢复 Worker、不创建答案。相同结构幂等，不同结构及过期、已回答的问题拒绝。
-
-通知层允许同一问题从文字升级为卡片，使用独立稳定的 `operator-attention:<attentionId>:card` 回执与 nonce。未发送文字被撤回；已发送文字保留历史。文字答复和卡片提交仍共用原问题的唯一回答记录，只有第一份有效回答生效。重复附加或刷新不会重发卡片或更换已发卡片 nonce。
-
-R0003 的卡片选项由已冻结的五张候选生成，包含原作者、日期、来源链接、问题、推荐原因和证据边界；每项可选 adopted/rejected/later，理由必填。发送回执：`operator-attention:2cb98e6125d4715a7481ef4be106e833:card`，message ID `om_x100b6021cf982cb0c0b3f28490eaac2`，状态 sent。核对时工单仍 waiting、答案为 0、五张候选文件和 review 快照未变。
-
-操作者通道与答案定向测试 18/18 通过，包含旧文字升级、待发文字撤回、幂等重发、过期/不同结构拒绝、消息/nonce校验及文字卡片单次回答互斥；类型检查与 longrun 41/41 通过。真实点击提交仍待用户操作，不把发送成功当成回调验收。
-
-## 2026-11-09 R0003 真实提交与 CLI 文字链路测试
-
-用户授权代处理五个候选进行测试。飞书客户端中将五项均选为「稍后」，理由均为「测试卡片流程，暂不正式采纳」后点击提交，客户端提示「该应用尚未配置卡片回调」。快捷配置入口的 URL 保留了 `clientID={{client_id}}` 占位符，打开后显示「该应用不存在」。本次点击没有形成答案；不能将卡片送达或表单填写完成视为回调验收。需在实际应用的开放平台配置长连接回调 `card.action.trigger` 后另测真实提交。
-
-已检查 lark-cli 的消息和卡片能力：可以读取、回复、更新卡片或监听事件，没有代用户填写并点击卡片提交的命令。因此按用户授权改测文字链路，以 user 身份回复原卡片，消息 ID 为 `om_x100b6021ebd654a4cf4942edbc9a0ad`。正文逐项指定 C0001–C0005 均为 `later`，理由保持上述原文，并明确本次仅为流程测试、不代表长期内容偏好；保留五个候选，完成本轮记录后结束，不开新回合或制作、发布内容。
-
-公开 SDK 核对结果：协调事件在 `2026-11-09T05:30:05.872Z` 完成，唯一动作 `answer` 将原文转交原工单 `ad8cd008a13ac7f2f5939b776c906566`；原问题 `2cb98e6125d4715a7481ef4be106e833` 记录一份 `kind=text`、`via=feishu-text` 的回答，回答人为已登记操作者。Worker 续接后在 `2026-11-09T05:30:59.868Z` 完成；longrun 在 `2026-11-09T05:31:07.355Z` 收集为 `counted`，`later=5`、`adopted=0`、`rejected=0`、`answerCheck=text`，`verify.ok=true`。逐项比对修复前备份，五个候选原内容字段均保持一致，状态和理由与本次回答完全相同；judgment 未写入长期偏好或拒绝信号。
-
-lark-cli 回读原卡片的标题为「已在别处回答」。文字入口不生成结构化答案，且已消费该问题，原卡片不能再用于首次提交验收。本次通过的是「飞书文字回复→协调者原文转交→Worker 续接→longrun 收集」链路；真实卡片回调仍未验收。
-
-## 2026-11-09 卡片回调配置生效
-
-用户完成飞书授权配置后，通过 lark-cli 的只读预检核对当前应用：
-
-```bash
-lark-cli event consume card.action.trigger --as bot --dry-run
-```
-
-返回 `decision.status=ready`，`credentials_available`、`console_event_published`、`scopes_granted` 三项均为 `ok`。这确认 `card.action.trigger` 回调订阅配置已发布生效，所需权限可用。该命令带 `--dry-run`，没有启动监听器或与既有 js-superagent 竞争长连接。
-
-同次检查中，既有 js-superagent 服务为 `ready=true`、`running=true`，未重启或另起实例。随后以独立测试工单验证真实卡片提交，不复用 R0003 已关闭的卡片：
-
-- 工单：`2699d4a82e89fb4219931d1699342660`；问题：`4a576863978b708c42f474f2271755f9`；发送消息：`om_x100b60233489bca0df6b77b38abe4dd`。
-- 在飞书客户端实际选择 `confirmed`（「确认测试」），理由为「验证已启用的真实卡片回调」，点击提交后卡片显示「已提交」。
-- 公开 SDK 读到唯一回答，`kind=structured`、`via=feishu-card`，记录时间 `2026-11-09T07:35:22.355Z`；原 Worker 续接并在 `2026-11-09T07:35:34.175Z` 完成。
-
-至此，新的测试问题已实际走通「卡片提交→结构化答案记录→原 Worker 续接完成」。本次实测不覆盖冒名、重复提交、过期卡片等异常分支；这些仍以自动测试结果为证据。R0003 的结算与文字回答记录保持独立，不将其改记为卡片回答。
-
-## 2026-11-09 发卡前证据与完成通知验收
-
-审计发现此前两个 completed 事件虽然已进入协调 inbox，协调者都错误返回空 actions：把仅发到 local 的宿主结果当作已发送飞书。修复后，明确的 `operatorNotification` 事实和宿主校验要求该事件恰好一条 notify；拒绝空动作后可用既有 `coordination retry` 重试，不自动伪造结果或标记通知成功。
-
-重启原服务后，真实工单 `f8d24d46ce96e183006fd2716260c510` 于 17:29:54 在发卡前捕获候选文件；17:31:04 飞书真实提交测试 C0006「采纳」，理由「仅验证隔离测试入库，不代表正式选题采纳」；唯一回答为 `structured / feishu-card`，17:31:39 原 Worker completed。协调者第一次处理结果事件即返回 notify，于 17:31:50 成功投递飞书消息 `om_x100b602d7ebb9cb0df4cc79b5ccd7c3`。通知准确说明工作区已完成、尚待 longrun 核对结算。
-
-longrun 直到完成后才首次 collect，从预先保存的宿主快照恢复审阅依据，17:32:14 结构化逐项核对及隔离入库成功；两次并发 collect 仅记账一次。原 R0003 五项候选及正式状态逐字节未变。lark-cli 回读确认卡片 `om_x100b602d67f1f0a4df0832ec4fcb77f` 为「已提交」及完成通知正文。完整证据、测试范围和保留校验见[试点验收](https://github.com/imjszhang/x-pkm-research/blob/d33a0495/research/longrun/x-video-topic-radar/acceptance.md#三项修复与完整隔离验收2026-11-09-1732)。
+Keep operator identities, message identifiers, candidate decisions and deployment evidence in the host project. Public validation uses synthetic fixtures.

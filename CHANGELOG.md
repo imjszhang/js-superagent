@@ -2,6 +2,8 @@
 
 ## 0.15.0-alpha.17 — 2026-11-27
 
+- Remove private host deployment evidence from public documentation and add a documentation privacy regression check.
+
 - Add exact DSH `0.2.2-rc.5` SDK, history, native handoff and preview compatibility; retain the two older supported versions and reject unverified releases.
 - Disable newly bundled native agent-team and Office plugins alongside the existing plugin manager, scheduler and interaction restrictions. Preserve literal `session/prompt`, scoped host tools and coordinator/host-only permissions.
 - Keep older profile bytes and version bindings unchanged. Test explicit coordinator executable changes, new session selection and rollback through the existing public settings API; do not migrate Worker sessions automatically.
