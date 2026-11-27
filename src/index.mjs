@@ -26,6 +26,7 @@ import { managementRevision, normalizeManagementIntent, managementCommand } from
 import { assessmentFailure } from './runtime/assessment.mjs';
 import { AssessmentContextChanged, isAssessmentContextChanged, CONTEXT_REFRESH_EXHAUSTED, refreshState, resetRefreshCycle, recordContextRefresh } from './runtime/assessment-refresh.mjs';
 import { assessmentStatus, assessmentFailureMessage, isMaterialBindingDenied, assessmentTicketReceiptProof, verifyAssessmentTicketReceipt } from './runtime/assessment-status.mjs';
+import { normalizeHostReference, normalizeCancellation, publishHostFacts as persistHostFacts, hostFactRows } from './runtime/host-facts.mjs';
 import { createCoordinationReader } from './runtime/coordination-context.mjs';
 import { feedbackDisposition } from './runtime/feedback.mjs';
 import { projectStateDirectory } from './state-paths.mjs';
@@ -200,7 +201,7 @@ export class ProjectRuntime {
             }
           }
           const hostFailureNotice = message.id.startsWith('host-failure-notice-');
-          const delivery = await this.#sources.deliver(message, hostFailureNotice ? { authorizeSend: () => this.#beginHostFailureNoticeSend(message) } : undefined);
+          const delivery = await this.#sources.deliver(message, hostFailureNotice ? { authorizeSend: () => this.#beginHostFailureNoticeSend(message) } : message.id.startsWith('coordination-failure:') ? {authorizeSend:()=>this.#authorizeCoordinationFailure(message)} : undefined);
           if (message.channel.address?.operator === 'true' && delivery?.chatId) this.#store.atomic(() => this.#learnOperatorChat(delivery.chatId));
           return delivery;
         }
@@ -952,7 +953,7 @@ export class ProjectRuntime {
     return !!route && (proof?.route ? JSON.stringify(proof.route) === JSON.stringify(route) : route.source === 'local');
   }
   #bindMaterialMessage(message) {
-    if (message.id.startsWith('material-notice:') || message.id.startsWith('host-failure-notice-') || this.#store.getMeta(`material-message:${message.id}`)) return;
+    if (message.id.startsWith('coordination-failure:') || message.id.startsWith('material-notice:') || message.id.startsWith('host-failure-notice-') || this.#store.getMeta(`material-message:${message.id}`)) return;
     const id = message.ticketId && (this.#store.getMeta(`public:${message.ticketId}`) ?? message.ticketId);
     const provenance = this.#materialTicketProvenance(id && this.#store.getMeta(`ticket:${id}`));
     if (provenance.ticketIds.length || provenance.metadataTicketIds.length) this.#store.setMeta(`material-message:${message.id}`, { revision: this.getMaterialSettings().revision,
@@ -1052,7 +1053,8 @@ export class ProjectRuntime {
     // A fresh latest observation does not attest every older assignment/message.
     // Material readers receive the current card, never an unversioned history
     // whose old prose could silently become current again after a reread.
-    return this.#materialDisclosureIds(meta).length ? {...this.#coordinationTicketCard(meta,domain,event),domainId:domain.id} : value;
+    const host=this.#coordinationHostFacts(meta,domain,event);
+    return {...(this.#materialDisclosureIds(meta).length ? this.#coordinationTicketCard(meta,domain,event) : {...value,...this.#coordinationIdentity(meta,domain)}),hostFacts:host.values};
   }
   #assessmentTicketValue(meta, domain, event) {
     if (!this.#materialDisclosureIds(meta).length) return domain;
@@ -1065,7 +1067,7 @@ export class ProjectRuntime {
       provenance.contentVersions = provenance.contentVersions.filter(([id]) => id !== meta.id);
       provenance.metadataTicketIds = [...new Set([...provenance.metadataTicketIds, meta.id])].sort();
     }
-    const card = {...this.#coordinationTicketCard(meta, domain, event, provenance),domainId:domain.id};
+    const card = {...this.#coordinationTicketCard(meta, domain, event, provenance, false),domainId:domain.id};
     // Candidate assessment cannot execute recovery actions. Its internal
     // recovery token includes Worker checkpoints, not a routing fact.
     if (card.recovery) delete card.recovery.version;
@@ -1164,6 +1166,7 @@ export class ProjectRuntime {
     return null;
   }
   #authorizeMaterialMessage(message) {
+    if(message.id.startsWith('coordination-failure:'))return this.#authorizeCoordinationFailure(message);
     // Only this host-attested, fixed, content-free status bypasses material-body
     // freshness. Its own run, mandate and original route must still be current.
     if (message.id.startsWith('host-failure-notice-') || this.#store.getMeta(`host-failure-notice:${message.id}`)) return this.#authorizeHostFailureNotice(message);
@@ -1296,12 +1299,82 @@ export class ProjectRuntime {
     this.#outbox.send(notice.message);
     return notice.message.id;
   }
-  #coordinationTicketCard(meta, domain, event, provenance=this.#materialTicketProvenance(meta)) {
-    const projected=this.#materialTicketProjection(meta,domain,event,provenance); if(projected)return projected;
+  #hostReference(meta) { return structuredClone(meta.hostReference ?? null); }
+  #initialDomainId(meta) {
+    if(meta.initialDomainId && this.#store.getMeta(`public:${meta.initialDomainId}`)===meta.id && this.#store.tickets.get(meta.initialDomainId))return meta.initialDomainId;
+    const domains=this.#store.listMeta('public:').filter(row=>row.value===meta.id)
+      .map(row=>this.#store.tickets.get(row.key.slice('public:'.length))).filter(Boolean)
+      .sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.id.localeCompare(b.id));
+    return domains.length && domains[0].createdAt===meta.createdAt && (!domains[1] || domains[0].createdAt!==domains[1].createdAt) ? domains[0].id : null;
+  }
+  #cancellation(meta, domain) {
+    const value=meta.cancellation;
+    return value && (value.domainId===domain.id || !value.domainId && this.#initialDomainId(meta)===domain.id) ? structuredClone(value) : null;
+  }
+  hostFactsCapabilities() { return {version:1}; }
+  publishHostFacts(input) {
+    const store=this.#db();
+    const validate=()=>{
+      if(input?.scope!=='ticket')return;
+      const meta=this.#meta(input.ticketId),domain=store.tickets.get(input.domainId);
+      if(!domain || store.getMeta(`public:${domain.id}`)!==meta.id)throw Object.assign(new Error('Host facts domain is not bound to this public ticket'),{code:'HOST_DOMAIN_CHANGED'});
+      if(input.assignmentId===undefined && domain.assignments.length===1)input={...input,assignmentId:domain.assignments[0].id};
+      if(!domain.assignments.some(row=>row.id===input.assignmentId))throw Object.assign(new Error('Host facts require a proven assignment identity'),{code:'HOST_DOMAIN_CHANGED'});
+    };
+    validate();
+    const preview=persistHostFacts(store,input,{projectId:this.projectId,commit:false});
+    if(preview.status!=='stored')return preview;
+    return store.atomic(()=>{
+      validate();let proof=null;
+      if(input?.scope==='ticket') {
+        const meta=this.#meta(input.ticketId), domain=this.#store.tickets.get(input.domainId);
+        if(!domain || this.#store.getMeta(`public:${domain.id}`)!==meta.id) throw Object.assign(new Error('Host facts domain is not bound to this public ticket'),{code:'HOST_DOMAIN_CHANGED'});
+        // A historical generation may be published, but current material authority
+        // cannot attest its body. Preserve it locally with metadata-only projection.
+        proof={...this.#persistMaterialProvenance(this.#materialTicketProvenance(meta)),historical:domain.id!==meta.domainId||input.assignmentId!==latestAssignment(domain)?.id};
+      }
+      return persistHostFacts(this.#store,input,{projectId:this.projectId,proof,now:()=>this.#now()});
+    });
+  }
+  listHostFacts(filters={}) { return hostFactRows(this.#db(),filters).map(row=>structuredClone(row.record)); }
+  #projectFactsAllowed(event) { return this.#recoveryOperatorAllowed(event) && !!this.#materialEventRoute(event); }
+  #coordinationProjectFacts(event) { return this.#projectFactsAllowed(event)?hostFactRows(this.#store,{scope:'project'}).map(row=>row.record):[]; }
+  #coordinationHostFacts(meta,domain,event) {
+    const values=[],proofs=[];
+    for(const row of hostFactRows(this.#store,{scope:'ticket',ticketId:meta.id})) {
+      const historical=row.record.domainId!==domain.id || row.record.assignmentId!==latestAssignment(domain)?.id || row.proof?.historical;
+      const proof=this.#materialProvenance(row.proof);
+      try { this.#assertMaterialDisclosure([...proof.ticketIds,...proof.metadataTicketIds],materialDestination(this.#materialEventChannel(event))); } catch {continue;}
+      let projection=this.#materialProjection(proof);
+      if(historical&&(proof.ticketIds.length||proof.metadataTicketIds.length))projection={projectionVersion:1,ticketIds:[],contentVersions:[],metadataTicketIds:[...new Set([...proof.ticketIds,...proof.metadataTicketIds])].sort(),stale:true};
+      proofs.push(projection);
+      if(projection.stale) {const {facts,...record}=row.record;values.push({...record,materialState:'stale',...(historical?{historical:true}:{})});}
+      else values.push({...row.record,...(historical?{historical:true}:{})});
+    }
+    return {values,provenance:this.#materialProvenance(...proofs)};
+  }
+  #coordinationIdentity(meta,domain,{redacted=false}={}) {
+    const assignment=latestAssignment(domain),cancellation=this.#cancellation(meta,domain),observation=meta.executionObservation;
+    const active=this.#executions().find(row=>row.value.ticketId===domain.id&&row.value.assignmentId===assignment?.id)?.value;
+    const runId=active?.runId??(meta.executionIdentity?.domainId===domain.id&&meta.executionIdentity?.assignmentId===assignment?.id?meta.executionIdentity.runId:null);
+    return {domainId:domain.id,createdAt:meta.createdAt,updatedAt:meta.updatedAt,
+      reportAt:assignment?.report?.at??null,
+      execution:{runId,assignmentId:assignment?.id??null,
+        ...(runId&&observation?.runId===runId?{observation:{state:observation.state??null,at:observation.at??null,since:observation.since??null,nextAt:observation.nextAt??null}}:{})},
+      hostReference:this.#hostReference(meta,domain),hostReferenceOrigin:meta.hostReference?{domainId:meta.hostReferenceDomainId,assignmentId:meta.hostReferenceAssignmentId}:null,
+      cancellation:redacted&&cancellation?{source:cancellation.source,actor:cancellation.actor??null,at:cancellation.at,domainId:domain.id}:cancellation};
+  }
+  #coordinationTicketCard(meta, domain, event, provenance=this.#materialTicketProvenance(meta), includeHost=true) {
+    const host=includeHost?this.#coordinationHostFacts(meta,domain,event):{values:[],provenance:this.#materialProvenance()},inline=[];
+    for(const record of host.values) { if(Buffer.byteLength(JSON.stringify([...inline,record]))>2400)break;inline.push(record); }
+    const metadata=includeHost?{...this.#coordinationIdentity(meta,domain,{redacted:!!this.#materialDisclosureIds(meta).length}),hostFacts:inline,omittedHostFacts:host.values.length-inline.length}:{};
+    const projected=this.#materialTicketProjection(meta,domain,event,provenance);
+    if(projected) {if(!includeHost)return projected;const value={...projected,...metadata,...this.#materialCardFields(this.#materialProvenance(this.#materialCardProvenance(projected),host.provenance))};return {...value,stateVersion:materialDigest(value)};}
+    provenance=this.#materialProvenance(provenance,host.provenance);
     const report = latestAssignment(domain)?.report;
     const material=this.#materialDisclosureIds(meta).length>0,recovery=this.#ticketRecoveryCard(meta,domain,event);
     if(material)delete recovery.lastReason;
-    return { id: meta.id, scope: domain.mandate.scope.slice(0, 600), status: this.#view(meta).status,
+    return { ...metadata,id: meta.id, scope: domain.mandate.scope.slice(0, 600), status: this.#view(meta).status,
       reportState: report?.state ?? null, summary: report?.summary?.slice(0, 400) ?? null,
       attention: !material || report?.attention?.question===domain.attention?.question ? domain.attention?.question?.slice(0,400)??null : null,
       ended: material && domain.ended ? {by:domain.ended.by,at:domain.ended.at} : domain.ended??null,
@@ -1309,12 +1382,12 @@ export class ProjectRuntime {
       recovery,...(material?{materialProjectionVersion:1}:{}),
       ...(domain.attention ? { question: { answered: !!this.#attentionAnswer(domain.attention.id), choices: !!this.#attentionDecision(domain.attention.id) } } : {}),
       ...this.#materialCardFields(provenance),
-      stateVersion: createHash('sha256').update(JSON.stringify({ domain, failure: meta.failure, interrupted: meta.interrupted })).digest('hex') };
+      stateVersion: createHash('sha256').update(JSON.stringify({ domain, failure: meta.failure, interrupted: meta.interrupted,...(includeHost?{metadata,provenance}:{}) })).digest('hex') };
   }
   #recoveryOperatorAllowed(event) {
     if (event?.kind !== 'operator' || event.actor?.kind !== 'human') return false;
     if (event.actor.source === 'local') return event.source?.channel === 'local';
-    const feishu = this.#operatorFeishu(), source = this.#store.triggers.get(event.references?.triggerId);
+    const feishu = this.#operatorFeishu(), triggerId=event.references?.triggerId, source = typeof triggerId==='string'?this.#store.triggers.get(triggerId):undefined;
     return !!feishu && event.actor.source === 'feishu' && event.source?.channel === 'feishu' &&
       event.actor.id === feishu.operator.openId && source?.meta?.tenantKey === feishu.tenantKey;
   }
@@ -1473,13 +1546,14 @@ export class ProjectRuntime {
   }
   #coordinationContext(event) {
     const destination = materialDestination(this.#materialEventChannel(event)), materialScope = this.#materialSessionScope([event]);
-    const records = this.#db().listMeta('ticket:').map(row => row.value).filter(meta => this.#materialContextAllowed(meta, event));
-    records.sort((a, b) => Number(b.id === event.ticketId) - Number(a.id === event.ticketId) || b.updatedAt.localeCompare(a.updatedAt));
+    const records = this.#db().listMeta('ticket:').map(row => row.value).filter(meta => this.#store.tickets.get(meta.domainId)&&this.#materialContextAllowed(meta, event));
+    const states=new Map(records.map(meta=>[meta.id,this.#view(meta).status])),active=meta=>['running','queued','waiting'].includes(states.get(meta.id));
+    records.sort((a,b)=>Number(b.id===event.ticketId)-Number(a.id===event.ticketId)||Number(active(b))-Number(active(a))||b.updatedAt.localeCompare(a.updatedAt)||a.id.localeCompare(b.id));
     const tickets = [];
     for (const meta of records.slice(0, 100)) {
       const domain = this.#store.tickets.get(meta.domainId); if (!domain) continue;
       const row = this.#coordinationTicketCard(meta, domain, event);
-      if (Buffer.byteLength(JSON.stringify([...tickets, row])) > 16000) break;
+      if (Buffer.byteLength(JSON.stringify([...tickets, row])) > 16000) continue;
       tickets.push(row);
     }
     const recentEvents = [];
@@ -1510,11 +1584,40 @@ export class ProjectRuntime {
     // not an operator DM; only this event's notify action queues that delivery.
     const needsOperatorNotification = !!this.#operatorFeishu() && target?.operatorTicket && event.requiresCoordination &&
       (event.kind === 'result' || event.kind === 'report' && ['blocked', 'failed'].includes(event.references?.reportState));
-    const context = { tickets, recentEvents: recentEvents.reverse(), omittedTickets: Math.max(0, records.length - tickets.length),
+    const allProjectFacts=this.#coordinationProjectFacts(event),projectFacts=[];
+    for(const row of allProjectFacts){if(Buffer.byteLength(JSON.stringify([...projectFacts,row]))>4000)continue;projectFacts.push(row);}
+    const context = { tickets,projectFacts,omittedProjectFacts:allProjectFacts.length-projectFacts.length,omittedActiveTickets:records.filter(meta=>active(meta)&&!tickets.some(ticket=>ticket.id===meta.id)).length, recentEvents: recentEvents.reverse(), omittedTickets: Math.max(0, records.length - tickets.length),
       ...(materialScope ? { materialSources: provenance.ticketIds, materialMetadataSources:provenance.metadataTicketIds,materialContentVersions:provenance.contentVersions } : {}),
       ...(needsOperatorNotification ? { operatorNotification: { required: true, eventId: event.id, ticketId: event.ticketId,
         channel: 'feishu', hostResultDelivery: 'local-only' } } : {}) };
     return { context, version: createHash('sha256').update(JSON.stringify(context)).digest('hex') };
+  }
+  #queueCoordinationFailure(event) {
+    if(!event || !['failed','unsupported'].includes(event.status) || this.#stopping || this.isPaused() || !this.#projectFactsAllowed(event))return;
+    const current=this.#coordinationInbox().get(event.id);
+    if(current?.generation!==event.generation || current.status!==event.status)return;
+    const id=`coordination-failure:${event.id}:${event.generation??0}`,route=this.#materialEventRoute(event);
+    if(!this.#materialProofRouteAllowed(this.#store.getMeta(`material-event:${event.id}`),route))return;
+    const feishu=event.source?.channel==='feishu'&&this.#operatorFeishu();
+    const channel=feishu?operatorReplyChannel(feishu,event.source.chatId,event.source.messageId):{source:'local',thread:event.id,address:{}};
+    const message={id,kind:'reply',channel,text:'本次协调未完成。请求和已保存的记录已保留，可检查原因后重试。'};
+    this.#store.setMeta(`coordination-failure-proof:${id}`,{eventId:event.id,generation:event.generation??0,actor:event.actor,route,message});
+    this.#outbox.send(message);
+  }
+  #authorizeCoordinationFailure(message) {
+    if(this.#stopping || this.isPaused())throw new Later('Runtime is paused or stopping');
+    const proof=this.#store.getMeta(`coordination-failure-proof:${message.id}`),event=proof&&this.#coordinationInbox().get(proof.eventId);
+    if(!proof || JSON.stringify(message)!==JSON.stringify(proof.message) || !event || !['failed','unsupported'].includes(event.status) ||
+       (event.generation??0)!==proof.generation || JSON.stringify(event.actor)!==JSON.stringify(proof.actor) || !this.#projectFactsAllowed(event) ||
+       JSON.stringify(this.#materialEventRoute(event))!==JSON.stringify(proof.route) || !this.#materialProofRouteAllowed(this.#store.getMeta(`material-event:${event.id}`),proof.route)) {
+      this.#store.setMeta(`receipt:terminal:${message.id}`,{status:'withdrawn',reason:'coordination-event-or-route-changed'});
+      this.#outbox.withdraw(message.id);throw new Later('Coordination failure receipt is no longer current');
+    }
+  }
+  #failCoordination(id, reason, options) {
+    return this.#store.atomic(()=>{const event=this.#coordinationInbox().fail(id,reason,options);
+      if(options?.expectedGeneration===undefined || event?.generation===options.expectedGeneration)this.#queueCoordinationFailure(event);
+      return event;});
   }
   async #processCoordinationEvent(event) {
     if(event.references?.management && !this.#stopping && !this.isPaused())return this.#processManagementEvent(event);
@@ -1527,8 +1630,8 @@ export class ProjectRuntime {
     const inbox = this.#coordinationInbox();
     let assessor;
     try { assessor = options && this.#machine.driver(this.#harnessRegistry.createAssessor(options), 'coordinator'); }
-    catch (error) { inbox.fail(event.id, `Coordinator adapter unavailable: ${String(error.message ?? error).slice(0, 3500)}`, { unsupported: true }); return true; }
-    if (!assessor?.handleEvent) { inbox.fail(event.id, 'The selected coordinator adapter does not support work events', { unsupported: true }); return true; }
+    catch (error) { this.#failCoordination(event.id, `Coordinator adapter unavailable: ${String(error.message ?? error).slice(0, 3500)}`, { unsupported: true }); return true; }
+    if (!assessor?.handleEvent) { this.#failCoordination(event.id, 'The selected coordinator adapter does not support work events', { unsupported: true }); return true; }
     const token = randomUUID(), runId = `coordination-${randomUUID()}`;
     try {
       const claimed = this.#store.atomic(() => {
@@ -1536,7 +1639,7 @@ export class ProjectRuntime {
         const owner = this.#store.getMeta('coordinator:owner');
         if (owner && (!ownerIsDead(owner) || !guardiansExited(owner))) throw new Later('Coordinator is owned by another process');
         const started = inbox.begin(event.id, workRetry);
-        if (!started) return false;
+        if (!started) {this.#queueCoordinationFailure(inbox.get(event.id));return false;}
         event = started;
         this.#store.setMeta('coordinator:owner', { token, pid: process.pid, host: hostname(), eventId: event.id, generation: event.generation, runId });
         return true;
@@ -1569,12 +1672,13 @@ export class ProjectRuntime {
         requiresCoordination:event.requiresCoordination,materialState:'stale',text:'Earlier material content is no longer current. Report only the supplied host status and request a new investigation for current project facts.',
         references:{reportState:event.references?.reportState}} : event;
       const snapshot = this.#coordinationContext(event);
-      const reader = createCoordinationReader(this.#store, { allowTicket: meta => this.#materialContextAllowed(meta, event),
+      const reader = createCoordinationReader(this.#store, {projectFacts:()=>this.#coordinationProjectFacts(event), allowTicket: meta => this.#materialContextAllowed(meta, event),
         allowSharedRecords: !this.#materialSessionScope([event]), ticketCard: (meta, domain) => this.#coordinationTicketCard(meta, domain, event),
         ticketValue:(meta,domain,value)=>this.#materialTicketValue(meta,domain,value,event),requestCards: () => this.#coordinationRequests(event),
         maxReads: options.contextLimits?.maxReads ?? 3, maxBytes: options.contextLimits?.readBytes ?? 32000 });
       const materialsSettings = this.getMaterialSettings();
-      const sessionKey = `coordinator:session:${settings.version}${promptAssembly ? `:${promptAssembly.version}` : ''}${materialSession}`;
+      const hostFactsScope=hostFactRows(this.#store,{scope:'project'}).length?`:hostfacts:${this.#projectFactsAllowed(event)?materialDigest(this.#materialEventRoute(event)):'restricted'}`:'';
+      const sessionKey = `coordinator:session:${settings.version}${promptAssembly ? `:${promptAssembly.version}` : ''}${materialSession}${hostFactsScope}`;
       const rememberMaterials = () => {
         if (!materialSession) return this.#materialProvenance();
         const provenance=this.#materialProvenance(inputProjection,
@@ -1661,13 +1765,13 @@ export class ProjectRuntime {
           if (action.kind === 'requestStatus') { this.requestStatus(action.ticketId); return { ticketId: action.ticketId }; }
           if (action.kind === 'stop') {
             if (event.kind === 'follow_up') return this.#stopFromGitHub(this.#meta(action.ticketId), this.#store.triggers.get(event.references.triggerId), action.text);
-            this.cancel(action.ticketId); return { ticketId: action.ticketId, stopped: true };
+            this.#cancelTicket(action.ticketId, {source:event.actor.source,reason:'Explicit authenticated operator cancellation',expectedDomainId:context.tickets.find(ticket=>ticket.id===action.ticketId)?.domainId,expectedAssignmentId:context.tickets.find(ticket=>ticket.id===action.ticketId)?.execution?.assignmentId}, structuredClone(event.actor), event); return { ticketId: action.ticketId, stopped: true };
           }
           throw new Error('Unsupported coordinator action');
         },
       }); });
     } catch (error) {
-      inbox.fail(event.id, String(error.message ?? error).slice(0, 4000), { settings: workRetry, expectedGeneration: event.generation, failureKind: coordinationFailure(error) });
+      this.#failCoordination(event.id, String(error.message ?? error).slice(0, 4000), { settings: workRetry, expectedGeneration: event.generation, failureKind: coordinationFailure(error) });
     } finally {
       this.#store.atomic(() => { const owner = this.#store.getMeta('coordinator:owner'); if (owner?.token === token && guardiansExited(owner)) this.#store.deleteMeta('coordinator:owner'); });
       this.#assessmentAbort = undefined;
@@ -3315,17 +3419,18 @@ export class ProjectRuntime {
         (current.materialObservations ??= []).push(saved); this.#save(current); onObservation?.(structuredClone(saved));
       }) });
   }
-  submit({ text, scope = text, attentionSnapshotPaths, operatorNotifications = true, managedJobs = true, materials } = {}) {
+  submit({ text, scope = text, attentionSnapshotPaths, operatorNotifications = true, managedJobs = true, materials, hostReference } = {}) {
     if (typeof operatorNotifications !== 'boolean' || typeof managedJobs !== 'boolean') throw new Error('Ticket capability flags must be boolean');
     nonempty(text, 'text'); nonempty(scope, 'scope');
-    const snapshotPaths = normalizeAttentionSnapshotPaths(attentionSnapshotPaths);
+    const snapshotPaths = normalizeAttentionSnapshotPaths(attentionSnapshotPaths), reference = normalizeHostReference(hostReference);
     return this.#db().atomic(() => {
       const materialDestinations = [{ source: 'local', id: 'operator' }];
       const materialBinding = this.#resolveTicketMaterials(materials, { destinations: materialDestinations });
       const threadId = randomUUID();
       const { trigger, domain } = this.#accept(text, scope, threadId);
-      const meta = { id: domain.id, domainId: domain.id, projectId: this.projectId, text, threadId,
+      const meta = { id: domain.id, domainId: domain.id, initialDomainId:domain.id, projectId: this.projectId, text, threadId,
         operatorNotifications, managedJobs,
+        ...(reference ? {hostReference:reference,hostReferenceDomainId:domain.id,hostReferenceAssignmentId:latestAssignment(domain)?.id} : {}),
         ...(materialBinding ? { materialBinding, materialDestinations, materialDisclosureRoutes: this.#materialDisclosureRoutes(materialBinding), materialObservations: [] } : {}),
         ...(snapshotPaths ? { attentionSnapshotPaths: snapshotPaths } : {}),
         createdAt: domain.createdAt, updatedAt: domain.updatedAt, messages: [{ text, at: trigger.at }], reports: [], runId: null, interrupted: false };
@@ -3374,7 +3479,7 @@ export class ProjectRuntime {
     if (detail.attention) detail.attention = { ...detail.attention, ...(decision ? { decision: structuredClone(decision.decision) } : {}),
       ...(snapshotError ? { snapshotError: snapshotError.error } : {}),
       answered: !!this.#attentionAnswer(domain.attention.id) };
-    return { ...detail, answers: this.listAnswers(id),
+    return { ...detail, domainId:domain.id,assignmentId:latestAssignment(domain)?.id??null, initialDomainId:this.#initialDomainId(meta),initialAssignmentId:this.#store.tickets.get(this.#initialDomainId(meta))?.assignments[0]?.id??null, hostReference:this.#hostReference(meta,domain),hostReferenceDomainId:meta.hostReferenceDomainId??null,hostReferenceAssignmentId:meta.hostReferenceAssignmentId??null, answers: this.listAnswers(id),
       materials: structuredClone(meta.materialBinding ?? null), materialBinding: structuredClone(meta.materialBinding ?? null),
       materialObservations: structuredClone(meta.materialObservations ?? []), materialFreshness: structuredClone(meta.materialFreshness ?? null),
       workspace: structuredClone(meta.workspace ?? null), workspacePreparation: structuredClone(meta.workspacePreparation ?? null),
@@ -3382,7 +3487,7 @@ export class ProjectRuntime {
       policyStatus:meta.policyStatus?{...meta.policyStatus,desiredRevision:new PromptRegistry(this.#store).current().revision}:null,
       reviewActions: this.reviewActionStatus(id),
       uiEvidence:this.uiEvidenceStatus(id),
-      cancellation: structuredClone(meta.cancellation ?? null),
+      cancellation: this.#cancellation(meta,domain),
       botReviews: this.botReviewStatus().filter(row => row.rounds.some(round => round.ticketIds.includes(id)) || this.#pullRequests(id).some(binding => binding.repository===row.repository && String(binding.id)===row.pullId)),
       nativeHandoffs: this.#store.listMeta('native-handoff:').map(row => row.value).filter(row => row.ticketId === id),
       pullLinks: pendingPullLinks(this.#store, id),
@@ -3842,7 +3947,7 @@ export class ProjectRuntime {
     if (!this.#store.triggers.disposition(trigger.id)) this.#store.triggers.saveDisposition(trigger.id, { fanout: [], at: this.#now() });
     this.#engine.stopTicket(meta.domainId, reason);
     this.#invalidateRecovery(meta, 'github-human-cancellation');
-    const cancellation = { source: 'github', triggerId: trigger.id, actor: trigger.actor.id, reason, at: this.#now(), policyVersion: this.#policy().version };
+    const cancellation = { domainId:meta.domainId, source: 'github', triggerId: trigger.id, actor: trigger.actor.id, reason, at: this.#now(), policyVersion: this.#policy().version };
     const previous = this.#store.getMeta(`github:stop:${trigger.id}`);
     this.#store.setMeta(`github:stop:${trigger.id}`, { ...cancellation, ticketId: previous?.ticketId ?? meta.id,
       ticketIds: [...new Set([...(previous?.ticketIds ?? (previous?.ticketId ? [previous.ticketId] : [])), meta.id])] });
@@ -4228,7 +4333,7 @@ export class ProjectRuntime {
         reason: 'Explicit GitHub request admitted by the current policy', acknowledgement: '已接单。任务将在配置的项目工作区执行，进展与问题会回传到此 Issue。' });
       const domain = this.#store.tickets.get(decision.ticketId);
       if (!domain) throw new Error('GitHub request did not produce an authorized ticket');
-      const meta = { id: domain.id, domainId: domain.id, projectId: this.projectId, text, threadId: event.thread,
+      const meta = { id: domain.id, domainId: domain.id, initialDomainId:domain.id, projectId: this.projectId, text, threadId: event.thread,
         github: { repository: event.repository, issueNumber: event.issueNumber, thread: event.thread, url: `https://github.com/${event.repository}/issues/${event.issueNumber}` },
         createdAt: domain.createdAt, updatedAt: domain.updatedAt, messages: [{ text, at: trigger.at, triggerId: trigger.id }], reports: [], runId: null, interrupted: false };
       this.#save(meta); this.#store.setMeta(`public:${domain.id}`, meta.id);
@@ -4664,11 +4769,15 @@ export class ProjectRuntime {
       return this.#view(meta);
     });
   }
-  cancel(id) {
+  cancel(id, options = {}) { return this.#cancelTicket(id, normalizeCancellation(options)); }
+  #cancelTicket(id, options, actor = null, event = null) {
     return this.#db().atomic(() => {
-      const meta = this.#meta(id), view = this.#view(meta);
+      const meta = this.#meta(id);
+      if(options.expectedDomainId !== undefined && options.expectedDomainId !== meta.domainId || options.expectedAssignmentId !== undefined && options.expectedAssignmentId !== latestAssignment(this.#store.tickets.get(meta.domainId))?.id) throw Object.assign(new Error('Cancellation domain no longer matches'),{code:'HOST_DOMAIN_CHANGED'});
       if (this.#store.tickets.get(meta.domainId).ended) throw new Error('Completed ticket has no active work to cancel');
-      this.#engine.stopTicket(meta.domainId, 'Explicit local cancellation');
+      this.#engine.stopTicket(meta.domainId, options.reason);
+      meta.cancellation={source:options.source,actor,reason:options.reason,domainId:meta.domainId,assignmentId:latestAssignment(this.#store.tickets.get(meta.domainId))?.id??null,at:this.#now(),policyVersion:this.#policy().version,
+        ...(options.reference===undefined?{}:{reference:options.reference}),...(event?{eventId:event.id,triggerId:event.references?.triggerId??null}: {})};
       if (preparationPending(meta)) { meta.workspacePreparation.status = 'cancelled'; this.#effects.cancel('workspace-preparation', meta.workspacePreparation.id); }
       this.#invalidateRecovery(meta,'explicit-cancellation');
       meta.updatedAt = this.#now(); this.#save(meta);
@@ -5331,7 +5440,7 @@ export class ProjectRuntime {
         meta.inputAdoption = { ...meta.inputAdoption, status: 'active', adoptingRunId: execution.runId, adoptedAt: this.#now() };
         this.#store.setMeta(`input-adoption:${execution.runId}`, structuredClone(meta.inputAdoption));
       }
-      meta.runId = execution.runId; meta.updatedAt = this.#now(); this.#save(meta);
+      meta.runId = execution.runId; meta.executionIdentity={domainId:execution.ticketId,assignmentId:execution.assignmentId,runId:execution.runId}; meta.updatedAt = this.#now(); this.#save(meta);
       snapshot = this.#view(meta);
       snapshot.messages=snapshot.messages.filter(message=>this.#botReviewMessageAllowed(message.triggerId&&this.#store.triggers.get(message.triggerId)));
       snapshot.messages = snapshot.messages.filter(message => !message.superseded);

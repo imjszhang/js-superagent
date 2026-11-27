@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Persist bounded host project/ticket query facts and atomic original task references; retain explicit domain/assignment identity, saved times, semantic no-op publication and historical generations.
+- Prioritize active coordinator work and provide permission-safe, freshness-aware facts through the existing bounded reader. Keep project facts and native sessions restricted to authenticated operators.
+- Preserve cancellation source, reason and authenticated actor separately from the unchanged DSH human/stopped category; reject stale domain/assignment stops.
+- Queue one fixed Outbox receipt for newly terminal operator coordination failures, with route/generation revalidation. Preserve retry policies and historical records; no new work, Worker input or replay is introduced.
+- Add identity, no-write, active-work visibility, material freshness, route withdrawal and failed-event regressions. See [host context](docs/host-context.md).
+
 ## 0.15.0-alpha.15 — 2026-11-16
 
 - Record stable machine, boot-session and PID-namespace identity for service processes, machine leases and maintenance owners; hostname changes and prior-boot PID reuse no longer strand v2 owners.

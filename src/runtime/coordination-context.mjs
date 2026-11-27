@@ -2,14 +2,15 @@ import { createHash } from 'node:crypto';
 import { AssessmentContextChanged } from './assessment-refresh.mjs';
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const rowVersion = row => digest({ value: row.value, card: row.card });
-const RESOURCES = ['tickets', 'threads', 'triggers', 'decisions', 'requests'];
+const RESOURCES = ['tickets', 'threads', 'triggers', 'decisions', 'requests', 'project'];
 const tables = { threads: 'domain_threads', triggers: 'domain_triggers', decisions: 'domain_decisions' };
 
 /** Project records only. Native transcripts, execution config and credentials never enter this reader. */
-export function createCoordinationReader(store, { ticketCard, ticketValue = (_meta, _domain, value) => value, allowTicket = () => true, allowSharedRecords = true, requestCards = () => [], maxReads = 3, maxBytes = 32000 } = {}) {
+export function createCoordinationReader(store, { ticketCard, projectFacts = () => [], ticketValue = (_meta, _domain, value) => value, allowTicket = () => true, allowSharedRecords = true, requestCards = () => [], maxReads = 3, maxBytes = 32000 } = {}) {
   let reads = 0, bytes = 0;
   const readSet = [], tickets = new Map(), requests = new Map();
   function rows(resource) {
+    if(resource==='project')return projectFacts().map(record=>({id:record.id,value:record}));
     if (resource === 'requests') return requestCards().map(card => ({ id: card.triggerId, value: card, request: card }));
     if (resource === 'tickets') return store.listMeta('ticket:').flatMap(({ value: meta }) => {
       const domain = store.tickets.get(meta.domainId); if (!domain || !allowTicket(meta, domain)) return [];

@@ -520,7 +520,10 @@ export declare class ProjectRuntime {
   machineStatus(): RuntimeMachineStatus;
   githubBindingStatus(): { repository: string | null; bindings: GitHubRepositoryOwnership[] };
   releaseGitHubBinding(options?: { apply?: boolean; repository?: string }): { repository?: string; safe: boolean; bindings: GitHubRepositoryOwnership[]; reason: string | null; released?: boolean };
-  submit(input: { text: string; scope?: string; attentionSnapshotPaths?: string[]; operatorNotifications?: boolean; managedJobs?: boolean; materials?:MaterialBindingRequest }): Ticket;
+  submit(input: { text: string; scope?: string; attentionSnapshotPaths?: string[]; operatorNotifications?: boolean; managedJobs?: boolean; materials?:MaterialBindingRequest; hostReference?:HostReference }): Ticket;
+  hostFactsCapabilities():{version:1};
+  publishHostFacts(input:HostFactsInput):{status:'stored'|'unchanged'|'stale';record:HostFactRecord};
+  listHostFacts(filters?:{scope?:'project'|'ticket';producer?:string;ticketId?:string}):HostFactRecord[];
   materialCapabilities():{version:1;boundedReadsVersion:1;workspacePreparationVersion:1;localApplicationVersion:1;schemaVersion:15};
   getMaterialSettings():MaterialSettings & {version:1;revision:number};
   configureMaterials(settings:MaterialSettings,options:{expectedRevision:number}):ReturnType<ProjectRuntime['getMaterialSettings']>;
@@ -668,7 +671,7 @@ export declare class ProjectRuntime {
   /** Feishu card.action.trigger callback for the operator's decision cards; returns the toast and card Feishu shows. */
   receiveFeishuCardAction(data: unknown): { toast: { type: 'success' | 'error' | 'info'; content: string }; card?: { type: 'raw'; data: Record<string, unknown> } };
   retry(id: string): Ticket;
-  cancel(id: string): Ticket;
+  cancel(id: string, options?:{source?:string;reason?:string;expectedDomainId?:string;expectedAssignmentId?:string;reference?:HostFactJSON}): Ticket;
   /** Runs at most one Driver turn. Returns null when this bounded pass executes no Driver (busy, no due work, or control effects only). */
   runNext(): Promise<Ticket | null>;
   /** Refuses to close while this instance has active work. */
@@ -947,7 +950,13 @@ export interface GitHubContinuationInspection {
   status:'inspection'|'ready';at:string;reason?:string|null;version?:1;
   source?:GitHubContinuation['source'];previousProvisionId?:string;previousHeadSha?:string;generation?:number;
 }
+export type HostFactJSON = null | boolean | number | string | HostFactJSON[] | {[key:string]:HostFactJSON};
+export interface HostReference {producer:string;taskId:string;runId:string;kind:string}
+export interface HostFactsInput {scope:'project'|'ticket';producer:string;key:string;sourceVersion:string;observedAt:string;facts:{[key:string]:HostFactJSON};ticketId?:string;domainId?:string;assignmentId?:string}
+export interface HostFactRecord extends HostFactsInput {id:string;recordedAt:string}
+export interface TicketCancellation {source:string;actor:string|{kind:string;source:string;id:string}|null;reason:string;at:string;domainId?:string;assignmentId?:string|null;policyVersion:string;triggerId?:string|null;eventId?:string;reference?:HostFactJSON}
 export interface TicketDetails {
+  domainId:string;assignmentId:string|null;initialDomainId:string|null;initialAssignmentId:string|null;hostReference:HostReference|null;hostReferenceDomainId:string|null;hostReferenceAssignmentId:string|null;
   version: 2; ticket: Ticket; stage: string; action?: string; outcome: string | null;
   reportState: DriverReportV2['state'] | null; attention: Record<string, unknown> | null;
   sessionSettings?:{execution:ExecutorSettings['execution'];revision:number|null;promptVersion:string|null;pinOrigin?:string|null};
@@ -958,7 +967,7 @@ export interface TicketDetails {
   continuationInspection?:GitHubContinuationInspection|null;
   nativeHandoffs?:NativeHandoffRecord[];
   reviewActions?:PRReviewRequestRecord[];botReviews?:BotReviewBudgetRecord[];uiEvidence?:UIEvidenceRecord|null;
-  cancellation?:{source:'github';triggerId:string;actor:string;reason:string;at:string;policyVersion:string}|null;
+  cancellation?:TicketCancellation|null;
   liveInputs?:Array<Record<string,unknown>>;
   failure?:{origin:string;requiresInspection:boolean;runId:string;at:string;code?:string}|null;
   heldFeedback?:Array<{id:string;at:string;reason:string}>;
@@ -981,7 +990,7 @@ export interface CoordinatorSettings {
 }
 export interface CoordinationRetrySettings {autoRetry:boolean;maxAttempts:number;initialDelayMs:number;timeoutMs:number}
 export interface CoordinationResult {summary:string;actions:Array<{kind:'note'|'requestStatus'|'reply'|'stop'|'request'|'manage'|'answer'|'notify'|'retryRequest'|'retryTicket';ticketId:string|null;text:string|null;triggerId?:string|null;expectedVersion?:string|null}>}
-export interface CoordinationReadRequest {resource:'tickets'|'threads'|'triggers'|'decisions'|'requests';recordId?:string|null;query?:string|null;cursor?:string|null;offset?:number|null}
+export interface CoordinationReadRequest {resource:'tickets'|'threads'|'triggers'|'decisions'|'requests'|'project';recordId?:string|null;query?:string|null;cursor?:string|null;offset?:number|null}
 export interface CoordinationInput extends Record<string,unknown> {
   timeoutMs?:number;readContext?(request:CoordinationReadRequest):unknown;
 }

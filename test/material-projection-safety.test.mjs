@@ -196,3 +196,44 @@ test('freshness changes during coordination fence reads, native checkpoints and 
   const event = f.runtime.coordinationStatus().events.find(event => event.id === 'freshness-changed-during-turn');
   assert.equal(event.status, 'completed', event.error);
 });
+
+
+test('host ticket facts retain material provenance across stale observations and bounded reads', async t => {
+  const f=fixture(t),ticket=f.submit();await f.runtime.runNext();
+  const details=f.runtime.getDetailed(ticket.id),fact={scope:'ticket',ticketId:ticket.id,domainId:details.domainId,assignmentId:details.assignmentId,
+    producer:'fixture-host',key:'outcome',sourceVersion:'v1',observedAt:'2026-11-20T00:00:00.000Z',facts:{summary:staleCanary}};
+  f.runtime.publishHostFacts(fact);
+  f.setCallback(input=>{assert.match(JSON.stringify(input.context.tickets.find(row=>row.id===ticket.id).hostFacts),new RegExp(staleCanary));return {summary:'Read facts',actions:[]};});
+  await f.coordinate('fresh-host-facts');
+  writeFileSync(f.file,currentCanary);
+  assert.equal(f.runtime.publishHostFacts({...fact,observedAt:'2026-11-21T00:00:00.000Z'}).status,'unchanged');
+  f.setCallback(input=>{
+    assert.doesNotMatch(JSON.stringify(input.context),new RegExp(staleCanary));
+    const card=input.context.tickets.find(row=>row.id===ticket.id);assert.equal(card.hostFacts[0].materialState,'stale');
+    assert.equal(input.readContext({resource:'tickets',query:staleCanary}).total,0);
+    assert.doesNotMatch(JSON.stringify(input.readContext({resource:'tickets',recordId:ticket.id})),new RegExp(staleCanary));
+    return {summary:'Old host facts are stale',actions:[]};
+  });await f.coordinate('stale-host-facts');
+  assert.equal(f.runtime.coordinationStatus().events.find(row=>row.id==='stale-host-facts').status,'completed');
+});
+
+test('terminal coordinator failure receipt remains fixed and is withdrawn after operator identity changes',async t=>{
+  const f=fixture(t,{feishu:true});await f.runtime.prepareExecution();
+  f.setCallback(()=>{throw new Error('PRIVATE_COORDINATOR_ERROR');});await f.coordinate('failed-operator');
+  const receipt=f.runtime.notifications().find(row=>row.id.startsWith('coordination-failure:'));assert.ok(receipt);assert.equal(receipt.status,'pending');
+  assert.doesNotMatch(receipt.text,/PRIVATE_COORDINATOR_ERROR/);
+  await f.runtime.stop();const config=f.runtime.getConfig().feishu;f.runtime.configure({feishu:{...config,operator:{openId:'ou_other'}}});
+  f.network.fail=false;f.store.db.prepare("UPDATE effects SET due=0 WHERE kind='reply'").run();await f.runtime.flushNotifications();
+  assert.equal(f.runtime.notifications().find(row=>row.id===receipt.id).status,'dropped');assert.equal(f.sent.length,0);
+});
+
+test('an older pending operator event cannot acquire the current Feishu app route through a failure receipt',async t=>{
+  const f=fixture(t,{feishu:true});await f.runtime.prepareExecution();
+  const receive=(id,text)=>f.runtime.receiveSourceEvent('feishu',{sender:{sender_id:{open_id:'ou_alice'},sender_type:'user',tenant_key:'tenant'},message:{message_id:id,chat_id:'oc_dm',chat_type:'p2p',message_type:'text',create_time:'1793491200000',content:JSON.stringify({text})}});
+  receive('om_original_app','Original app question');
+  const original=f.runtime.coordinationStatus().events.find(row=>row.source?.messageId==='om_original_app');assert.ok(original);
+  await f.runtime.stop();const config=f.runtime.getConfig().feishu;f.runtime.configure({feishu:{...config,appId:'cli_replacement'}});await f.runtime.prepareExecution();
+  receive('om_replacement_app','New app status');await f.runtime.runNext();
+  assert.equal(f.runtime.coordinationStatus().events.find(row=>row.id===original.id).status,'failed');
+  assert.equal(f.runtime.notifications().filter(row=>row.id.startsWith(`coordination-failure:${original.id}:`)).length,0);
+});
