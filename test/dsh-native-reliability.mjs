@@ -1,12 +1,12 @@
 import { projectStateDirectory as stateDir } from '../src/state-paths.mjs';
-// Explicit fixed rc.5 acceptance, using only a loopback simulated provider.
+// Explicit supported DSH acceptance, using only a loopback simulated provider.
 // One short shell command, live input, native-history inspection/resume and cancel.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, symlinkSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createDshSdkDriver } from '../src/drivers/dsh.mjs';
+import { createDshSdkDriver, probeDsh } from '../src/drivers/dsh.mjs';
 import { loadDshProjectRules } from '../src/drivers/dsh-project-rules.mjs';
 import { readDshHistory, inspectDshInputReceipts } from '../src/drivers/dsh-history.mjs';
 
@@ -43,7 +43,7 @@ const server = createServer(async (req, res) => {
     if (phase === 'work') {
       workCalls++;
       if (workCalls === 1) {
-        firstRequestAt = Date.now(); assert.match(text, /ROOT_RULE/); assert.match(text, /NESTED_RULE/); assert.doesNotMatch(text, /OUTSIDE_RULE_MUST_NOT_APPEAR/);
+        firstRequestAt = Date.now(); assert.match(text, /ROOT_RULE/); assert.doesNotMatch(text, /NESTED_RULE|OUTSIDE_RULE_MUST_NOT_APPEAR/);
         respond(res, request, shell('printf "%s" "$$" > normal.pid; sleep 9; printf native-done > native-result.txt')); return;
       }
       if (workCalls === 2) {
@@ -58,7 +58,12 @@ const server = createServer(async (req, res) => {
     } else if (phase === 'resume') respond(res, request, ready('same native session resumed'));
     else if (phase === 'cancel') {
       if (!cancellationPid) { cancellationPid = 'starting'; respond(res, request, shell('printf "%s" "$$" > cancelled.pid; sleep 30; printf wrong > cancelled-result.txt')); }
-      else { assert.match(text, /moved to background job/); respond(res, request, ready('must not survive cancellation')); cancelController.abort(); }
+      else {
+        assert.match(text, /moved to background job/);
+        // Keep generation in flight: a terminal report racing cancellation would
+        // correctly leave completed native evidence instead of an interruption.
+        held.add(res); cancelController.abort();
+      }
     }
   } catch (error) { failures.push(error); if (!res.headersSent) res.writeHead(500); res.end(String(error)); }
 });
@@ -68,8 +73,9 @@ const options = { executable: process.env.DSH_EXECUTABLE ?? 'dsh', model: 'deeps
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const input = runId => ({ projectRoot: workspace, sourceProjectRoot: workspace, runId, assignmentId: 'assignment-native', signal: new AbortController().signal,
   ticket: { id: 'native-ticket', text: 'Perform only the requested temporary acceptance command.', scope: 'temporary workspace only' },
-  checkpoint(value) { session = value; }, checkpointNative(value) { facts = value; }, registerProcess(pid) { registered.push(pid); crashPid = pid; }, inputRead(value) { inputReads.push(value); } });
+  checkpoint(value) { session = value; }, checkpointNative(value) { facts = { ...facts, ...value }; }, registerProcess(pid) { registered.push(pid); crashPid = pid; }, inputRead(value) { inputReads.push(value); } });
 try {
+  const nativeVersion = (await probeDsh(options)).version;
   const rules = loadDshProjectRules(workspace);
   assert.deepEqual(rules.manifest.files.map(file => [file.path, file.scope]), [['AGENTS.md', '.']]);
   assert.equal(rules.manifest.mode, 'directory-chain');
@@ -115,7 +121,7 @@ try {
   assert.equal(alive(shellPid), false);
   assert.equal(await driver.inspectRecovery({ ...input('native-cancel'), session }), null);
   assert.equal(failures.length, 0, failures.map(error => error.stack).join('\n'));
-  console.log(JSON.stringify({ nativeVersion: '0.2.1-rc.5', localProviderCalls: calls, foregroundWaitMs: promotedAt - firstRequestAt, completedRecovery: true, sameSessionResume: true, inputReadReconciled: true, scopedRules: true, cancellationClean: true }));
+  console.log(JSON.stringify({ nativeVersion, localProviderCalls: calls, foregroundWaitMs: promotedAt - firstRequestAt, completedRecovery: true, sameSessionResume: true, inputReadReconciled: true, scopedRules: true, cancellationClean: true }));
 } finally {
   for (const res of held) res.destroy(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   if (previousKey === undefined) delete process.env.JS_DSH_RELIABILITY_KEY; else process.env.JS_DSH_RELIABILITY_KEY = previousKey;

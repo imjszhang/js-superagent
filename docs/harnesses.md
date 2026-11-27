@@ -14,7 +14,7 @@ js-superagent 自己维护执行端注册、配置、会话和进程归属。没
 
 Worker、子任务与协调者都由这三个适配器创建；角色权限不同，连接管理复用。`codex`（exec）与 `dsh-headless` 已退出执行路径，不作为隐藏降级方案。Cursor 的配置、隔离和限制见 [Cursor 接入](cursor-agent.md)。
 
-DSH 精确支持 `@deepseek-ai/dsh@0.2.1-rc.5` 与 `0.2.2-alpha.2`，不使用其他版本尚未核对的接口。DSH 全局程序升级不会升级本包，也不会启动后台。旧会话保留原生版本绑定，跨版本执行需原版本 executable 或核对后显式替换会话。新版边界和 W18 结论见 [alpha.2 适配记录](dsh-alpha2-compatibility.md)。
+DSH 精确支持 `@deepseek-ai/dsh@0.2.1-rc.5`、`0.2.2-alpha.2` 与 `0.2.2-rc.5`，不使用其他版本尚未核对的接口。DSH 全局程序升级不会升级本包，也不会启动后台。旧会话保留原生版本绑定，跨版本执行需原版本 executable 或核对后显式替换会话。当前边界与迁移见 [0.2.2-rc.5 适配记录](dsh-rc5-compatibility.md)，此前记录见 [alpha.2 适配记录](dsh-alpha2-compatibility.md)。
 
 ## 配置 DSH
 
@@ -101,7 +101,7 @@ try {
 | `serviceLaunch(execution, processEnv)` | 返回 `{ executable, environment, credentialEnvNames }`。环境值只放路径等非密钥项。`credentialEnvNames` 只列变量名，不读取密钥值。Codex 在存在 `CODEX_HOME` 时带上它；DSH 返回 `backend.apiKeyEnv`。安装服务前仍先 `validateExecution`。 |
 | `loginProbe(execution, context)` | 可选。Codex 用调用方注入的 `execFileSync` 执行 `login status`。DSH 不提供，因此安装检查不会出现这项。 |
 | `coordinatorExecution(execution)` | 去掉 `enableAgentTools`、`enableManagedJobs`、`requiredCapabilities` 和 `permission`。DSH 再把协调器权限收成 `read-only`。结果不能改 `driver`。没有该方法时原样返回。 |
-| `validateLease(record)` | 按 `record.session.driver ?? record.driver` 分发给对应适配器。宿主在持有租约和原生预览控制时调用它。DSH 的实现仍只接受 `dsh-sdk` 与 `0.2.2-alpha.2`。进程关闭、job id 预算和证据收据留在运行时。 |
+| `validateLease(record)` | 按 `record.session.driver ?? record.driver` 分发给对应适配器。宿主在持有租约和原生预览控制时调用它。DSH 的实现只接受 `dsh-sdk` 与 `0.2.2-alpha.2` / `0.2.2-rc.5`。进程关闭、job id 预算和证据收据留在运行时。 |
 | `nativeBackgroundOwnership` | Driver 实例上的能力位。DSH 可写 Worker 为 true；协调器、只读 DSH、子任务角色和 Codex 为 false。为 true 时，宿主装载租约、拒绝中断租约、过滤已消费结果并传入预览 profile。alpha.2 能否真正交接仍由 DSH 驱动的 `canHandoff` 判断。 |
 | `label` / `settingsFields` / `preserveOnSave` | `list()` 返回显示名、管理接口额外接受的配置字段，以及同一执行端再次保存时保留的字段。面板用 `label`，不再按 ID 写显示名。未声明的字段会被管理接口拒绝。 |
 
@@ -129,10 +129,10 @@ Driver 必须在输入发给原生进程前登记监督者与执行进程，取�
 
 `examples/real-dsh-tools-smoke.mjs` 的历史真实模型记录核对业务上下文读取和受管命令回调。取消、异常协议、工具去重与授权使用针对性受控回归；不把模拟 provider 或进程 fixture 写成真实模型验收。本轮 W6 已通过 [DSH GitHub 闭环](w6-github-acceptance.md) 和 [Codex 本地连续工作](w6-local-acceptance.md)；DSH 子任务采纳/预览组合和真实协调者分类没有重新执行。
 
-当前限定 DSH `0.2.1-rc.5` / `0.2.2-alpha.2`、显式 `deepseek-official / anthropic-messages` API backend；其他原生版本、登录账号模式和 provider 组合会明确拒绝，不会静默换用身份。当前实测环境为 macOS + Node.js 24.22.1。包本身的 Node.js 22.13 下限保留，但本轮没有据此声明 DSH 在所有平台和 Node 版本均已通过。
+当前限定 DSH `0.2.1-rc.5` / `0.2.2-alpha.2` / `0.2.2-rc.5`、显式 `deepseek-official / anthropic-messages` API backend；其他原生版本、登录账号模式和 provider 组合会明确拒绝，不会静默换用身份。实测环境为 macOS + Node.js 24.22.1；`0.2.2-rc.5` 自身要求 Node.js 24.9.0 以上。包本身的 Node.js 22.13 下限保留，但不据此声明 DSH 在所有平台和 Node 版本均已通过。
 
 上述早期接入验收时后台保持停止，不能据此推断当前部署。2026-11-03 已按用户授权切换主项目后台到 DSH，并完成[项目指令范围修复与主仓库真实验收](dsh-project-rules-acceptance.md)。当前范围见 [W0 与工作流程计划](workflow-alignment-plan.md)，最终证据及限制见 [实施状态](implementation-status.md)。
 
 ## 原生预览留存（0.8）
 
-DSH alpha.2 可写 Worker 可从可信 Assignment 命令 profile 启动原生预览；进程与 loopback 端口经宿主核验、其余任务结算及当前内容验证通过后，可在 ready 后独立留存和续期。不会收编任意已有 shell job，也不会自动采用原生 pending 输入。rc.5 不暴露此能力，Codex 保留受管预览；宿主审阅工具和 bot 预算由同一运行时执行。详见 [配置、租约与验证边界](workflow-review-acceptance.md#dsh-预览边界)。
+DSH `0.2.2-alpha.2` / `0.2.2-rc.5` 可写 Worker 可从可信 Assignment 命令 profile 启动原生预览；进程与 loopback 端口经宿主核验、其余任务结算及当前内容验证通过后，可在 ready 后独立留存和续期。不会收编任意已有 shell job，也不会自动采用原生 pending 输入。旧 `0.2.1-rc.5` 不暴露此能力，Codex 保留受管预览；宿主审阅工具和 bot 预算由同一运行时执行。详见 [配置、租约与验证边界](workflow-review-acceptance.md#dsh-预览边界)。

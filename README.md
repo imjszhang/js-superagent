@@ -4,7 +4,7 @@
 
 支持通过注册表接入 Codex、DSH 和 Cursor 等执行端。状态保存在项目独立的 SQLite 数据库中；初始化不会自动启动执行或后台服务。
 
-当前源码版本为 **0.15.0-alpha.16**，让协调者在原有权限内读取宿主提供的项目事实和当前执行状态，区分历史回合与活跃工作，并保留取消来源、原因和操作身份。协调请求最终失败时通过原有 Outbox 返回固定回执；不改变 Worker 执行、重试策略或上游领域规则，详见[宿主上下文说明](docs/host-context.md)。源码版本不代表已发布或已部署；发布状态以 npm 与 GitHub Release 为准。
+当前源码版本为 **0.15.0-alpha.17**，增加 DSH `0.2.2-rc.5` 的精确适配，限制新版原生团队、Office 和插件管理工具，保留已有会话与宿主管理边界。升级需为项目固定执行程序路径，具体见 [DSH 兼容与迁移](docs/dsh-rc5-compatibility.md)。此前的[宿主上下文、活跃工作与取消归因](docs/host-context.md)继续保留。源码版本不代表已发布或已部署；发布状态以 npm 与 GitHub Release 为准。
 
 ```bash
 git clone https://github.com/imjszhang/js-superagent.git

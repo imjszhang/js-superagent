@@ -1,7 +1,9 @@
+import { supportsDshNativeHandoff } from './dsh-versions.mjs';
+
 const ID = /^[A-Za-z\d._:-]{1,160}$/;
 /** A DSH lease transfers live ownership; it is never permission to recreate a job. */
 export function validateNativeHandoff(record) {
-  if (record?.version !== 1 || record.driver !== 'dsh-sdk' || record.nativeVersion !== '0.2.2-alpha.2' ||
+  if (record?.version !== 1 || record.driver !== 'dsh-sdk' || !supportsDshNativeHandoff(record.nativeVersion) ||
       !['id','ticketId','assignmentId','originRunId'].every(key => ID.test(record[key] ?? '')) ||
       record.session?.driver !== 'dsh-sdk' || !ID.test(record.session.id ?? '') ||
       typeof record.cwd !== 'string' || !record.cwd.startsWith('/') || !/^[a-f\d]{64}$/.test(record.configDigest ?? '') ||

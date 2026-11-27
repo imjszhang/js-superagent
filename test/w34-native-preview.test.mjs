@@ -43,6 +43,8 @@ test('ready only permits verified preview identities; an ordinary active native 
   const preview={jobId:'bash-preview',profileId:'demo',url:'http://127.0.0.1:1234/',commandPid:43,guardianPid:42,expiresAt:new Date(Date.now()+1000).toISOString(),endpoint:{url:'http://127.0.0.1:1234/',listeners:[{pid:43,birth:'proof'}]}};
   const record={version:1,id:'lease',driver:'dsh-sdk',nativeVersion:'0.2.2-alpha.2',ticketId:'ticket',assignmentId:'assignment',originRunId:'run',session:{driver:'dsh-sdk',id:'session'},cwd:'/temporary',configDigest:'a'.repeat(64),deadlineAt:preview.expiresAt,guardianPids:[42],jobIds:['bash-preview'],previews:[preview],reportBoundary:{state:'ready',assistantSequence:5,terminalSequence:6}};
   assert.deepEqual(validateNativeHandoff(record),record);
+  assert.equal(validateNativeHandoff({...record,nativeVersion:'0.2.2-rc.5'}).nativeVersion,'0.2.2-rc.5');
+  assert.throws(()=>validateNativeHandoff({...record,nativeVersion:'0.2.3-alpha.2'}));
   assert.throws(()=>validateNativeHandoff({...record,jobIds:['bash-preview','bash-tests']}));
   assert.throws(()=>validateNativeHandoff({...record,previews:undefined}));
   assert.throws(()=>validateNativeHandoff({...record,previews:[{...preview,guardianPid:44}]}));

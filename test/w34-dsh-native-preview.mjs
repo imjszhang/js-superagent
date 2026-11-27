@@ -1,4 +1,4 @@
-// Explicit W34 alpha.2 check: a real SDK, two loopback replies, no external model.
+// Explicit supported W34 check: a real SDK, two loopback replies, no external model.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdtempSync, rmSync, realpathSync } from 'node:fs';
@@ -52,7 +52,7 @@ try{
  await held.control.close('acceptance cleanup');await held.control.closed.catch(()=>{});
  assert.ok(guardians.every(pid=>!alive(pid)));await assert.rejects(fetch(`http://127.0.0.1:${port}/`));
  assert.equal(errors.length,0,errors.map(error=>error.stack).join('\n'));
- console.log(JSON.stringify({nativeVersion:'0.2.2-alpha.2',localProviderCalls:calls,readyNativePreview:true,renewalPastRunDeadline:true,noAutomaticWakeup:true,processCleanup:true}));
+ console.log(JSON.stringify({nativeVersion:held.record.nativeVersion,localProviderCalls:calls,readyNativePreview:true,renewalPastRunDeadline:true,noAutomaticWakeup:true,processCleanup:true}));
 }finally{
  await held?.control.close('acceptance ended');server.closeAllConnections();await new Promise(resolve=>server.close(resolve));
  if(previous===undefined)delete process.env.JS_W34_NATIVE_KEY;else process.env.JS_W34_NATIVE_KEY=previous;

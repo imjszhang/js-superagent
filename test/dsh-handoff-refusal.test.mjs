@@ -68,12 +68,12 @@ test('accepted transfer settlement is sent only to its new committed owner', asy
 
 // A bounded fake SDK exercises the real driver and bridge without DSH, a model,
 // or a background service. Job notification deliberately precedes HTTP evidence.
-function sdkFixture(t, resume) {
+function sdkFixture(t, resume, nativeVersion) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'js-dsh-refusal-'))), executable = join(root, 'sdk.mjs');
   writeFileSync(executable, `#!/usr/bin/env node
 import {createInterface} from 'node:readline';
 import {createServer} from 'node:http';
-if(process.argv.includes('--version')){console.log('0.2.2-alpha.2');process.exit(0);}
+if(process.argv.includes('--version')){console.log(${JSON.stringify(nativeVersion)});process.exit(0);}
 const connection=JSON.parse(process.env.JS_SUPERAGENT_DSH_BRIDGE);
 let sid,seq=0,prompts=0,collections=0,delivery=Promise.resolve();
 const send=value=>console.log(JSON.stringify(value));
@@ -120,9 +120,9 @@ for await(const line of createInterface({input:process.stdin})){
 }
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
-test('real driver drains refused collector evidence and preserves old lease ownership', async t => {
+for (const nativeVersion of ['0.2.2-alpha.2', '0.2.2-rc.5']) test(`real ${nativeVersion} driver drains refused collector evidence and preserves old lease ownership`, async t => {
   for (const resume of [true, false]) await t.test(resume ? 'second handoff refused' : 'first handoff refused', async t => {
-    const f = sdkFixture(t, resume);
+    const f = sdkFixture(t, resume, nativeVersion);
     let result = await executeDshTurn(f.options, f.input('first'));
     if (resume) {
       t.after(() => f.held().control.close('fixture cleanup'));

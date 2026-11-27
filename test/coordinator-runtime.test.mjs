@@ -54,6 +54,29 @@ test('pause receives work but defers assessment, then resumes the same durable c
   assert.equal(calls, 0); assert.equal(runtime.list().length, 0);
   runtime.resume(); const result = await runtime.runNext(); assert.equal(result.status, 'completed'); assert.equal(calls, 1);
 });
+test('changing the coordinator executable selects a new session and preserves the previous configuration session', async t => {
+  const observed = [];
+  const runtime = fixture(t, { async assess(input) {
+    observed.push(input.session?.id ?? null);
+    input.checkpoint({ driver: 'dsh-sdk', id: input.session?.id ?? `native-${observed.length}` });
+    return { kind: 'ignore', reason: 'Session migration fixture only', rules: [] };
+  } });
+  const assessor = executable => ({ driver: 'dsh-sdk', executable, model: 'deepseek-flash', backend: {
+    auth: 'api-key', provider: 'deepseek-official', protocol: 'anthropic-messages', baseURL: 'https://example.com/anthropic', apiKeyEnv: 'FIXTURE_DSH_KEY',
+  } });
+  const configure = executable => runtime.configureCoordinator({ assessor: assessor(executable) }, { expectedRevision: runtime.coordinatorStatus().settings.revision });
+  const original = configure('/tools/dsh-alpha2/dsh');
+  runtime.receive(trigger('old-session', 'Keep the original scoped record')); await runtime.runNext();
+  runtime.receive(trigger('old-continuation', 'Continue the same record')); await runtime.runNext();
+  const changed = configure('/tools/dsh-rc5/dsh');
+  assert.notEqual(changed.version, original.version);
+  runtime.receive(trigger('new-session', 'Inspect existing context after the explicit upgrade')); await runtime.runNext();
+  assert.equal(configure('/tools/dsh-alpha2/dsh').version, original.version);
+  runtime.receive(trigger('rollback-session', 'Return to the retained original executable')); await runtime.runNext();
+  assert.deepEqual(observed, [null, 'native-1', null, 'native-1']);
+  assert.equal(runtime.list().length, 0);
+  assert.equal(runtime.coordinatorStatus().history.length, 4);
+});
 test('a worker handback remains auditable but is absent from its subsequent execution snapshot', async t => {
   const snapshots = [], runtime = fixture(t, { async assess() { return accept; } }, { async run(input) { snapshots.push({ id: input.ticket.id, messages: input.ticket.messages }); return { status: 'waiting', summary: 'Need the parser format' }; } });
   const ticket = runtime.submit({ text: 'Fix parser', scope: 'Parser only' }); await runtime.runNext();

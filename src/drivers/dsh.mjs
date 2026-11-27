@@ -14,7 +14,7 @@ import { dshDigest, readDshHistory, inspectDshInputReceipts, inspectDshRecovery 
 import { loadDshProjectRules } from './dsh-project-rules.mjs';
 import { workerPolicyGuidance, workerPolicyObservation } from '../runtime/worker-policy.mjs';
 import { createDshExecutionObserver } from './dsh-observation.mjs';
-import { DSH_VERSIONS, isSupportedDshVersion } from './dsh-versions.mjs';
+import { DSH_VERSIONS, isSupportedDshVersion, supportsDshNativeHandoff } from './dsh-versions.mjs';
 import { ensureProjectStateDirectory } from '../state-paths.mjs';
 import { parseDshReport as report } from './dsh-report.mjs';
 export { parseDshReport } from './dsh-report.mjs';
@@ -106,10 +106,14 @@ function profile(home, options, cwd, role, nativeVersion) {
   ];
   const disabled = ['hmr', 'plugin-manager', 'tool-plugin-manager', 'config-editor', 'settings', 'credentials', 'authorization', 'deepseek-account', 'llm-deepseek-account', 'llm-pi-ai', 'session-title-llm', 'session-log-deepseek', 'plugin-package-inventory-deepseek', 'otel', 'session-telemetry-otel', 'web', 'web-search-deepseek', 'web-fetch-http', 'tool-web', 'mcp-resources', 'tool-subagent', 'tool-subagent-fork', 'tool-subagent-control', 'tool-subagent-list-agents', 'tool-workflow', 'workflow-ptc', 'ptc-runtime', 'goal', 'goal-round-driver', 'command-goal', 'plan-mode', 'commands', 'command-feedback', 'command-compact', 'user-questions', 'skill-filesystem', 'tool-skill', 'agent-instructions', 'workspace-dependencies', 'skill-office'];
   disabled.push('tool-working-directory');
-  // Keep rc.5's persisted profile byte-for-byte stable. New native app tools
+  // Keep 0.2.1-rc.5's persisted profile byte-for-byte stable. New native app tools
   // must not introduce a second scheduler, goal loop or user-question channel.
-  if (nativeVersion === '0.2.2-alpha.2') disabled.push('schedule', 'tool-schedule', 'tool-ask-user', 'present',
+  if (['0.2.2-alpha.2', '0.2.2-rc.5'].includes(nativeVersion)) disabled.push('schedule', 'tool-schedule', 'tool-ask-user', 'present',
     'connection', 'file-upload', 'workspace', 'file-reference-local', 'deliverable-file-references', 'tool-goal');
+  // rc.5 adds native team/Office tools to the shared bundles. They cannot create
+  // a second task authority or bypass the host-only material and workspace tools.
+  // Append only for this version: saved profiles for earlier sessions stay exact.
+  if (nativeVersion === '0.2.2-rc.5') disabled.push('agent-team', 'tool-agent-team', 'office-kit', 'tool-office');
   if (options.permission === 'read-only') disabled.push('tool-bash', 'tool-pwsh', 'tool-jobs');
   if (role === 'coordinator') disabled.push('tool-fs', 'tool-fs-search', 'tool-todo');
   if (options.materialAccess === 'host-only') disabled.push('tool-fs', 'tool-fs-search');
@@ -139,8 +143,8 @@ export async function executeDshTurn(value, input) {
   if (input.signal?.aborted) throw new Error('DSH execution cancelled before launch');
   let deadline = Date.now() + options.timeoutMs;
   const version = await probeDsh(options, { signal: input.signal, timeoutMs: Math.min(10000, options.timeoutMs) });
-  input.checkpointNative?.({ adapter: 'dsh-sdk', nativeVersion: version.version, nativeHandoffSupported: version.version === '0.2.2-alpha.2',
-    nativePreviewSupported: role === 'worker' && version.version === '0.2.2-alpha.2' && options.permission !== 'read-only' && !!input.nativePreviewProfiles?.length });
+  input.checkpointNative?.({ adapter: 'dsh-sdk', nativeVersion: version.version, nativeHandoffSupported: supportsDshNativeHandoff(version.version),
+    nativePreviewSupported: role === 'worker' && supportsDshNativeHandoff(version.version) && options.permission !== 'read-only' && !!input.nativePreviewProfiles?.length });
   const remaining = () => { const result = deadline - Date.now(); if (result < 1) throw new Error('DSH execution timed out before launch'); return result; };
   const key = process.env[options.backend.apiKeyEnv];
   if (typeof key !== 'string' || !key || key.includes('\0')) throw new Error(`Missing DSH credential variable: ${options.backend.apiKeyEnv}`);
@@ -265,7 +269,7 @@ export async function executeDshTurn(value, input) {
     },
     update: (id, event) => input.nativeHandoff?.update?.(id, event),
   });
-  const canHandoff = role === 'worker' && options.materialAccess !== 'host-only' && version.version === '0.2.2-alpha.2' && typeof input.nativeHandoff?.hold === 'function';
+  const canHandoff = role === 'worker' && options.materialAccess !== 'host-only' && supportsDshNativeHandoff(version.version) && typeof input.nativeHandoff?.hold === 'function';
   const args = ['--profile', 'sdk'];
   if (role !== 'coordinator' && options.permission !== 'read-only') {
     // Per-run overlay leaves existing persisted profile/binding files unchanged.

@@ -27,6 +27,8 @@ test('native collector rejects unrelated ownership and closes a pending waiter',
 test('native handoff records require exact supported release, owned processes and a completed report boundary',()=>{
   const value={version:1,id:'lease-id',driver:'dsh-sdk',nativeVersion:'0.2.2-alpha.2',ticketId:'ticket',assignmentId:'assignment',originRunId:'run',session:{driver:'dsh-sdk',id:'session'},cwd:'/temporary',configDigest:'a'.repeat(64),deadlineAt:new Date().toISOString(),guardianPids:[42],jobIds:['bash-one'],reportBoundary:{state:'waiting',assistantSequence:5,terminalSequence:6,question:'Which wording?'}};
   assert.deepEqual(validateNativeHandoff(value),value);assert.throws(()=>validateNativeHandoff({...value,nativeVersion:'0.2.1-rc.5'}));assert.throws(()=>validateNativeHandoff({...value,guardianPids:[]}));assert.throws(()=>validateNativeHandoff({...value,reportBoundary:{...value.reportBoundary,state:'ready'}}));
+  assert.equal(validateNativeHandoff({...value,nativeVersion:'0.2.2-rc.5'}).nativeVersion,'0.2.2-rc.5');
+  assert.throws(()=>validateNativeHandoff({...value,nativeVersion:'0.2.3-alpha.2'}));
 });
 
 test('native owner closes only after bridge cleanup on both process exit and failure',async()=>{

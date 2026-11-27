@@ -102,7 +102,7 @@ test('runtime retries a legacy pre-session DSH failure using the ticket grant',a
   assert.equal(binding(runtime.getSession(ticket.id).id).managedJobs,false);
 });
 
-test('DSH history inspection and native retry retain narrowed tools after runtime reopen',async t=>{
+for (const nativeVersion of ['0.2.1-rc.5', '0.2.2-rc.5']) test(`DSH ${nativeVersion} history inspection and native retry retain narrowed tools after runtime reopen`,async t=>{
   const f=fixture(t,`
     if(r.method==='session/prompt'&&!existsSync(join(process.env.DSH_HOME,'failed-once'))){
       writeFileSync(join(process.env.DSH_HOME,'failed-once'),'yes');
@@ -116,7 +116,7 @@ test('DSH history inspection and native retry retain narrowed tools after runtim
       ].map(value=>JSON.stringify(value)).join('\\n')+'\\n');
       answer({messageId:user.id});event('user/message',user);event('turn/end',terminal);continue;
     }
-  `);
+  `, nativeVersion);
   const {open,stored,binding}=runtimeFixture(t,f);
   let runtime=open();const ticket=runtime.submit({text:'Inspect and resume bounded work',managedJobs:false});
   await runtime.runNext();assert.equal(runtime.get(ticket.id).status,'failed');
@@ -166,8 +166,53 @@ test('SDK alpha.2 supports its declared protocol while unknown native versions r
   await assert.rejects(executeDshTurn(old.options,{...old.input,runId:randomUUID(),session:old.sessions[0]}),/configuration changed/);
   assert.equal(readFileSync(bindingPath,'utf8'),originalBinding,'A binary upgrade cannot rewrite an existing session binding');
 });
-test('SDK native failure and cancellation cannot become successful output',async t=>{
-  const f=fixture(t,`if(r.method==='session/prompt'){answer({messageId:'i'});continue;}if(r.method==='session/wait')continue;`);
+test('SDK 0.2.2-rc.5 keeps literal prompts, same-version sessions and exact capability evidence', async t => {
+  const f = fixture(t, '', '0.2.2-rc.5'), facts = [];
+  assert.equal((await probeDsh(f.options)).version, '0.2.2-rc.5');
+  const first = await executeDshTurn(f.options, { ...f.input, checkpointNative: value => facts.push(value) });
+  const next = await executeDshTurn(f.options, { ...f.input, runId: randomUUID(), session: f.sessions[0], prompt: '/goal do not interpret this as a native command' });
+  assert.equal(next.sessionId, first.sessionId);
+  assert.equal(readFileSync(join(f.root, 'input.txt'), 'utf8'), '/goal do not interpret this as a native command');
+  assert.ok(facts.some(value => value.nativeVersion === '0.2.2-rc.5' && value.nativeHandoffSupported));
+  assert.ok(f.pids.every(pid => !alive(pid)));
+});
+test('rc.5 profile blocks new native authorities in both roles without rewriting older profiles', async t => {
+  const paths = (f, session) => join(stateDir(f.root), 'harness/dsh', session.id, 'profiles/sdk/cordis.patch.yml');
+  const added = ['agent-team', 'tool-agent-team', 'office-kit', 'tool-office'];
+  for (const nativeVersion of ['0.2.1-rc.5', '0.2.2-alpha.2', '0.2.2-rc.5']) {
+    for (const role of ['worker', 'coordinator']) {
+      const f = fixture(t, '', nativeVersion);
+      await executeDshTurn(f.options, { ...f.input, role });
+      const session = f.sessions[0], original = readFileSync(paths(f, session), 'utf8'), patches = JSON.parse(original);
+      for (const id of ['plugin-manager', 'tool-plugin-manager', 'tool-subagent', 'tool-workflow', 'tool-working-directory', 'skill-office', 'web-fetch-http']) {
+        assert.equal(patches.find(p => p.id === id)?.disabled, true, `${nativeVersion}/${role}/${id}`);
+      }
+      for (const id of added) assert.equal(patches.some(p => p.id === id && p.disabled), nativeVersion === '0.2.2-rc.5', `${nativeVersion}/${id}`);
+      if (nativeVersion !== '0.2.1-rc.5') {
+        for (const id of ['schedule', 'tool-schedule', 'tool-ask-user', 'present', 'connection', 'file-upload', 'tool-goal']) {
+          assert.equal(patches.find(p => p.id === id)?.disabled, true, `${nativeVersion}/${id}`);
+        }
+      }
+      await executeDshTurn(f.options, { ...f.input, role, runId: randomUUID(), session });
+      assert.equal(readFileSync(paths(f, session), 'utf8'), original, 'Same-version resume cannot rewrite a saved profile');
+    }
+  }
+});
+test('upgrading either supported old binary to rc.5 preserves its binding and refuses before launch', async t => {
+  for (const nativeVersion of ['0.2.1-rc.5', '0.2.2-alpha.2']) {
+    const f = fixture(t, '', nativeVersion);
+    await executeDshTurn(f.options, f.input);
+    const session = f.sessions[0], home = join(stateDir(f.root), 'harness/dsh', session.id);
+    const before = ['binding.json', 'profiles/sdk/cordis.patch.yml'].map(name => readFileSync(join(home, name), 'utf8'));
+    const ownerCount = f.pids.length;
+    writeFileSync(f.options.executable, readFileSync(f.options.executable, 'utf8').replace(JSON.stringify(nativeVersion), '"0.2.2-rc.5"'));
+    await assert.rejects(executeDshTurn(f.options, { ...f.input, runId: randomUUID(), session }), /native version.*original executable/);
+    assert.equal(f.pids.length, ownerCount, 'No native session process may start under another version');
+    assert.deepEqual(['binding.json', 'profiles/sdk/cordis.patch.yml'].map(name => readFileSync(join(home, name), 'utf8')), before);
+  }
+});
+for (const nativeVersion of ['0.2.1-rc.5', '0.2.2-alpha.2', '0.2.2-rc.5']) test(`SDK ${nativeVersion} native failure and cancellation cannot become successful output`,async t=>{
+  const f=fixture(t,`if(r.method==='session/prompt'){answer({messageId:'i'});continue;}if(r.method==='session/wait')continue;`, nativeVersion);
   const controller=new AbortController();const running=executeDshTurn(f.options,{...f.input,signal:controller.signal});
   const assertion=assert.rejects(running,/cancel/);
   const deadline=Date.now()+4000;while(!f.sessions.length && Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
@@ -290,8 +335,8 @@ test('host-only materials require the scoped read bridge and keep native default
   assert.throws(() => validateDshOptions(bounded, { role: 'coordinator' }));
 });
 
-test('host-only Worker removes native file access, uses scoped instructions, and pins the mode on resume', async t => {
-  const f = fixture(t, '', '0.2.2-alpha.2');
+for (const nativeVersion of ['0.2.2-alpha.2', '0.2.2-rc.5']) test(`host-only ${nativeVersion} Worker removes native file access, uses scoped instructions, and pins the mode on resume`, async t => {
+  const f = fixture(t, '', nativeVersion);
   writeFileSync(join(f.root, 'AGENTS.md'), 'UNGRANTED_CWD_INSTRUCTION');
   const resources = [{ resource: 'materials', id: 'material-root', value: { title: 'Authorized current materials' } }];
   const agentTools = { version: 1, definitions: [{ name: 'js_superagent_prepare_workspace', description: 'Host preparation', inputSchema: { type: 'object' } }],

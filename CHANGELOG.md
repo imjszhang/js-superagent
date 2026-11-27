@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.15.0-alpha.17 — 2026-11-27
+
+- Add exact DSH `0.2.2-rc.5` SDK, history, native handoff and preview compatibility; retain the two older supported versions and reject unverified releases.
+- Disable newly bundled native agent-team and Office plugins alongside the existing plugin manager, scheduler and interaction restrictions. Preserve literal `session/prompt`, scoped host tools and coordinator/host-only permissions.
+- Keep older profile bytes and version bindings unchanged. Test explicit coordinator executable changes, new session selection and rollback through the existing public settings API; do not migrate Worker sessions automatically.
+- Extend profile, session, cancellation, history and handoff regressions plus opt-in native loopback acceptance. See [DSH compatibility and migration](docs/dsh-rc5-compatibility.md) for deployment and dependency-security limits.
+
 ## 0.15.0-alpha.16 — 2026-11-27
 
 - Persist bounded host project/ticket query facts and atomic original task references; retain explicit domain/assignment identity, saved times, semantic no-op publication and historical generations.

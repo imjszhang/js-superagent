@@ -60,6 +60,28 @@ const sentCard = request => JSON.parse(request.data.content);
 const buttonValue = card => card.body.elements.find(element => element.tag === 'form').elements.at(-1).behaviors[0].value;
 const header = request => JSON.parse(request.data.content).header.title.content;
 
+test('continuous coordination changes native session scope with the executable and retains the old scope for rollback', async t => {
+  const sessions = [], texts = [];
+  const { runtime } = project(t, { coordinator(input) {
+    sessions.push(input.session?.id ?? null); texts.push(input.event.text);
+    return { summary: 'Read-only migration fixture', actions: [] };
+  } });
+  const configure = executable => runtime.configureCoordinator({ assessor: { driver: 'operator-fixture', executable } }, { expectedRevision: runtime.coordinatorStatus().settings.revision });
+  const original = configure('/tools/dsh-alpha2/dsh');
+  await runtime.prepareExecution();
+  const send = async (id, text) => { runtime.receiveSourceEvent('feishu', dm(id, text)); await runtime.runNext(); };
+  await send('om_before_upgrade', 'Keep the prior project question');
+  await send('om_before_continue', 'Continue the prior project question');
+  assert.notEqual(configure('/tools/dsh-rc5/dsh').version, original.version);
+  await send('om_after_upgrade', 'Inspect the saved project state after the explicit upgrade');
+  assert.equal(configure('/tools/dsh-alpha2/dsh').version, original.version);
+  await send('om_rollback', 'Use the retained original executable');
+  assert.deepEqual(sessions, [null, 'coordinator-session', null, 'coordinator-session']);
+  assert.equal(texts.length, 4);
+  assert.match(texts[0], /prior project question/);
+  assert.equal(runtime.list().length, 0);
+});
+
 test('operator configuration accepts one open id and can be removed', () => {
   const base = { appId: 'cli_bot', appSecretEnv: 'X', botOpenId: 'ou_bot', tenantKey: 't', chats: [{ chatId: 'oc_g', type: 'group', mode: 'mentions' }] };
   assert.deepEqual(validateProjectOptions({ feishu: { ...base, operator: { openId: 'ou_alice' } } }).feishu.operator, { openId: 'ou_alice' });

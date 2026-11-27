@@ -1,4 +1,4 @@
-// Explicit alpha.2 protocol acceptance; temporary profile and loopback provider only.
+// Explicit supported handoff protocol acceptance; temporary profile and loopback provider only.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdtempSync, rmSync, realpathSync } from 'node:fs';
@@ -58,7 +58,7 @@ try {
  const final=await driver.run({...input('native-final'),session,nativeHandoffResults:[saved]});
  assert.equal(final.state,'ready');assert.equal(calls,4);assert.ok(facts.some(value=>value.nativeHandoffConsumed?.includes(saved.id)));
  assert.equal(errors.length,0,errors.map(e=>e.stack).join('\n'));assert.ok(guardians.every(pid=>!alive(pid)));
- console.log(JSON.stringify({nativeVersion:'0.2.2-alpha.2',localProviderCalls:calls,liveHandoff:true,sameProcessReply:true,completionWithoutWakeup:true,durableResultConsumed:true,processCleanup:true}));
+ console.log(JSON.stringify({nativeVersion:saved.nativeVersion,localProviderCalls:calls,liveHandoff:true,sameProcessReply:true,completionWithoutWakeup:true,durableResultConsumed:true,processCleanup:true}));
 } finally {
  await held?.control.close('Acceptance ended');server.closeAllConnections();await new Promise(resolve=>server.close(resolve));
  if(previous===undefined)delete process.env.JS_W28_NATIVE_KEY;else process.env.JS_W28_NATIVE_KEY=previous;

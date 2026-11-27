@@ -38,7 +38,7 @@ const server = createServer(async (req, res) => {
   try {
     let body = ''; for await (const chunk of req) body += chunk;
     const request = JSON.parse(body); calls++; requests.push({ phase, text: JSON.stringify(request) });
-    assert.ok((request.tools??[]).every(tool=>!/^schedule_|ask_user_question|^present(?:_|$)|goal/.test(tool.name)), 'SDK profile must not expose undeclared interaction or scheduling tools');
+    assert.ok((request.tools??[]).every(tool=>!/^schedule_|ask_user_question|^present(?:_|$)|goal|agent_team|office|plugin_manager/.test(tool.name)), 'SDK profile must not expose undeclared interaction, scheduling, team, Office or plugin tools');
     if (phase === 'interrupt') {
       held.add(res);
       let accepted;
