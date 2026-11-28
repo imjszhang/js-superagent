@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdirSync, lstatSync, chmodSync, readFileSync, writeFileSync, renameSync, unlinkSync, realpathSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, sep, dirname, basename, isAbsolute } from 'node:path';
 import { ensureProjectIdentity, assertProjectIdentity, inspectProjectIdentity, bindProjectMachineIdentity, coordinationError } from './project-identity.mjs';
@@ -101,6 +101,7 @@ export function createMachineCoordinator(options = {}, dependencies = {}) {
         }
       }
       if (parse(db.prepare('SELECT value FROM settings WHERE key=?').get('registry-id')?.value) !== registry.id) fail('MACHINE_REGISTRY_CHANGED', 'Machine database and identity file do not match');
+      if (write) db.exec('CREATE TABLE IF NOT EXISTS feishu_apps(app_id TEXT PRIMARY KEY,project_id TEXT NOT NULL,root TEXT NOT NULL,state_directory TEXT NOT NULL,at INTEGER NOT NULL)');
       const result = action(db);
       if (result?.then) throw new Error('Coordination transactions must be synchronous');
       if (write) db.exec('COMMIT');
@@ -182,8 +183,109 @@ export function createMachineCoordinator(options = {}, dependencies = {}) {
   function slotResult(row) { return { instanceId: row.instance_id, key: row.key, kind: row.kind, token: row.token, active: !!row.active, suspended: !!row.suspended, requestedAt: row.requested_at, grantedAt: row.granted_at }; }
   function occupiedSlots(db) { return db.prepare('SELECT * FROM slots').all().filter(row => row.active || ownerState(parse(row.owner)) !== 'alive' && !ownerExited(row)).length; }
   function audit(db, type, data, instanceId = identity.instanceId) { db.prepare('INSERT INTO audit(instance_id,type,data,at) VALUES(?,?,?,?)').run(instanceId, type, json(data), now()); }
+  function feishuAppId(appId) {
+    if (typeof appId !== 'string' || !/^cli_[A-Za-z0-9_-]{1,200}$/.test(appId)) throw new Error('Expected a Feishu App ID');
+    return appId;
+  }
+  function missingAppPath(file, project) {
+    try { lstatSync(file); return false; }
+    catch (error) {
+      if (error.code === 'ENOENT') return true;
+      fail('FEISHU_APP_OWNERSHIP_UNKNOWN', 'Cannot inspect registered project configuration location', {projectRoot:project.root});
+    }
+  }
+  function disappearedLegacyProject(db, project) {
+    // A deleted legacy fixture cannot open a channel. Keep its registration and
+    // recheck it on every scan, so restoring the root restores conflict checks.
+    // A saved App claim, or any live/unknown process, never qualifies.
+    const hasIndex = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='feishu_apps'").get();
+    if (hasIndex && db.prepare('SELECT 1 FROM feishu_apps WHERE root=? OR project_id=?').get(project.root,project.project_id)) return false;
+    if (!missingAppPath(project.root,project)) return false;
+    try {
+      return ['leases','slots'].every(table=>db.prepare(`SELECT * FROM ${table} WHERE instance_id=?`).all(project.instance_id).every(ownerExited));
+    } catch { return false; }
+  }
+  function appRows(db, appId) {
+    if (!db) return [];
+    const rows = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='feishu_apps'").get()
+      ? db.prepare('SELECT * FROM feishu_apps WHERE (? IS NULL OR app_id=?)').all(appId ?? null, appId ?? null) : [];
+    const result = rows.map(row => ({appId:row.app_id,projectId:row.project_id,projectRoot:row.root,stateDirectory:row.state_directory,at:row.at}));
+    // Older registries have no App index. Read configuration, never credentials, and
+    // refuse an unlocatable legacy state instead of assuming it has no channel.
+    for (const row of db.prepare('SELECT * FROM projects').all()) {
+      const saved = parse(row.identity); let stateDirectory;
+      try { stateDirectory = saved.stateDirectory ?? projectStateDirectory(row.root); }
+      catch { fail('FEISHU_APP_OWNERSHIP_UNKNOWN','Cannot locate registered project configuration',{projectRoot:row.root}); }
+      const file = join(stateDirectory, 'config.json');
+      if (missingAppPath(file,row)) {
+        if (row.root !== projectRoot && !result.some(value => value.projectRoot === row.root) && !disappearedLegacyProject(db,row))
+          fail('FEISHU_APP_OWNERSHIP_UNKNOWN', 'Cannot locate a registered project configuration; inspect its state before assigning a Feishu App', {projectRoot:row.root});
+        continue;
+      }
+      safeFile(file);
+      let config;
+      try { if (lstatSync(file).size > 65536) throw new Error(); config = JSON.parse(readFileSync(file,'utf8')); }
+      catch { fail('FEISHU_APP_OWNERSHIP_UNKNOWN','Cannot inspect registered project configuration',{projectRoot:row.root}); }
+      if (config.projectId !== row.project_id) fail('FEISHU_APP_OWNERSHIP_UNKNOWN','Registered project configuration identity differs',{projectRoot:row.root});
+      if (!config.feishu?.appId || appId && config.feishu.appId !== appId || result.some(value=>value.appId===config.feishu.appId && value.projectRoot===row.root)) continue;
+      result.push({appId:feishuAppId(config.feishu.appId),projectId:row.project_id,projectRoot:row.root,stateDirectory,legacy:true});
+    }
+    return result;
+  }
+  function assertAppAvailable(db, appId) {
+    const conflicts = appRows(db, appId).filter(row=>row.projectRoot!==projectRoot || row.projectId!==projectId);
+    if (conflicts.length) fail('FEISHU_APP_OWNED', `Feishu App ${appId} belongs to another project (${conflicts.map(row=>row.projectRoot).join(', ')}); use a separate App or explicitly release settled ownership`, {appId,bindings:conflicts});
+  }
   const coordinator = {
     directory, path,
+    withConfigurationLock(action) {
+      if(!projectRoot || typeof action!=='function')throw new Error('Configuration lock requires a project and synchronous action');
+      // Initialization is project-local; do not create the machine registry for
+      // projects without a channel. Keep lock files outside the project's data
+      // directory so rejected/oversized config creates no project state.
+      const stateParent=dirname(projectStateDirectory(projectRoot));
+      if(!existsSync(stateParent))mkdirSync(stateParent,{recursive:true,mode:0o700});safeFile(stateParent,true);
+      const locks=join(stateParent,'.configuration-locks');
+      if(!existsSync(locks))mkdirSync(locks,{recursive:true,mode:0o700});safeFile(locks,true);
+      const lockPath=join(locks,createHash('sha256').update(projectRoot+'\0'+projectStateDirectory(projectRoot)).digest('hex')+'.sqlite');
+      if(!existsSync(lockPath)){try{writeFileSync(lockPath,'',{flag:'wx',mode:0o600});}catch(error){if(error.code!=='EEXIST')throw error;}}
+      safeFile(lockPath);const db=new DatabaseSync(lockPath);
+      try {db.exec('PRAGMA busy_timeout=5000; BEGIN IMMEDIATE');const result=action();if(result?.then)throw new Error('Configuration initialization must be synchronous');db.exec('COMMIT');return result;}
+      catch(error){try{db.exec('ROLLBACK');}catch{}throw error;}finally{db.close();}
+    },
+    reservedFeishuProjectId() {
+      return database(false,db=>{
+        if(!db || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='feishu_apps'").get())return undefined;
+        const ids=[...new Set(db.prepare('SELECT project_id FROM feishu_apps WHERE root=? AND state_directory=?').all(projectRoot,projectStateDirectory(projectRoot)).map(row=>row.project_id))];
+        if(ids.length>1)fail('FEISHU_APP_OWNERSHIP_UNKNOWN','Interrupted App reservations disagree on project identity');
+        return ids[0];
+      });
+    },
+    feishuAppBinding({appId} = {}) { if(appId!==undefined)feishuAppId(appId);return database(false,db=>appRows(db,appId)); },
+    assertFeishuAppAvailable({appId}) { feishuAppId(appId); return database(false,db=>assertAppAvailable(db,appId)); },
+    claimFeishuApp({appId}) {
+      feishuAppId(appId);
+      if(!projectRoot || !projectId)throw new Error('Project identity is required');
+      return database(true,db=>{
+        assertAppAvailable(db,appId);
+        const pending=db.prepare('SELECT project_id FROM feishu_apps WHERE root=? AND state_directory=? AND project_id<>?').all(projectRoot,projectStateDirectory(projectRoot),projectId);
+        if(pending.length)fail('FEISHU_APP_OWNERSHIP_UNKNOWN','An interrupted configuration owns this project identity; retry initialization to reuse it',{projectRoot});
+        const result=db.prepare('INSERT OR IGNORE INTO feishu_apps VALUES(?,?,?,?,?)').run(appId,projectId,projectRoot,projectStateDirectory(projectRoot),now());
+        return {appId,projectRoot,projectId,created:!!result.changes};
+      });
+    },
+    releaseFeishuApp({appId,maintenanceToken,assertSafe}) {
+      feishuAppId(appId);
+      return database(true,db=>{
+        registered(db);assertMaintenance(db,maintenanceToken);assertNoExecution(db);
+        const row=db.prepare('SELECT * FROM feishu_apps WHERE app_id=?').get(appId);
+        if(row && (row.root!==projectRoot || row.project_id!==projectId))fail('FEISHU_APP_OWNED','Only the owning project may release this App');
+        if(typeof assertSafe!=='function' || assertSafe()!==true)fail('FEISHU_BINDING_RELEASE_UNSAFE','Stop the service, remove or change its App configuration, and settle remote work before releasing ownership');
+        const file=join(projectStateDirectory(projectRoot),'config.json');
+        if(existsSync(file) && JSON.parse(readFileSync(file,'utf8')).feishu?.appId===appId)fail('FEISHU_BINDING_RELEASE_UNSAFE','Remove or change the App configuration before releasing ownership');
+        db.prepare('DELETE FROM feishu_apps WHERE app_id=?').run(appId);return true;
+      });
+    },
     register({ adoptLegacy = false } = {}) {
       if (!projectRoot || !projectId) throw new Error('Project root and projectId are required');
       if (maintenanceContext) fail('PROJECT_RELOCATED', 'Create a new runtime after project relocation');
@@ -196,7 +298,8 @@ export function createMachineCoordinator(options = {}, dependencies = {}) {
         const conflicts = db.prepare('SELECT * FROM projects WHERE project_id=? OR root=? OR instance_id=?').all(projectId, projectRoot, identity.instanceId);
         if (conflicts.some(row => row.root !== projectRoot || row.project_id !== projectId || row.instance_id !== identity.instanceId || parse(row.identity).stateId !== identity.stateId)) fail('PROJECT_IDENTITY_CONFLICT', 'This project identity is already registered at another path; reinitialize or relocate explicitly', { projects: conflicts.map(row => ({ projectRoot: row.root, projectId: row.project_id, instanceId: row.instance_id })) });
         identity = bindProjectMachineIdentity(projectRoot, projectId, registryId);
-        const inserted = db.prepare('INSERT OR IGNORE INTO projects VALUES(?,?,?,?,?)').run(identity.instanceId, projectId, projectRoot, json(identity), now());
+        const inserted = db.prepare('INSERT OR IGNORE INTO projects VALUES(?,?,?,?,?)').run(identity.instanceId, projectId, projectRoot, json({...identity,stateDirectory:projectStateDirectory(projectRoot)}), now());
+        db.prepare('UPDATE projects SET identity=? WHERE instance_id=?').run(json({...identity,stateDirectory:projectStateDirectory(projectRoot)}),identity.instanceId);
         if (inserted.changes) audit(db, 'project.registered', { projectId, projectRoot });
         return identity;
       });
@@ -350,12 +453,13 @@ export function createMachineCoordinator(options = {}, dependencies = {}) {
         assertNoOverlap(db, current, roots);
         db.prepare('UPDATE leases SET owner=? WHERE instance_id=? AND kind=?').run(json({ ...owner, projectRoots: roots }), identity.instanceId, 'maintenance');
         const next = { ...identity, projectRoot: destination };
-        db.prepare('UPDATE projects SET root=?,identity=? WHERE instance_id=?').run(destination, json(next), identity.instanceId);
+        db.prepare('UPDATE projects SET root=?,identity=? WHERE instance_id=?').run(destination, json({...next,stateDirectory:projectStateDirectory(destination)}), identity.instanceId);
+        db.prepare('UPDATE feishu_apps SET root=?,state_directory=? WHERE project_id=? AND root=?').run(destination,projectStateDirectory(destination),projectId,fromRoot);
         audit(db, 'project.relocated', { fromRoot, toRoot: destination }); return next;
       });
       maintenanceContext = { ...maintenanceContext, registeredRoot: destination }; return result;
     },
-    unregister({ maintenanceLease, assertSafe } = {}) { return database(true, db => { const current = registered(db); if (maintenanceLease?.kind !== 'maintenance') throw new Error('Unregister requires a maintenance lease'); assertLeaseIn(db, maintenanceLease); assertNoExecution(db); if (typeof assertSafe !== 'function' || assertSafe() !== true) fail('PROJECT_UNREGISTER_UNSAFE', 'Confirm stopped execution and settled remote effects before unregistering'); for (const table of ['repositories', 'ports', 'slots', 'leases']) db.prepare(`DELETE FROM ${table} WHERE instance_id=?`).run(current.instanceId); db.prepare('DELETE FROM projects WHERE instance_id=?').run(current.instanceId); return true; }); },
+    unregister({ maintenanceLease, assertSafe } = {}) { return database(true, db => { const current = registered(db); if (maintenanceLease?.kind !== 'maintenance') throw new Error('Unregister requires a maintenance lease'); assertLeaseIn(db, maintenanceLease); assertNoExecution(db); if (typeof assertSafe !== 'function' || assertSafe() !== true) fail('PROJECT_UNREGISTER_UNSAFE', 'Confirm stopped execution and settled remote effects before unregistering'); for (const table of ['repositories', 'ports', 'slots', 'leases']) db.prepare(`DELETE FROM ${table} WHERE instance_id=?`).run(current.instanceId); db.prepare('DELETE FROM feishu_apps WHERE project_id=? AND root=?').run(projectId,projectRoot); db.prepare('DELETE FROM projects WHERE instance_id=?').run(current.instanceId); return true; }); },
     close() {},
   };
   return coordinator;

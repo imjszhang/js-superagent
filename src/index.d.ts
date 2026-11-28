@@ -170,6 +170,7 @@ export interface MachineCoordinator {
   /** Read-only registered directory overlaps; active includes unverified owners. */
   overlapStatus(): { projectRoot: string | null; overlaps: ProjectDirectoryOverlap[] };
   setLimits(settings: Partial<MachineLimits>): MachineLimits;
+  feishuAppBinding(options?:{appId?:string}): Array<{appId:string;projectId:string;projectRoot:string;stateDirectory:string;legacy?:boolean}>;
   repositoryBinding(options?: { repository?: string; repositoryId?: number; host?: string }): GitHubRepositoryOwnership[];
   close(): void;
 }
@@ -518,6 +519,8 @@ export declare class ProjectRuntime {
   /** Claim execution and verify GitHub ownership before opening an external listener. */
   prepareExecution(): Promise<RuntimeMachineStatus>;
   machineStatus(): RuntimeMachineStatus;
+  feishuBindingStatus(): {appId:string|null;bindings:Array<{appId:string;projectId:string;projectRoot:string}>;conflicts:Array<{appId:string;projectId:string;projectRoot:string}>};
+  releaseFeishuBinding(options:{appId:string;apply?:boolean}): Record<string,unknown>;
   githubBindingStatus(): { repository: string | null; bindings: GitHubRepositoryOwnership[] };
   releaseGitHubBinding(options?: { apply?: boolean; repository?: string }): { repository?: string; safe: boolean; bindings: GitHubRepositoryOwnership[]; reason: string | null; released?: boolean };
   submit(input: { text: string; scope?: string; attentionSnapshotPaths?: string[]; operatorNotifications?: boolean; managedJobs?: boolean; materials?:MaterialBindingRequest; hostReference?:HostReference }): Ticket;

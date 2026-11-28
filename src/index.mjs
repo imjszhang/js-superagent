@@ -148,14 +148,14 @@ export class ProjectRuntime {
     if (this.#store) return this;
     this.projectRoot = realpathSync(this.projectRoot);
     const dir = projectStateDirectory(this.projectRoot);
-    const config = initializeProjectConfig(this.projectRoot);
+    const config = initializeProjectConfig(this.projectRoot,{},this.#machineDependencies);
     this.projectId = nonempty(config.projectId, 'projectId');
     if (!existsSync(join(dir, 'state.sqlite'))) ensureProjectIdentity(this.projectRoot, this.projectId);
     const identity = inspectProjectIdentity(this.projectRoot, this.projectId);
     let readOnly = identity.matches === false;
     if (!readOnly) writeNew(join(dir, '.gitignore'), 'state.sqlite*\nworkspaces/\nruns/\ninstance.json\n');
     this.#machine ??= new RuntimeMachineGuard({ projectRoot: this.projectRoot, projectId: this.projectId,
-      dependencies: this.#machineDependencies, prepare: () => this.#prepareMachine(), github: () => this.#config().github,
+      dependencies: this.#machineDependencies, prepare: () => this.#prepareMachine(), github: () => this.#config().github, feishu: () => this.#config().feishu,
       channel: () => this.#channel(false), guardians: () => this.#machineGuardians(),
       retained: () => this.#nativePool().size > 0 || [...this.#jobsPool().values()].some(entry => this.#executions().some(row => row.value.assignmentId === entry.assignmentId && (row.value.backgroundHeld || row.value.runId && !row.value.yielded))) });
     try { this.#machine.writable(); }
@@ -516,6 +516,32 @@ export class ProjectRuntime {
     catch(error) { if (!this.#loop && !this.#stopping) { this.#machineHeld=false; this.#machine.unhold(); } throw error; }
   }
   machineStatus() { this.#db(); return { ...this.#machine.status(), readOnly: this.#store.readOnly, ready: this.#machineReady && this.#machine.isReady() }; }
+  feishuBindingStatus() {
+    this.#db();const appId=this.#config().feishu?.appId??null;
+    const bindings=this.#machine.coordinator.feishuAppBinding().filter(row=>row.projectRoot===this.projectRoot || row.appId===appId);
+    return {appId,bindings,conflicts:bindings.filter(row=>row.appId===appId&&row.projectRoot!==this.projectRoot)};
+  }
+  releaseFeishuBinding({appId,apply=false}={}) {
+    this.#db();
+    const bindings=this.#machine.coordinator.feishuAppBinding({appId}).filter(row=>appId || row.projectRoot===this.projectRoot);
+    const unsettled=()=>!!this.#config().feishu && (!appId || this.#config().feishu.appId===appId) || this.#loopActive() || this.#feishuConnection || this.#executions().length ||
+      this.#store.tickets.open().some(ticket=>ticket.channels?.some(channel=>channel.source==='feishu')) ||
+      this.#outbox.list().some(message=>message.channel.source==='feishu'&&message.status==='pending') ||
+      this.#store.listMeta('operator-attention:').some(({value})=>!value.closed&&!this.#attentionAnswer(value.attentionId)) ||
+      this.#effects.list().some(effect=>effect.token) || this.#jobsPool().size || this.#nativePool().size;
+    const safe=!unsettled()&&bindings.every(row=>row.projectRoot===this.projectRoot);
+    const plan={appId:appId??null,bindings,safe,reason:safe?null:'Stop the service, remove or change its App configuration, and settle remote work and approvals before releasing ownership'};
+    if(!apply)return plan;
+    if(!safe)throw Object.assign(new Error(plan.reason),{code:'FEISHU_BINDING_RELEASE_UNSAFE'});
+    this.#machine.coordinator.register({adoptLegacy:true});this.#machine.releaseIdle();
+    const maintenance=this.#machine.coordinator.acquireMaintenance();
+    let transaction=false;
+    try {
+      this.#store.db.exec('BEGIN IMMEDIATE');transaction=true;
+      for(const binding of bindings)this.#machine.coordinator.releaseFeishuApp({appId:binding.appId,maintenanceToken:maintenance.token,assertSafe:()=>!unsettled()});
+      this.#store.db.exec('COMMIT');transaction=false;return {...plan,released:true};
+    } finally {if(transaction)this.#store.db.exec('ROLLBACK');this.#machine.coordinator.releaseLease(maintenance);}
+  }
   githubBindingStatus() {
     this.#db(); const repository = this.#config().github?.repository;
     return { repository: repository ?? null, bindings: this.#machine.coordinator.repositoryBinding(repository ? { repository } : {}) };
@@ -3516,7 +3542,7 @@ export class ProjectRuntime {
       const previousRepository=this.#config().github?.repository;
       const nextRepository=mergeProjectConfig(readProjectConfig(this.projectRoot),patch).github?.repository;
       if(previousRepository && nextRepository && previousRepository!==nextRepository && this.#machine.coordinator.repositoryBinding({repository:previousRepository}).some(binding=>binding.projectRoot===this.projectRoot)) throw new Error('Release the previous GitHub repository binding before configuring another repository');
-      writeProjectConfig(this.projectRoot, patch);
+      writeProjectConfig(this.projectRoot, patch, {coordinator:this.#machine.coordinator});
       this.#machineReady = false;
       this.#refreshRepositorySource();
       return advanced ? this.getConfigV2() : this.#config();

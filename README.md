@@ -4,7 +4,7 @@
 
 支持通过注册表接入 Codex、DSH 和 Cursor 等执行端。状态保存在项目独立的 SQLite 数据库中；初始化不会自动启动执行或后台服务。
 
-当前源码版本为 **0.15.0-alpha.18**，将稳定进程身份扩展到业务锁、执行任务、后台作业和 native handoff，避免新记录因主机名变化或重启再次阻塞；保留旧记录的保守校验和现有任务状态，见[进程身份与升级边界](docs/process-identity.md)。DSH `0.2.2-rc.5` 的适配与执行程序绑定要求继续见 [DSH 兼容与迁移](docs/dsh-rc5-compatibility.md)，[宿主上下文、活跃工作与取消归因](docs/host-context.md)保持不变。源码版本不代表已发布或已部署；发布状态以 npm 与 GitHub Release 为准。
+当前源码版本为 **0.15.0-alpha.19**，增加“一项目一飞书 App”的跨项目占用保护，防止误配置后竞争消息；保留现有任务状态和稳定进程身份校验，见[飞书 App 归属](docs/feishu-source.md#一个项目一个-app)及[进程身份与升级边界](docs/process-identity.md)。DSH `0.2.2-rc.5` 的适配与执行程序绑定要求继续见 [DSH 兼容与迁移](docs/dsh-rc5-compatibility.md)，[宿主上下文、活跃工作与取消归因](docs/host-context.md)保持不变。源码版本不代表已发布或已部署；发布状态以 npm 与 GitHub Release 为准。
 
 ```bash
 git clone https://github.com/imjszhang/js-superagent.git
@@ -24,6 +24,8 @@ gh workflow run publish.yml --ref main -f version=<待发布的完整版本号>
 
 流程会测试并发布该次 main 提交的安装包，通过 OIDC 认证，无需保存 npm 发布令牌。完成后核对注册表、来源证明及安装结果，再保存对应 Git 标签和 GitHub Release。失败时按[发布指南](docs/releasing.md)核查，不自动切回本地发布。此流程已通过 `0.15.0-alpha.8` 的[真实发布](https://github.com/imjszhang/js-superagent/actions/runs/43421890534)验证。
 
+
+从 `0.15.0-alpha.19` 起提供“一项目一飞书 App”的本机占用保护；配置冲突、只读查询、保留任务的释放流程和旧版本边界见[飞书 App 归属](docs/feishu-source.md#一个项目一个-app)。
 
 ## 环境与本地使用
 

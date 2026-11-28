@@ -324,6 +324,7 @@ export function createServiceManager(options = {}, dependencies = {}) {
     const logMaxBytes = options.logMaxBytes ?? persisted?.logMaxBytes ?? DEFAULT_LOG_BYTES;
     if (!Number.isSafeInteger(logMaxBytes) || logMaxBytes < 1024 || logMaxBytes > 100 * 1024 * 1024) throw new Error('logMaxBytes must be between 1024 and 104857600');
     const current = serviceConfig(projectRoot);
+    if(current.feishu)coordinate(c=>c.assertFeishuAppAvailable({appId:current.feishu.appId}));
     coordinate(coordinator=>{
       const overlaps=(coordinator.overlapStatus?.().overlaps??[]).filter(overlap=>overlap.active);
       if(overlaps.length)throw Object.assign(new Error('An overlapping project directory has active or unverified execution; stop its owned work before installing or starting this service'),{code:'PROJECT_ROOT_OVERLAP',details:{overlaps}});
@@ -426,6 +427,8 @@ export function createServiceManager(options = {}, dependencies = {}) {
     const existing = owned(false);
     if (existing && (!loaded().running || status().stopPending)) assertStoppedProcesses(directory, loaded(), dependencies);
     let next = plan(existing);
+    const feishu=serviceConfig(projectRoot).feishu;
+    if(feishu)coordinate(c=>c.claimFeishuApp({appId:feishu.appId}));
     if (existing) {
       if (existing.schemaVersion !== 2) throw new Error('Legacy service installation requires explicit uninstall/reinstall; status and stop remain available');
       if (existing.restartPolicy !== 'on-failure' && (existing.modulePath !== next.modulePath || existing.cliPath !== next.cliPath)) throw new Error('Legacy restart policy belongs to a different installed package; stop, uninstall and reinstall from the intended new package before upgrading it');
@@ -516,6 +519,8 @@ export function createServiceManager(options = {}, dependencies = {}) {
       if (current.executionDriver !== manifest.executionDriver || current.executorExecutable !== manifest.executorExecutable || JSON.stringify(current.requiredEnvironment) !== JSON.stringify(manifest.requiredEnvironment) || current.ghExecutable !== manifest.ghExecutable) throw new Error('Configured executable changed; uninstall and reinstall the service before starting it');
       if (current.webhookEndpoint?.host !== manifest.webhookEndpoint?.host) throw new Error('Configured Webhook host changed; run service install while stopped before starting it');
       serviceEnvironment(manifest);
+      const feishu=serviceConfig(projectRoot).feishu;
+      if(feishu)coordinate(c=>c.claimFeishuApp({appId:feishu.appId}));
       if (loaded().running) return status();
       if (manifest.webhookEndpoint) reserveEndpoint(manifest.webhookEndpoint);
     } catch (error) { blockStartup(directory, error.code ?? 'SERVICE_CONFIGURATION'); throw error; }
