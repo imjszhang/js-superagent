@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.15.0-alpha.18 — 2026-11-28
+
+- Use stable machine, boot-session, PID-namespace and process-start identity for durable execution, coordinator, operation, effect, source and managed-job claims. Hostname changes and reboots no longer strand newly written claims.
+- Preserve complete native handoff and guardian identities across recovery. Do not recapture an old PID or discard a new incarnation merely because its numeric PID matches an older record.
+- Treat hostname and legacy boot diagnostics as best-effort for v2 identities. Missing legacy evidence, foreign machines, unknown namespaces and incomplete records remain unverifiable instead of authorizing takeover.
+- Add regression coverage for hostname changes, reboot, PID reuse, failed diagnostic probes, native handoff, managed jobs, maintenance and legacy compatibility. Existing tasks and state require no schema rewrite; see [process ownership](docs/process-identity.md).
+
 ## 0.15.0-alpha.17 — 2026-11-27
 
 - Remove private host deployment evidence from public documentation and add a documentation privacy regression check.

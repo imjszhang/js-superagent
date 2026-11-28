@@ -1,12 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { hostname } from 'node:os';
+import { runtimeOwner, inspectRuntimeOwner } from './runtime-owner.mjs';
 
 export class Later extends Error {}
-const isDead = owner => {
-  if (!owner || owner.host !== hostname()) return false;
-  try { process.kill(owner.pid, 0); return false; }
-  catch (error) { return error.code === 'ESRCH'; }
-};
+const isDead = owner => inspectRuntimeOwner(owner) === 'dead';
 
 /** At-least-once durable queue. Handlers must reconcile external effects after crashes. */
 export class Effects {
@@ -56,7 +52,7 @@ export class Effects {
       const next = available.find(value => !value.token && !value.cancelled && value.due <= this.now() && Object.hasOwn(handlers, value.kind) && typeof handlers[value.kind] === 'function');
       if (!next) return null;
       next.token = randomUUID();
-      const owner = { pid: process.pid, host: hostname() };
+      const owner = runtimeOwner();
       this.store.db.prepare('UPDATE effects SET token = ?, owner = ? WHERE seq = ? AND token IS NULL').run(next.token, JSON.stringify(owner), next.seq);
       return next;
     });

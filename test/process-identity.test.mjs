@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createProcessIdentityInspector, readNativeMachineId, currentProcessIdentity, captureProcessIdentity, inspectProcessOwner } from '../src/process-identity.mjs';
+import { createProcessIdentityInspector, readNativeMachineId, readNativeScope, currentProcessIdentity, captureProcessIdentity, inspectProcessOwner } from '../src/process-identity.mjs';
 const A='11111111-1111-4111-8111-111111111111', B='22222222-2222-4222-8222-222222222222';
 const scope={machineId:`sha256:${'a'.repeat(64)}`,bootSessionId:A,pidNamespace:'host',bootId:'{ sec = 1000, usec = 1 }'};
 function fixture(overrides={}) { let calls=0;const inspector=createProcessIdentityInspector({scope:()=>({...scope}),host:()=> 'new-name',pid:101,birth:()=>{calls++;return 'start-101';},...overrides});return {...inspector,get calls(){return calls;}}; }
@@ -25,7 +25,7 @@ test('PID reuse, exit and failed process inspection are distinct',()=>{
  for(const [birth,result]of [['new-start','dead'],[null,'dead'],[undefined,'unknown'],['start-101','alive']])assert.equal(fixture({birth:()=>birth}).inspectProcessOwner(recorded()),result);
 });
 test('malformed and future identities do not downgrade to hostname-only validation',()=>{
- for(const patch of [{identityVersion:3},{machineId:null},{bootSessionId:undefined},{pidNamespace:undefined},{birth:''},{host:''},{pid:-1}])assert.equal(fixture().inspectProcessOwner(recorded(patch)),'unknown');
+ for(const patch of [{identityVersion:3},{machineId:null},{bootSessionId:undefined},{pidNamespace:undefined},{birth:''},{pid:-1}])assert.equal(fixture().inspectProcessOwner(recorded(patch)),'unknown');
  const {identityVersion,...partial}=recorded();assert.equal(fixture().inspectProcessOwner(partial),'unknown');
 });
 test('unavailable native machine/boot evidence fails closed and is retried without writing state',()=>{
@@ -65,4 +65,26 @@ test('maintenance reentry compares stable machine, boot and namespace, not just 
  for(const patch of [{machineId:`sha256:${'b'.repeat(64)}`},{bootSessionId:B},{pidNamespace:'pid:[123]'},{identityVersion:3},{pid:102}])assert.equal(sameProcessIdentity(recorded(),recorded(patch)),false);
  const legacy={host:'legacy',pid:101,birth:'birth',bootId:'boot'};
  assert.equal(sameProcessIdentity(legacy,{...legacy}),true);assert.equal(sameProcessIdentity(legacy,{...legacy,host:'other'}),false);
+});
+
+test('v2 capture and inspection do not depend on hostname or legacy boot diagnostics', () => {
+ const f=fixture({host:()=>{throw Error('hostname unavailable');},scope:()=>({...scope,bootId:''})});
+ const owner=f.currentProcessIdentity();assert.equal(owner.host,'');assert.equal(f.inspectProcessOwner(owner),'alive');
+ assert.equal(f.inspectProcessOwner({...recorded(),host:undefined,bootId:undefined}),'alive');
+ const {identityVersion,machineId,bootSessionId,pidNamespace,...legacy}=owner;
+ assert.equal(f.inspectProcessOwner(legacy),'unknown');
+});
+test('native stable scope survives failure of the legacy-only boot probe while legacy owners remain unknown',()=>{
+ const current=readNativeScope('darwin',()=>assert.fail('unexpected file read'),()=>assert.fail('unexpected namespace read'),(file,args)=>{
+  if(file==='/usr/sbin/ioreg')return `"IOPlatformUUID" = "${A}"`;
+  if(args.includes('kern.bootsessionuuid'))return A;
+  throw Error('kern.boottime unavailable');
+ });
+ assert.equal(current.bootId,'');assert.equal(current.bootSessionId,A);
+ const f=fixture({scope:()=>current});assert.equal(f.inspectProcessOwner(f.currentProcessIdentity()),'alive');
+ const legacy={host:'new-name',pid:101,birth:'start-101',bootId:scope.bootId};
+ for(const bootId of ['',undefined])for(const birth of ['start-101',null]){
+  const unavailable=fixture({scope:()=>({...scope,bootId}),birth:()=>{assert.fail('legacy scope is unverified');return birth;}});
+  assert.equal(unavailable.inspectProcessOwner(legacy),'unknown');
+ }
 });

@@ -4,6 +4,9 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'no
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { once } from 'node:events';
 import { createManagedJobs, normalizeManagedJobsSettings } from '../src/runtime/jobs.mjs';
 import { prepareWorkspace } from '../src/workspaces.mjs';
 
@@ -33,6 +36,7 @@ test('trusted background command persists intent and completion, wakes once and 
   const result = await manager.wait(handle.id);
   assert.equal(result.status, 'completed'); assert.equal(result.result.exitCode, 0);
   assert.ok(result.guardians.length >= 2); assert.ok(result.guardians.every(owner => !alive(owner.pid)));
+  assert.ok(result.guardians.every(owner => owner.identityVersion === 2 && owner.birth));
   assert.match(readFileSync(result.result.logs.stdout, 'utf8'), /checked/);
   assert.deepEqual(f.slots.map(event => event.held), [false, true]);
   assert.equal(f.wakes.length, 1); assert.equal(f.wakes[0].parent.assignmentId, 'assignment');
@@ -183,4 +187,50 @@ test('managed job configuration is JSON-only, explicit about paths, and normaliz
   assert.equal(normalized.limits.maxDurationMs, 30 * 60 * 1000);
   assert.throws(() => normalizeManagedJobsSettings({ profiles: raw.profiles }), /paths/);
   assert.throws(() => normalizeManagedJobsSettings({ ...raw, childExecution: { driver: 'codex', enableManagedJobs: true } }), /app-server/);
+});
+
+import { runtimeOwner } from '../src/runtime-owner.mjs';
+test('managed-job journals retain v2 owners and recover rebooted renamed owners without stealing live or foreign jobs', async t => {
+  const f=fixture(t), manager=f.manager();t.after(()=>manager.close());
+  const completed=await manager.launch({profileId:'child'}).done;
+  assert.equal(completed.owner.identityVersion,2);
+  const oldBoot={...runtimeOwner(),host:'previous-network-name',bootSessionId:'11111111-1111-4111-8111-111111111111'};
+  const owners=[['dead',oldBoot],['live',{...runtimeOwner(),host:'previous-network-name'}],['foreign',{...oldBoot,machineId:`sha256:${'f'.repeat(64)}`}]];
+  for(const [id,owner] of owners)f.records.set(id,{...structuredClone(completed),id,token:id,status:'running',endedAt:undefined,completion:undefined,owner,guardians:[]});
+  const reopened=f.manager();t.after(()=>reopened.close());
+  assert.deepEqual(reopened.recover(),{interrupted:1,unverifiedOwners:2});
+  assert.equal(f.records.get('dead').status,'interrupted');assert.equal(f.records.get('live').status,'running');assert.equal(f.records.get('foreign').status,'running');
+});
+
+test('agent and command guardians retain both incarnations when a PID is reused between registrations',async t=>{
+ for(const kind of ['agent','command'])await t.test(kind,async t=>{
+  const original=childProcess.execFileSync,observed=new Set();
+  const probe=t.mock.method(childProcess,'execFileSync',(file,args,options)=>{
+   const value=original(file,args,options);
+   if(file==='ps'&&args.includes('lstart=')&&Number(args[1])!==process.pid&&!observed.has(args[1])){
+    observed.add(args[1]);return 'S previous-incarnation\n';
+   }
+   return value;
+  });
+  syncBuiltinESMExports();
+  let child,closed,registeredPid;
+  const f=fixture(t,{createChildDriver:()=>({async run(input){
+   child=childProcess.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});
+   closed=once(child,'exit');await once(child,'spawn');registeredPid=child.pid;
+   input.registerProcess(child.pid);input.registerProcess(child.pid);
+   child.kill();await closed;return {version:2,state:'ready',summary:'Guardian registrations checked',artifacts:[]};
+  }})});
+  f.options.profiles.check.args=['-e','setTimeout(()=>{},100)'];
+  const manager=f.manager();
+  try {
+   const result=await manager.launch({profileId:kind==='agent'?'child':'check'}).done;
+   assert.equal(result.status,'completed');
+   const owners=result.guardians.filter(owner=>owner.pid===(registeredPid??result.result.pid));
+   assert.equal(owners.length,2);assert.equal(new Set(owners.map(owner=>owner.birth)).size,2);
+   assert.ok(owners.every(owner=>owner.identityVersion===2));
+  } finally {
+   if(child?.exitCode===null&&child.signalCode===null){child.kill();await closed;}
+   await manager.close();probe.mock.restore();syncBuiltinESMExports();
+  }
+ });
 });

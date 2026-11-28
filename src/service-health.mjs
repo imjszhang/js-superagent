@@ -1,3 +1,4 @@
+import { sameProcessIdentity } from './process-identity.mjs';
 import { inspectProcessOwner } from './machine-coordination.mjs';
 import { sanitizeFeishuDiagnostic } from './channels/feishu-diagnostics.mjs';
 
@@ -9,8 +10,8 @@ const CONNECTION_STATES = new Set(['starting', 'ready', 'reconnecting', 'error',
 const count = value => Number.isSafeInteger(value) && value >= 0 && value <= 100000 ? value : 0;
 const date = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
 const pid = value => Number.isSafeInteger(value) && value > 0;
-const identity = (owner, processId) => owner?.pid === processId && typeof owner.host === 'string' && owner.host.length > 0 &&
-  typeof owner.birth === 'string' && owner.birth.length > 0 && typeof owner.bootId === 'string' && owner.bootId.length > 0;
+const identity = (owner, processId) => owner?.pid === processId && sameProcessIdentity(owner, owner) &&
+  (owner.identityVersion === 2 || typeof owner.host === 'string' && owner.host.length > 0);
 
 /** Launchd absence is not process exit. This inspection never signals or repairs a process. */
 export function inspectServiceProcesses({ status, runtime, startup, ownerState = inspectProcessOwner }) {

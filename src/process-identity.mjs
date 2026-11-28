@@ -38,18 +38,19 @@ export function readNativeMachineId(platform = process.platform, read = readFile
   // Persist an application-scoped digest, never the raw hardware / OS machine ID.
   return `sha256:${createHash('sha256').update(`js-superagent/process-machine/v1\0${platform}\0${raw.toLowerCase()}`).digest('hex')}`;
 }
-function nativeScope() {
-  const linux = process.platform === 'linux';
-  const bootSessionId = linux ? readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() : command('/usr/sbin/sysctl', ['-n', 'kern.bootsessionuuid']);
+const diagnostic = read => { try { const value = read(); return typeof value === 'string' ? value : ''; } catch { return ''; } };
+export function readNativeScope(platform = process.platform, read = readFileSync, link = readlinkSync, run = command) {
+  const linux = platform === 'linux';
+  const bootSessionId = linux ? read('/proc/sys/kernel/random/boot_id', 'utf8').trim() : run('/usr/sbin/sysctl', ['-n', 'kern.bootsessionuuid']);
   return {
-    machineId: readNativeMachineId(),
+    machineId: readNativeMachineId(platform, read, run),
     bootSessionId: bootSessionId.toLowerCase(),
-    pidNamespace: linux ? readlinkSync('/proc/self/ns/pid') : 'host',
-    bootId: linux ? bootSessionId : command('/usr/sbin/sysctl', ['-n', 'kern.boottime']),
+    pidNamespace: linux ? link('/proc/self/ns/pid') : 'host',
+    bootId: linux ? bootSessionId : diagnostic(() => run('/usr/sbin/sysctl', ['-n', 'kern.boottime'])),
   };
 }
 const validScope = scope => scope && machine(scope.machineId) && uuid(scope.bootSessionId) &&
-  (scope.pidNamespace === 'host' || /^pid:\[\d+\]$/.test(scope.pidNamespace)) && typeof scope.bootId === 'string' && scope.bootId.length > 0;
+  (scope.pidNamespace === 'host' || /^pid:\[\d+\]$/.test(scope.pidNamespace));
 const v2 = owner => ['identityVersion', 'machineId', 'bootSessionId', 'pidNamespace'].some(key => Object.hasOwn(owner, key));
 
 // Used for re-entering an owned maintenance operation; hostname is not a process key.
@@ -61,7 +62,7 @@ export function sameProcessIdentity(a, b) {
 }
 
 /** Probe seam is internal: every production caller uses the same native inspector. */
-export function createProcessIdentityInspector({ scope = nativeScope, birth = nativeBirth, host = hostname, pid = process.pid } = {}) {
+export function createProcessIdentityInspector({ scope = readNativeScope, birth = nativeBirth, host = hostname, pid = process.pid } = {}) {
   let cachedScope, cachedBirth;
   const readScope = () => {
     if (cachedScope) return cachedScope;
@@ -74,16 +75,16 @@ export function createProcessIdentityInspector({ scope = nativeScope, birth = na
     if (started === null) return null;
     const current = readScope();
     if (!started || !current) return undefined;
-    return { identityVersion: 2, host: host(), pid: processId, birth: started, ...current };
+    return { identityVersion: 2, host: diagnostic(host), pid: processId, birth: started, ...current };
   };
   const currentProcessIdentity = () => {
     cachedBirth ??= birth(pid);
     const current = readScope();
     if (!cachedBirth || !current) throw coordinationError('PROCESS_IDENTITY_UNKNOWN', 'Cannot verify this process start identity');
-    return { identityVersion: 2, host: host(), pid, birth: cachedBirth, ...current };
+    return { identityVersion: 2, host: diagnostic(host), pid, birth: cachedBirth, ...current };
   };
   const inspectProcessOwner = owner => {
-    if (!owner || typeof owner.host !== 'string' || !owner.host || !positive(owner.pid)) return 'unknown';
+    if (!owner || !positive(owner.pid)) return 'unknown';
     const current = readScope();
     if (!current) return 'unknown';
     if (v2(owner)) {
@@ -96,7 +97,9 @@ export function createProcessIdentityInspector({ scope = nativeScope, birth = na
     } else {
       // Legacy receipts cannot prove machine identity across BOTH a rename and reboot.
       // Preserve their conservative behavior; never guess locality from an absent local PID.
-      if (owner.host !== host() && !sameBoot(owner.bootId, current.bootId)) return 'unknown';
+      if (typeof owner.host !== 'string' || !owner.host) return 'unknown';
+      if (typeof current.bootId !== 'string' || !current.bootId) return 'unknown';
+      if (owner.host !== diagnostic(host) && !sameBoot(owner.bootId, current.bootId)) return 'unknown';
       if (typeof owner.birth !== 'string' || !owner.birth || typeof owner.bootId !== 'string' || !owner.bootId) return 'unknown';
     }
     const actual = birth(owner.pid);

@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { hostname } from 'node:os';
+import { runtimeOwner } from './runtime-owner.mjs';
 import { sanitizeFeishuDiagnostic } from './channels/feishu-diagnostics.mjs';
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -76,7 +76,7 @@ export class SourceRegistry {
     const acquired = this.store.atomic(() => {
       const lock = this.store.getMeta(lockKey);
       if (lock && lock.expires > this.now()) return false;
-      this.store.setMeta(lockKey, { token, host: hostname(), pid: process.pid, expires: this.now() + this.leaseMs });
+      this.store.setMeta(lockKey, { token, ...runtimeOwner(), expires: this.now() + this.leaseMs });
       const state = this.state(id); this.store.setMeta(stateKey, { ...state, lastAttempt: new Date(this.now()).toISOString(),
         ...(adapter.configurationKey ? { configurationKey: adapter.configurationKey } : {}) }); return true;
     });
@@ -84,7 +84,7 @@ export class SourceRegistry {
     const controller = new AbortController();
     const owned = () => this.store.getMeta(lockKey)?.token === token;
     const timer = setInterval(() => {
-      try { this.store.atomic(() => { if (owned()) this.store.setMeta(lockKey, { token, host: hostname(), pid: process.pid, expires: this.now() + this.leaseMs }); else controller.abort(); }); }
+      try { this.store.atomic(() => { if (owned()) this.store.setMeta(lockKey, { token, ...runtimeOwner(), expires: this.now() + this.leaseMs }); else controller.abort(); }); }
       catch { controller.abort(); }
     }, Math.max(250, Math.floor(this.leaseMs / 3)));
     const work = (async () => {

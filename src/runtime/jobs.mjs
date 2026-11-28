@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { createHarnessRegistry } from '../harness/registry.mjs';
 import { DEFAULT_DRIVER } from '../harness/builtin.mjs';
-import { hostname } from 'node:os';
+import { runtimeOwner, registerChildOwner, inspectRuntimeOwner, isCurrentRuntimeOwner } from '../runtime-owner.mjs';
 import { relative, isAbsolute } from 'node:path';
 import { normalizeVerificationProfile, runVerification, captureVerificationTree } from '../verification.mjs';
 import { validateWorkspace, inspectWorkspace } from '../workspaces.mjs';
@@ -22,10 +22,7 @@ function paths(value) {
 }
 const inPaths = (path, allowed) => allowed.some(prefix => prefix === '.' || path === prefix || path.startsWith(`${prefix}/`));
 const overlaps = (a, b) => { const rel = relative(a, b); return !isAbsolute(rel) && rel !== '..' && !rel.startsWith('../'); };
-function dead(owner) {
-  if (!owner || owner.host !== hostname() || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return false;
-  try { process.kill(owner.pid, 0); return false; } catch (error) { return error.code === 'ESRCH'; }
-}
+const dead = owner => inspectRuntimeOwner(owner) === 'dead';
 function normalizeProfile(id, profile) {
   if (!ID.test(id) || !profile || typeof profile !== 'object' || Array.isArray(profile)) throw new Error('Invalid managed job profile');
   if (profile.id !== undefined && profile.id !== id) throw new Error('Managed job profile identity mismatch');
@@ -151,7 +148,7 @@ export function createManagedJobs(options, shared) {
             if (!session || typeof session.driver !== 'string' || typeof session.id !== 'string' || bound && (session.id !== bound.id || session.driver !== bound.driver)) throw new Error('Child session identity changed');
             record.session = { driver: session.driver, id: session.id }; turn.session = record.session;
           }),
-          registerProcess: pid => callback(() => { if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) throw new Error('Invalid child process owner'); if (!record.guardians.some(owner => owner.pid === pid)) record.guardians.push({ pid, host: hostname() }); }),
+          registerProcess: pid => callback(() => { if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) throw new Error('Invalid child process owner'); registerChildOwner(record.guardians,pid); }),
           progress: progress => callback(() => { record.progress = normalizeDriverReport(progress, { version: 2 }); }), jobs: children,
           jobProfiles: Object.values(profiles).map(item => ({ id: item.id, kind: item.kind, description: (item.kind === 'agent' ? item.instruction : `Trusted command profile ${item.id}, version ${item.version}. Start it with only {"profileId":"${item.id}"}; text and paths are rejected.`).slice(0, 2000) })) });
       } finally { await children.close(); }
@@ -228,7 +225,7 @@ export function createManagedJobs(options, shared) {
         ...(requestId ? { requestId, requestDigest: hash(request) } : {}),
         kind: profile.kind, profileId: profile.id, profileVersion: profile.version, profileDigest: hash(profile), depth: depth + (profile.kind === 'agent' ? 1 : 0),
         scope: { instruction: scope.instruction, paths: childPaths }, status: 'pending', createdAt: now(),
-        deadlineAt: new Date(Math.min(deadline, Date.now() + profile.timeoutMs)).toISOString(), owner: { pid: process.pid, host: hostname() }, guardians: [] };
+        deadlineAt: new Date(Math.min(deadline, Date.now() + profile.timeoutMs)).toISOString(), owner: runtimeOwner(), guardians: [] };
       save(record); local.add(id);
       const state = { controller, record, children: null, done: undefined, reason: undefined, profile, launchParent, childText, pending: [] };
       ledger.active.set(id, state);
@@ -250,7 +247,7 @@ export function createManagedJobs(options, shared) {
               verificationId: `job-${id}`, onControl: control => { state.executionControl = control; }, persist(value) {
                 if (!ACTIVE.has(record.status)) throw new Error('Job already ended');
                 record.execution = value;
-                for (const pid of [value.pid, value.childPid].filter(Number.isSafeInteger)) if (!record.guardians.some(owner => owner.pid === pid)) record.guardians.push({ pid, host: hostname() });
+                for (const pid of [value.pid, value.childPid].filter(Number.isSafeInteger)) registerChildOwner(record.guardians,pid);
                 save(record);
               } });
             return complete(record, state.reason ?? (result.status === 'passed' ? 'completed' : result.status), { result });
@@ -269,7 +266,7 @@ export function createManagedJobs(options, shared) {
       synchronous(assertActive);
       if (closed || signal?.aborted || !request || Object.keys(request).some(key => key !== 'text') || !ID.test(requestId)) throw new Error('Child message requires an active owner and a bounded request ID');
       const messageText = text(request.text, 'child message'), saved = get(id), state = ledger.children.get(id);
-      if (saved.kind !== 'agent' || !state || state.record.token !== saved.token || saved.owner?.pid !== process.pid || saved.owner?.host !== hostname()) throw new Error('Child owner is unavailable; inspect instead of recreating its execution');
+      if (saved.kind !== 'agent' || !state || state.record.token !== saved.token || !isCurrentRuntimeOwner(saved.owner)) throw new Error('Child owner is unavailable; inspect instead of recreating its execution');
       const record = state.record, previous = record.messages.find(item => item.id === requestId);
       if (previous) {
         if (previous.text !== messageText) throw new Error('Child message identity conflict');

@@ -1,3 +1,4 @@
+import {nativeGuardianOwners} from '../runtime-owner.mjs';
 import { createHash } from 'node:crypto';
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const stable = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
@@ -31,11 +32,11 @@ export function createHostToolVerifier({ store, ticketId, session, ownerExited =
       const leases = store.listMeta('native-handoff:').map(row => row.value).filter(lease => lease.ticketId === ticketId &&
         lease.session?.id === query.sessionId && lease.session?.driver === query.driver && lease.jobIds?.includes(query.result.jobId));
       if (leases.some(lease => ['holding', 'resuming', 'closing'].includes(lease.status))) return false;
-      return leases.some(lease => lease.status === 'completed' && lease.assignmentId === record.assignmentId && lease.owner?.host &&
+      return leases.some(lease => lease.status === 'completed' && lease.assignmentId === record.assignmentId && lease.owner &&
         lease.previews?.some(preview => preview.jobId === query.result.jobId && preview.profileId === query.arguments?.profileId &&
           preview.commandPid === query.result.commandPid && preview.guardianPid === query.result.guardianPid) &&
         lease.results?.some(event => event.type === 'settled' && event.job?.id === query.result.jobId && ['completed', 'failed', 'killed'].includes(event.job.status)) &&
-        lease.guardianPids?.length && lease.guardianPids.every(pid => ownerExited({ pid, host: lease.owner.host })));
+        lease.guardianPids?.length && nativeGuardianOwners(lease).every(ownerExited));
     }
     if (!JOB_TOOLS.has(query.name)) return !!matched;
     const jobId = query.name === 'js_superagent_job_start' ? query.result?.id : query.arguments?.jobId;
