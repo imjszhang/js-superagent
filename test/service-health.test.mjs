@@ -115,3 +115,13 @@ test('service manager health observes the actual wrapper heartbeat and does not 
   assert.equal(manager.health().reason, 'service-stop-incomplete');
   assert.equal(calls.slice(before).some(args => ['enable','bootstrap','kickstart','bootout'].includes(args[0])), false);
 });
+
+import { currentProcessIdentity } from '../src/process-identity.mjs';
+import { inspectServiceProcesses } from '../src/service-health.mjs';
+test('service shape validation accepts complete v2 receipts without hostname or legacy boot diagnostics',()=>{
+ const owner={...currentProcessIdentity(),host:undefined,bootId:undefined};
+ const processes=inspectServiceProcesses({status:{running:true,pid:owner.pid},runtime:{healthProtocol:1,runId,pid:owner.pid,owner,childPid:null}});
+ assert.equal(processes.verified,true);assert.equal(processes.wrapperState,'alive');
+ const legacy={pid:owner.pid,birth:owner.birth,bootId:'boot'};
+ assert.equal(inspectServiceProcesses({status:{running:true,pid:owner.pid},runtime:{healthProtocol:1,runId,pid:owner.pid,owner:legacy,childPid:null},ownerState:()=> 'alive'}).verified,false);
+});

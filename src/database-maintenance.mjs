@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { chmodSync, existsSync, lstatSync, linkSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { hostname } from 'node:os';
+import { runtimeOwner, inspectRuntimeOwner, nativeGuardianOwners } from './runtime-owner.mjs';
 import { resolve } from 'node:path';
 
 const versionOf = db => Number(db.prepare('PRAGMA user_version').get().user_version);
@@ -20,11 +20,7 @@ function checkIntegrity(db) {
   const checks = db.prepare('PRAGMA integrity_check').all();
   if (!checks.length || checks.some(row => row.integrity_check !== 'ok')) throw new Error('SQLite integrity check failed');
 }
-function ownerState(owner) {
-  if (!owner || owner.host !== hostname() || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return 'unknown';
-  try { process.kill(owner.pid, 0); return 'alive'; }
-  catch (error) { return error.code === 'ESRCH' ? 'dead' : 'unknown'; }
-}
+const ownerState = inspectRuntimeOwner;
 function owners(db) {
   const found = [];
   const add = (name, value) => {
@@ -41,7 +37,7 @@ function owners(db) {
         // Missing/malformed identities remain unverifiable, never evidence that
         // a transferred process can be ignored during backup or migration.
         guardians: Array.isArray(lease.guardianPids) && lease.guardianPids.length
-          ? lease.guardianPids.map(pid => ({ pid, host: lease.owner?.host })) : [undefined] });
+          ? nativeGuardianOwners(lease) : [undefined] });
     }
     if (row.key === 'runtime:loop' || row.key === 'execution' || row.key.startsWith('execution:') || row.key.endsWith(':sync-lock') || row.key.endsWith(':owner')) add(row.key, JSON.parse(row.data));
   }
@@ -84,7 +80,7 @@ async function withMaintenance({ path, assertStopped }, action) {
   if (typeof assertStopped !== 'function') throw new Error('Maintenance requires an assertStopped callback that verifies all runtime/service instances are stopped');
   const lockPath = databaseMaintenanceLockPath(path);
   const token = randomUUID();
-  writeFileSync(lockPath, JSON.stringify({ token, host: hostname(), pid: process.pid, at: new Date().toISOString() }) + '\n', { flag: 'wx', mode: 0o600 });
+  writeFileSync(lockPath, JSON.stringify({ token, ...runtimeOwner(), at: new Date().toISOString() }) + '\n', { flag: 'wx', mode: 0o600 });
   let db;
   try {
     // Idle services have no execution owner. The caller must verify service shutdown, not only an empty work queue.
@@ -105,7 +101,7 @@ function withMaintenanceSync({ path, assertStopped }, action) {
   path = existingFile(path);
   if (typeof assertStopped !== 'function') throw new Error('Maintenance requires stopped runtime proof');
   const lockPath = databaseMaintenanceLockPath(path), token = randomUUID();
-  writeFileSync(lockPath, JSON.stringify({token,host:hostname(),pid:process.pid,at:new Date().toISOString()})+'\n',{flag:'wx',mode:0o600});
+  writeFileSync(lockPath, JSON.stringify({token,...runtimeOwner(),at:new Date().toISOString()})+'\n',{flag:'wx',mode:0o600});
   let db;
   try {
     if (assertStopped() !== true) throw new Error('Synchronous migration requires synchronous stopped runtime proof');

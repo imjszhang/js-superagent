@@ -1,4 +1,4 @@
-import { hostname } from 'node:os';
+import { inspectRuntimeOwner } from './runtime-owner.mjs';
 import { key, threadKey } from '../dist/core/index.js';
 
 const STATUSES = new Set(['queued', 'running', 'waiting', 'completed', 'failed', 'cancelled', 'interrupted']);
@@ -35,15 +35,9 @@ function validate(record, projectId) {
   }
   if (record.status === 'running') {
     const owner = record.owner;
-    if (!owner || owner.host !== hostname() || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) {
-      throw new Error(`Cannot migrate running legacy ticket ${record.id}: execution owner cannot be verified`);
-    }
-    try { process.kill(owner.pid, 0); }
-    catch (error) {
-      if (error.code === 'ESRCH') return record.cancelRequested ? 'cancelled' : 'interrupted';
-      throw new Error(`Cannot migrate running legacy ticket ${record.id}: execution owner cannot be verified`, { cause: error });
-    }
-    throw new Error(`Cannot migrate running legacy ticket ${record.id}: execution owner is still alive`);
+    const state = inspectRuntimeOwner(owner);
+    if (state === 'dead') return record.cancelRequested ? 'cancelled' : 'interrupted';
+    throw new Error(`Cannot migrate running legacy ticket ${record.id}: execution owner ${state === 'alive' ? 'is still alive' : 'cannot be verified'}`);
   }
   // A persisted stop withdrew authorization even if v1 crashed before settling its status.
   return record.cancelRequested ? 'cancelled' : record.status;

@@ -4,11 +4,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, cpSync, existsSync, realpathSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { createProjectAgent } from './helpers/runtime-fixture.mjs';
 import { MACHINE_DEPENDENCIES } from '../src/runtime/machine-guard.mjs';
 import { createMachineCoordinator } from '../src/machine-coordination.mjs';
 import { Store } from '../src/store.mjs';
 import { relocateProject } from '../src/project-maintenance.mjs';
+import { runtimeOwner } from '../src/runtime-owner.mjs';
 
 function fixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(),'js-multi-runtime-'))), directory=join(root,'machine'), runtimes=[];
@@ -34,6 +36,24 @@ test('two runtime objects cannot concurrently execute one project; pure enqueue 
   a.submit({text:'first'});const work=a.runNext();await g.started;
   try { assert.ok(b.submit({text:'queued'}).id);await assert.rejects(b.runNext(),error=>error.code==='PROJECT_LEASE_OWNED'||/owned|owner|owns|active/i.test(error.message)); }
   finally {g.release();await work;}
+});
+
+test('runtime lease retains foreign and unknown guardians sharing its numeric PID without recapturing them',async t=>{
+  const f=fixture(t),g=gate();let input;
+  const runtime=f.open(f.project('same-pid'),{driver:{async run(value){input=value;g.enter();await g.done;return {status:'completed',summary:'done'};}}});
+  runtime.submit({text:'keep guardian evidence'});const work=runtime.runNext();await g.started;
+  const store=new Store(join(stateDir(runtime.projectRoot),'state.sqlite'));
+  const row=store.listMeta('execution').find(row=>row.value.assignmentId===input.assignmentId);
+  const local=runtimeOwner(),foreign={...local,machineId:`sha256:${'f'.repeat(64)}`},namespace={...local,pidNamespace:'pid:[999]'},legacy={pid:process.pid,host:'previous-host'};
+  try {
+    store.setMeta(row.key,{...row.value,guardians:[local,foreign,namespace,legacy]});
+    const exited=spawnSync(process.execPath,['-e','']);assert.equal(exited.status,0);
+    input.registerProcess(exited.pid); // Already absent: requests a heartbeat without adding another guardian.
+    assert.deepEqual(runtime.machineStatus().leases[0].guardians,[foreign,namespace,legacy]);
+  } finally {
+    const current=store.getMeta(row.key);if(current)store.setMeta(row.key,{...current,guardians:[]});
+    store.close();g.release();await work;
+  }
 });
 
 test('repository ownership persists after stop and rejects another project before channel calls',async t=>{

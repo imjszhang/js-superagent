@@ -1,8 +1,7 @@
 import { createMachineCoordinator } from '../machine-coordination.mjs';
 import { inspectProjectIdentity, assertProjectIdentity, assertLegacyProjectRoot } from '../project-identity.mjs';
-import { captureProcessIdentity } from '../machine-coordination.mjs';
+import { childOwner } from '../runtime-owner.mjs';
 import { randomUUID } from 'node:crypto';
-import { hostname } from 'node:os';
 
 // Internal injection for isolated tests and sibling lanes, not a user configuration escape hatch.
 export const MACHINE_DEPENDENCIES = Symbol('machine coordination test dependencies');
@@ -181,7 +180,7 @@ export class RuntimeMachineGuard {
       await this.ready();
       return await work({ ...input, registerProcess: pid => {
         this.assert(); const result = registerProcess?.(pid);
-        const owner = captureProcessIdentity(pid); if (owner !== null) guardians.push(owner ?? {pid,host:hostname(),unknown:true});
+        const owner = childOwner(pid); if (owner !== null) guardians.push(owner);
         const slot=this.slots.get(key);if(slot)this.coordinator.heartbeatSlot(slot,{guardians});
         this.heartbeat(); return result;
       } });

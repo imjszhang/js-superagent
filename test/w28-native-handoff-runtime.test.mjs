@@ -9,6 +9,7 @@ import { once } from 'node:events';
 import { createProjectAgent, createHarnessRegistry } from './helpers/runtime-fixture.mjs';
 import { validateNativeHandoff } from '../src/drivers/dsh-lease.mjs';
 import { Store } from '../src/store.mjs';
+import { inspectRuntimeOwner } from '../src/runtime-owner.mjs';
 
 const execution = { driver: 'dsh-sdk', executable: '/not-used/dsh-fixture', model: 'fixture-model', timeoutMs: 10000,
   backend: { auth: 'api-key', provider: 'deepseek-official', protocol: 'anthropic-messages', baseURL: 'https://fixture.invalid/anthropic', apiKeyEnv: 'UNUSED_W28_FIXTURE_KEY' } };
@@ -45,7 +46,7 @@ function record(input, guardianPid, deadlineAt) {
     deadlineAt, guardianPids: [guardianPid], jobIds: ['native-job-1'],
     reportBoundary: { state: 'waiting', assistantSequence: 5, terminalSequence: 6, question: 'Which wording?' } });
 }
-function fixture(t, { hold = true } = {}) {
+function fixture(t, { hold = true, staleGuardian = false } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'js-w28-host-'))), runtimes = [], inputs = [], closes = [];
   let currentRuntime, owner, control, latest, boundTicketId, resumeCalls = 0;
   const registry = createHarnessRegistry();
@@ -64,6 +65,10 @@ function fixture(t, { hold = true } = {}) {
     if (!hold) return waiting();
     assert.equal(owner, undefined, 'A second native process must not replace the live owner');
     owner = await childOwner(); input.registerProcess(owner.child.pid);
+    if (staleGuardian) stored(root, store => {
+      const row=store.listMeta('execution').find(row=>row.value.assignmentId===input.assignmentId);
+      store.setMeta(row.key,{...row.value,guardians:[{...row.value.guardian,birth:'previous-incarnation'},...row.value.guardians]});
+    });
     const deadlineAt = new Date(Date.now() + 8000).toISOString();
     const transfer = next => {
       const value = record(next, owner.child.pid, deadlineAt);
@@ -134,6 +139,15 @@ test('W28 waiting releases the worker slot while the lease owns its process; rep
   assert.equal(f.inputs.at(-1).nativeHandoff.current, undefined); assert.equal(f.inputs.at(-1).nativeHandoffResults.length, 1);
   const consumed = runtime.getDetailed(ticket.id).nativeHandoffs.find(item => item.id === saved.id);
   assert.ok(consumed.consumedAt); assert.equal(consumed.consumedRunId, f.inputs.at(-1).runId);
+});
+
+test('native handoff preserves the verified live incarnation when older guardian evidence has the same PID', {timeout:5000},async t=>{
+  const f=fixture(t,{staleGuardian:true}),runtime=f.open(),ticket=runtime.submit({text:'retain the current native owner'});
+  await runtime.runNext();
+  const held=runtime.getDetailed(ticket.id).nativeHandoffs[0];
+  assert.equal(held.guardianOwners.length,1);assert.equal(held.guardianOwners[0].pid,f.owner().child.pid);
+  assert.notEqual(held.guardianOwners[0].birth,'previous-incarnation');
+  assert.equal(inspectRuntimeOwner(held.guardianOwners[0]),'alive');
 });
 
 for (const action of ['cancel', 'stop']) test(`W28 ${action} closes native ownership without keeping a worker slot or recreating jobs`, { timeout: 5000 }, async t => {

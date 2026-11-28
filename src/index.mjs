@@ -1,3 +1,4 @@
+import { runtimeOwner, childOwners, registerChildOwner, inspectRuntimeOwner, sameRuntimeOwner, isCurrentRuntimeOwner, nativeGuardianOwners } from './runtime-owner.mjs';
 import {createAssessmentRecordView, ASSESSMENT_CONTEXT_UNAVAILABLE} from './runtime/assessment-records.mjs';
 import { assertMaterialDestination } from './materials.mjs';
 import { combineContextReads, materialDestination } from './runtime/material-context.mjs';
@@ -12,7 +13,6 @@ import { assertCoordinatorAnswer, answerFingerprint, coordinatorAnswerScope } fr
 import { assertWorkerAnswer, workerAnswerKey } from './runtime/worker-answers.mjs';
 import { createCandidateLinks } from './runtime/candidate-links.mjs';
 import { ensureProjectIdentity, inspectProjectIdentity, assertLegacyProjectRoot } from './project-identity.mjs';
-import { captureProcessIdentity } from './machine-coordination.mjs';
 import { GitHubSyncState, normalizeGitHubPoll } from './runtime/github-sync-state.mjs';
 import { githubExecutionRefs, hasVerifiedContinuation } from './runtime/github-execution-refs.mjs';
 import { observeGitHubComment, supersedeGitHubInput, commentCorrection } from './github-comment-version.mjs';
@@ -34,7 +34,6 @@ import { watchStateChanges } from './runtime/state-watch.mjs';
 import { realpathSync, writeFileSync, linkSync, unlinkSync, existsSync, mkdirSync } from 'node:fs';
 import { join, resolve, relative, isAbsolute } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
-import { hostname } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { Store } from './store.mjs';
 import { driverCapabilities, normalizeDriverReport, publicTicketReport, domainReport, detailedTicketView } from './runtime/reports.mjs';
@@ -116,25 +115,10 @@ function writeNew(path, content) {
   catch (error) { if (error.code !== 'EEXIST') throw error; }
   finally { unlinkSync(temporary); }
 }
-function ownerIsDead(owner) {
-  if (!owner || owner.host !== hostname()) return false;
-  if (owner.pid === process.pid) return false;
-  try {
-    process.kill(owner.pid, 0);
-    // An orphan may remain as a zombie until init reaps it; it cannot perform work.
-    if (process.platform !== 'win32') {
-      try {
-        return execFileSync('ps', ['-p', String(owner.pid), '-o', 'stat='], { encoding: 'utf8', timeout: 1000, maxBuffer: 1024 }).trim().startsWith('Z');
-      } catch { /* Cannot establish exit: retain ownership conservatively. */ }
-    }
-    return false;
-  }
-  catch (error) { return error.code === 'ESRCH'; }
-}
+const ownerIsDead = owner => inspectRuntimeOwner(owner) === 'dead';
 function guardiansExited(execution) {
   const guardians = [...(execution.guardians ?? []), ...(execution.guardian ? [execution.guardian] : [])];
-  const unique = new Map(guardians.map(owner => [`${owner.host}:${owner.pid}`, owner]));
-  return [...unique.values()].every(ownerIsDead);
+  return guardians.every(ownerIsDead);
 }
 export function createProjectAgent(options) { return new ProjectRuntime(options); }
 
@@ -143,7 +127,7 @@ export class ProjectRuntime {
   #githubChannel; #channelCache; #syncing; #flushing; #cycle; #linking; #webhooks; #ingress; #coordinator; #basePolicy; #assessing; #assessmentAbort; #operation; #operationAbort; #sources; #lane = 0; #children = []; #externalSources; #activeDriver; #liveSending;
   #busy = false; #retainLock = false; #runError; #inflight; #controller; #timer; #loop; #stopping = false; #stopPromise; #lastError; #loopToken;
   #repositoryRequest; #repositorySourceId; #feishuSDK; #feishuConnection; #feishuConnecting; #feishuGeneration = 0; #feishuSourceId; #feishuState = 'stopped';
-  #jobSweep; #machine; #machineDependencies; #machineHeld = false; #machineWrapped = false; #machineReady = false; #machineRetryAt = 0; #machinePreparing; #guardChannels = new WeakMap(); #guardianIdentities = new Map();
+  #jobSweep; #machine; #machineDependencies; #machineHeld = false; #machineWrapped = false; #machineReady = false; #machineRetryAt = 0; #machinePreparing; #guardChannels = new WeakMap();
   #controlMethods = new Map(); #controlsDrain; #changeWatches = new Set();
   constructor({ projectRoot, driver, harnessRegistry, workspace, execution, github, githubChannel, repositoryRequest, assessor, sources = [], feishuSDK, [WORKER_LANE]: lane = 0, [MACHINE_DEPENDENCIES]: machineDependencies, [MACHINE_GUARD]: machineGuard } = {}) {
     this.projectRoot = nonempty(projectRoot, 'projectRoot');
@@ -396,15 +380,13 @@ export class ProjectRuntime {
       key.startsWith('native-handoff:') && ['holding','resuming','closing'].includes(value.status));
     const current = new Map();
     for (const { value } of rows) {
-      for (const owner of [...(value.guardians ?? []), ...(value.guardian ? [value.guardian] : []), ...(value.guardianPids ?? []).map(pid => ({ pid, host: hostname() }))]) {
-        if (!owner?.pid || owner.pid === process.pid) continue;
-        const key = `${owner.host}:${owner.pid}`;
-        if (!this.#guardianIdentities.has(key)) {
-          const captured = owner.birth ? owner : captureProcessIdentity(owner.pid);
-          if (captured) this.#guardianIdentities.set(key, captured);
-          else { try { process.kill(owner.pid, 0); this.#guardianIdentities.set(key, owner); } catch(error) { if(error.code!=='ESRCH')this.#guardianIdentities.set(key,owner); } }
-        }
-        if (this.#guardianIdentities.has(key)) current.set(key, this.#guardianIdentities.get(key));
+      for (const owner of [...(value.guardians ?? []), ...(value.guardian ? [value.guardian] : []), ...nativeGuardianOwners(value)]) {
+        if (!owner?.pid || isCurrentRuntimeOwner(owner)) continue;
+        // Never recapture an old PID as a new identity: that could adopt a reused
+        // or foreign process. Only originally captured evidence can guard a lease.
+        if (inspectRuntimeOwner(owner) === 'dead') continue;
+        const key = JSON.stringify(owner);
+        current.set(key, owner);
       }
     }
     return [...current.values()];
@@ -444,7 +426,7 @@ export class ProjectRuntime {
     if(!loop||ownerIsDead(loop))return null;
     const identity=inspectProjectIdentity(this.projectRoot,this.projectId);
     const lease=this.#machine.coordinator.status().leases.find(value=>value.kind==='runtime'&&value.instanceId===identity.instanceId);
-    if(!lease||lease.ownerState!=='alive'||lease.owner.pid!==loop.pid||lease.owner.host!==loop.host)return null;
+    if(!lease||lease.ownerState!=='alive'||!sameRuntimeOwner(lease.owner,loop))return null;
     return {loopToken:loop.token,leaseToken:lease.token,controlProtocol:loop.controlProtocol??0,controlMethods:loop.controlMethods??[]};
   }
   #controlBinding(method,args) {
@@ -1641,7 +1623,7 @@ export class ProjectRuntime {
         const started = inbox.begin(event.id, workRetry);
         if (!started) {this.#queueCoordinationFailure(inbox.get(event.id));return false;}
         event = started;
-        this.#store.setMeta('coordinator:owner', { token, pid: process.pid, host: hostname(), eventId: event.id, generation: event.generation, runId });
+        this.#store.setMeta('coordinator:owner', { token, ...runtimeOwner(), eventId: event.id, generation: event.generation, runId });
         return true;
       });
       if (!claimed) return true;
@@ -1696,7 +1678,7 @@ export class ProjectRuntime {
         checkpoint: session => guard(() => this.#store.setMeta(sessionKey, driverSession(session))),
         registerProcess: pid => guard(owner => {
           if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) throw new Error('Invalid coordinator process');
-          (owner.guardians ??= []).push(captureProcessIdentity(pid) ?? { pid, host: hostname() }); this.#store.setMeta('coordinator:owner', owner);
+          (owner.guardians ??= []).push(...childOwners(pid)); this.#store.setMeta('coordinator:owner', owner);
         }) });
       guard(owner => {
         if (!guardiansExited(owner)) throw new Error('Coordinator still owns live processes; inspect before retrying');
@@ -2046,7 +2028,7 @@ export class ProjectRuntime {
     this.#store.atomic(() => {
       const owner = this.#store.getMeta('coordinator:owner');
       if (owner && (!ownerIsDead(owner) || !guardiansExited(owner))) throw new Later('Coordinator is owned by another process');
-      this.#store.setMeta('coordinator:owner', { token, pid: process.pid, host: hostname() });
+      this.#store.setMeta('coordinator:owner', { token, ...runtimeOwner() });
       this.#store.setMeta(`assessment:${candidate.evalId}`, { runId, evalId: candidate.evalId, policyVersion: candidate.policyVersion, status: 'running', triggerIds: candidate.triggers.map(trigger => trigger.id), at: this.#now() });
       for (const trigger of candidate.triggers) this.#store.setMeta(`assessment-trigger:${trigger.id}`, { evalId: candidate.evalId });
     });
@@ -2216,7 +2198,7 @@ export class ProjectRuntime {
         checkpoint: session => guard(() => this.#store.setMeta(sessionKey, driverSession(session))),
         registerProcess: pid => guard(owner => {
           if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) throw new Error('Invalid coordinator process');
-          (owner.guardians ??= []).push(captureProcessIdentity(pid) ?? { pid, host: hostname() }); this.#store.setMeta('coordinator:owner', owner);
+          (owner.guardians ??= []).push(...childOwners(pid)); this.#store.setMeta('coordinator:owner', owner);
         }) });
       const recordCompletion = result => {
         const record = { ...recordBase, ...progress, status: 'finished', contextReads,
@@ -2612,7 +2594,7 @@ export class ProjectRuntime {
       const before = this.#store.getMeta(key);
       if (before && ['holding','resuming'].includes(before.status)) this.#store.setMeta(key, { ...before, status: 'closing', reason, updatedAt: this.#now() });
       await entry.control.close(reason);
-      if (!guardiansExited({ guardians: entry.record.guardianPids.map(pid => ({ pid, host: entry.record.owner.host })) })) throw new Error('Native handoff guardian has not exited');
+      if (!guardiansExited({ guardians: nativeGuardianOwners(entry.record) })) throw new Error('Native handoff guardian has not exited');
       const current = this.#store.getMeta(key);
       if (current && !['completed','transferred'].includes(current.status)) this.#store.setMeta(key, { ...current,
         status: current.jobIds.every(id => current.results?.some(item => item.job?.id === id)) ? 'completed' : 'interrupted', updatedAt: this.#now(), reason });
@@ -2658,8 +2640,8 @@ export class ProjectRuntime {
     if (entry && (entry.closing || entry.record.session.id !== this.getSession(execution.publicId)?.id || entry.record.cwd !== workspace.path)) throw new Error('Native handoff requires ownership inspection');
     if (entry) withExecution(current => {
       const saved = this.#store.getMeta(`native-handoff:${entry.record.id}`);
-      if (saved?.status !== 'holding' || saved.owner.pid !== process.pid || Date.now() >= Date.parse(saved.deadlineAt)) throw new Error('Native handoff is not available for this run');
-      const guards = entry.record.guardianPids.map(pid => ({ pid, host: hostname() }));
+      if (saved?.status !== 'holding' || !isCurrentRuntimeOwner(saved.owner) || Date.now() >= Date.parse(saved.deadlineAt)) throw new Error('Native handoff is not available for this run');
+      const guards = nativeGuardianOwners(entry.record);
       current.guardians = [...(current.guardians ?? []), ...guards]; current.guardian ??= guards[0];
       this.#store.setMeta(this.#executionKey(), current);
       this.#store.setMeta(`native-handoff:${saved.id}`, { ...saved, status: 'resuming', resumedRunId: execution.runId, updatedAt: this.#now() });
@@ -2673,16 +2655,17 @@ export class ProjectRuntime {
             !this.#policy().revalidate(domain.mandate) || this.#activeInputs(domain).some(input => !execution.inputs.includes(input.id)) ||
             Date.now() >= Date.parse(record.deadlineAt) || !['resume','close','snapshot'].every(key => typeof control?.[key] === 'function') || !control.closed?.then) return false;
         const guards = [...(current.guardians ?? []), ...(current.guardian ? [current.guardian] : [])];
-        if (record.guardianPids.some(pid => !guards.some(guard => guard.pid === pid && guard.host === hostname()))) throw new Error('Native handoff has an unowned guardian');
+        const guardianOwners = record.guardianPids.map(pid => guards.find(guard => guard.pid === pid && inspectRuntimeOwner(guard) === 'alive'));
+        if (guardianOwners.some(owner => !owner)) throw new Error('Native handoff has an unowned guardian');
         const active = this.#store.listMeta('native-handoff:').filter(row => ['holding','resuming','closing'].includes(row.value.status) && row.value.assignmentId !== execution.assignmentId);
         if (active.length >= 4) return false;
         const old = pool.get(execution.assignmentId);
         if (old && (old.control !== control || Date.parse(record.deadlineAt) > Date.parse(old.record.deadlineAt) && !record.previews?.length)) throw new Error('Native handoff cannot replace its live owner or extend an ordinary job deadline');
         if (old) { clearInterval(old.timer); const previous = this.#store.getMeta(`native-handoff:${old.record.id}`); this.#store.setMeta(`native-handoff:${old.record.id}`, { ...previous, status: 'transferred', successor: record.id }); }
-        const saved = { ...record, status: 'holding', owner: { pid: process.pid, host: hostname(), token: randomUUID() }, results: [], updatedAt: this.#now() };
+        const saved = { ...record, guardianOwners, status: 'holding', owner: { ...runtimeOwner(), token: randomUUID() }, results: [], updatedAt: this.#now() };
         this.#store.setMeta(`native-handoff:${record.id}`, saved);
-        current.guardians = guards.filter(guard => !record.guardianPids.includes(guard.pid));
-        if (current.guardian && record.guardianPids.includes(current.guardian.pid)) delete current.guardian;
+        current.guardians = guards.filter(guard => !guardianOwners.some(owner => sameRuntimeOwner(guard, owner)));
+        if (current.guardian && guardianOwners.some(owner => sameRuntimeOwner(current.guardian, owner))) delete current.guardian;
         current.nativeHandoffId = record.id; this.#store.setMeta(this.#executionKey(), current);
         const held = { record: saved, control };
         pool.set(execution.assignmentId, held);
@@ -3167,7 +3150,7 @@ export class ProjectRuntime {
       const domain = this.getDomainTicket(id), owner = this.#store.getMeta('operation:owner');
       if ((!allowPaused && this.isPaused()) || this.#stopping || this.#executions().length || this.#store.listMeta('native-handoff:').some(row => row.value.ticketId === id && ['holding','resuming','closing'].includes(row.value.status)) && !this.#onlyHeldPreviews(id) || owner && (!ownerIsDead(owner) || !guardiansExited(owner))) throw new Error('Stop or finish active work before verification or delivery');
       if (!allowCancelledRollback && (!this.#policy().revalidate(domain.mandate) || domain.ended?.by === 'human')) throw new Error('Ticket is no longer authorized');
-      this.#store.setMeta('operation:owner', { token, pid: process.pid, host: hostname(), ticketId: id });
+      this.#store.setMeta('operation:owner', { token, ...runtimeOwner(), ticketId: id });
     });
     this.#operationAbort = new AbortController();
     const timer = setInterval(() => { if (this.#store.getMeta('operation:owner')?.token !== token || !allowCancelledRollback && this.getDomainTicket(id).ended?.by === 'human') this.#operationAbort?.abort(); }, 25);
@@ -3188,7 +3171,7 @@ export class ProjectRuntime {
         const meta = this.#meta(id); meta[value.kind === 'prepare' ? 'preparation' : 'verification'] = value; this.#save(meta);
         const key = this.#store.getMeta(this.#executionKey())?.publicId === id ? this.#executionKey() : 'operation:owner';
         const owner = this.#store.getMeta(key);
-        if (owner && value.pid) { owner.guardians ??= []; if (!owner.guardians.some(g => g.pid === value.pid)) owner.guardians.push({ pid: value.pid, host: hostname() }); this.#store.setMeta(key, owner); }
+        if (owner && value.pid) { registerChildOwner(owner.guardians ??= [], value.pid); this.#store.setMeta(key, owner); }
         this.#store.setMeta(`verification:${value.id}`, value);
       }) });
   }
@@ -3201,7 +3184,7 @@ export class ProjectRuntime {
   async #captureUI(id,phase,settings,signal) {
     return captureUIEvidence({projectRoot:this.projectRoot,workspace:this.getWorkspace(id),settings,phase,signal,persistProcess:value=>this.#store.atomic(()=>{
       const key=this.#store.getMeta(this.#executionKey())?.publicId===id?this.#executionKey():'operation:owner',owner=this.#store.getMeta(key);
-      if(owner&&value.pid){owner.guardians??=[];if(!owner.guardians.some(g=>g.pid===value.pid))owner.guardians.push({pid:value.pid,host:hostname()});this.#store.setMeta(key,owner);}
+      if(owner&&value.pid){registerChildOwner(owner.guardians??=[],value.pid);this.#store.setMeta(key,owner);}
       this.#store.setMeta(`ui-capture:${value.id}`,value);
     })});
   }
@@ -3242,7 +3225,7 @@ export class ProjectRuntime {
       transport: settings.mode === 'draft-pr' ? this.#machine.deliveryTransport(createNativeGitHubDeliveryTransport({ repository: settings.repository, executable: this.#config().github?.executable, account: this.#config().github?.account, allowedActors: this.#config().github?.allowedActors })) : undefined,
       withLock: async (key, work) => {
         const token = randomUUID(), lock = `${key}:owner`;
-        this.#store.atomic(() => { const current = this.#store.getMeta(lock); if (current && !ownerIsDead(current)) throw new Error('Delivery branch is owned'); this.#store.setMeta(lock, { token, pid: process.pid, host: hostname() }); });
+        this.#store.atomic(() => { const current = this.#store.getMeta(lock); if (current && !ownerIsDead(current)) throw new Error('Delivery branch is owned'); this.#store.setMeta(lock, { token, ...runtimeOwner() }); });
         try { return await work(); } finally { this.#store.atomic(() => { if (this.#store.getMeta(lock)?.token === token) this.#store.deleteMeta(lock); }); }
       } });
   }
@@ -3640,7 +3623,7 @@ export class ProjectRuntime {
   }
   async #materialApplicationLock(key, work) {
     const lock = `material-application:${key}:owner`, token = randomUUID();
-    this.#store.atomic(() => { const previous = this.#store.getMeta(lock); if (previous && !ownerIsDead(previous)) throw new Error('Material application is already owned'); this.#store.setMeta(lock, { token, pid: process.pid, host: hostname() }); });
+    this.#store.atomic(() => { const previous = this.#store.getMeta(lock); if (previous && !ownerIsDead(previous)) throw new Error('Material application is already owned'); this.#store.setMeta(lock, { token, ...runtimeOwner() }); });
     try { return await work(); } finally { this.#store.atomic(() => { if (this.#store.getMeta(lock)?.token === token) this.#store.deleteMeta(lock); }); }
   }
   applyMaterialChanges(id, {plan, operationId} = {}) {
@@ -3781,7 +3764,7 @@ export class ProjectRuntime {
         if (JSON.stringify(this.#config().github) !== JSON.stringify(config)) throw new Error('GitHub configuration changed during PR association');
         const existing = this.#pullBinding(config.repository, number);
         if (existing && existing.ticketId !== ticketId) throw new Error('PR already belongs to another ticket; unlink it first');
-        this.#store.setMeta('github:sync-lock', { pid: process.pid, host: hostname(), token, operation:'link' });
+        this.#store.setMeta('github:sync-lock', { ...runtimeOwner(), token, operation:'link' });
         return existing;
       });
       this.#linking = (async () => {
@@ -4459,7 +4442,7 @@ export class ProjectRuntime {
     const acquired = this.#store.atomic(() => {
       const lock = this.#store.getMeta('github:sync-lock');
       if (lock && !ownerIsDead(lock)) return false;
-      this.#store.setMeta('github:sync-lock', { pid: process.pid, host: hostname(), token });
+      this.#store.setMeta('github:sync-lock', { ...runtimeOwner(), token });
       this.#store.setMeta('github:last-attempt', { at: new Date().toISOString(), repository: this.#config().github.repository });
       return true;
     });
@@ -4940,7 +4923,7 @@ export class ProjectRuntime {
   #recover() {
     for (const { key, value } of this.#store.listMeta('native-handoff:')) {
       if (!['holding','resuming','closing'].includes(value.status) || !ownerIsDead(value.owner)) continue;
-      const exited = guardiansExited({ guardians: value.guardianPids.map(pid => ({ pid, host: value.owner.host })) });
+      const exited = guardiansExited({ guardians: nativeGuardianOwners(value) });
       if (exited) this.#store.setMeta(key, { ...value, status: 'interrupted', reason: 'native-owner-lost-inspection-required', updatedAt: this.#now() });
     }
 
@@ -5260,7 +5243,7 @@ export class ProjectRuntime {
     if(entry){entry.manager.beginTurn({runId:execution.runId,slotChanged});return entry.manager;}
     const ownerToken=randomUUID(), controller=persistent?new AbortController():this.#controller;
     entry={assignmentId:execution.assignmentId,domainId:execution.ticketId,ticketId:execution.publicId,ownerToken,controller,manager:null};
-    if(persistent)this.#store.setMeta(`managed-assignment:${execution.assignmentId}`,{token:ownerToken,pid:process.pid,host:hostname(),ticketId:execution.publicId,at:this.#now()});
+    if(persistent)this.#store.setMeta(`managed-assignment:${execution.assignmentId}`,{token:ownerToken,...runtimeOwner(),ticketId:execution.publicId,at:this.#now()});
     const journal=fn=>this.#store.atomic(()=>{
       if(persistent){
         if(this.#store.getMeta(`managed-assignment:${execution.assignmentId}`)?.token!==ownerToken)throw new Error('Stale managed assignment callback');
@@ -5283,7 +5266,7 @@ export class ProjectRuntime {
       journal:{list:()=>this.#store.listMeta('managed-job:').map(row=>row.value),save:record=>journal(()=>{
         this.#store.setMeta(`managed-job:${record.id}`,record);
         if(!persistent){const current=this.#store.getMeta(this.#executionKey());current.guardians??=[];
-          for(const guard of record.guardians??[])if(!current.guardians.some(g=>g.pid===guard.pid&&g.host===guard.host))current.guardians.push(guard);
+          for(const guard of record.guardians??[])if(!current.guardians.some(g=>sameRuntimeOwner(g,guard)))current.guardians.push(guard);
           this.#store.setMeta(this.#executionKey(),current);}
       })},
       wakeParent:event=>journal(()=>{
@@ -5408,7 +5391,7 @@ export class ProjectRuntime {
       if (!domain || domain.ended || latestAssignment(domain)?.id !== payload.assignmentId) return;
       const managerOwner=this.#store.getMeta(`managed-assignment:${payload.assignmentId}`);
       if(managerOwner&&(!ownerIsDead(managerOwner)||this.#store.listMeta('managed-job:').some(row=>row.value.parent?.assignmentId===payload.assignmentId&&['pending','running'].includes(row.value.status)))){
-        if(managerOwner.pid!==process.pid||managerOwner.host!==hostname()||!this.#jobsPool().has(payload.assignmentId))throw new Later('Assignment background work belongs to another runtime; wait for its owner or recover it');
+        if(!isCurrentRuntimeOwner(managerOwner)||!this.#jobsPool().has(payload.assignmentId))throw new Later('Assignment background work belongs to another runtime; wait for its owner or recover it');
       }
       if (this.#executions().some(row => row.value.ticketId === domain.id && row.value.token !== token)) throw new Later('Ticket already has an active Worker');
       const publicId = this.#store.getMeta(`public:${domain.id}`), meta = this.#meta(publicId);
@@ -5471,10 +5454,9 @@ export class ProjectRuntime {
     });
     const registerProcess = pid => withExecution(current => {
       if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) throw new Error('Guardian pid must identify a separate process');
-      const owner = captureProcessIdentity(pid) ?? { pid, host: hostname() };
+      const owner = registerChildOwner(current.guardians ??= current.guardian ? [current.guardian] : [], pid);
+      if (owner === null) return; // Already exited before registration; no live guardian to retain.
       current.guardian ??= owner; // Backward-compatible first supervisor record.
-      current.guardians ??= [current.guardian];
-      if (!current.guardians.some(guard => guard.pid === pid && guard.host === owner.host)) current.guardians.push(owner);
       this.#store.setMeta(this.#executionKey(), current);
     });
     this.#timer = setInterval(() => {
@@ -5999,7 +5981,7 @@ export class ProjectRuntime {
         if (operation && (!ownerIsDead(operation) || !guardiansExited(operation))) return false;
         if (operation) this.#store.deleteMeta('operation:owner');
         localOnly ||= this.#githubWorkBlocked();
-        this.#store.setMeta(this.#executionKey(), { token, pid: process.pid, host: hostname(), ...(previous?.backgroundHeld?{backgroundFor:previous.ticketId,reservation:previous}: {}) });
+        this.#store.setMeta(this.#executionKey(), { token, ...runtimeOwner(), ...(previous?.backgroundHeld?{backgroundFor:previous.ticketId,reservation:previous}: {}) });
         return true;
       });
       if (!acquired) return Promise.resolve(null);
@@ -6081,7 +6063,7 @@ export class ProjectRuntime {
     try {
     this.#store.atomic(() => {
       if(this.#loopActive()) throw new Error('Another runtime already owns the project loop');
-      this.#loopToken=randomUUID(); this.#store.setMeta('runtime:loop',{token:this.#loopToken,pid:process.pid,host:hostname(),controlProtocol:1,controlMethods:OWNER_CONTROL_METHODS,startedAt:this.#now(),lastError:null});
+      this.#loopToken=randomUUID(); this.#store.setMeta('runtime:loop',{token:this.#loopToken,...runtimeOwner(),controlProtocol:1,controlMethods:OWNER_CONTROL_METHODS,startedAt:this.#now(),lastError:null});
     });
     const capacity = this.schedulerStatus().maxWorkers;
     for (const child of this.#children) child.close();

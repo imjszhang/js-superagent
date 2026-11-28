@@ -2,7 +2,7 @@ import { assertDatabaseAvailable } from './database-maintenance.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, linkSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { hostname } from 'node:os';
+import { inspectRuntimeOwner } from './runtime-owner.mjs';
 
 function validateBackup(path) {
   let backup;
@@ -52,16 +52,8 @@ export class Store {
           const ticket = JSON.parse(row.data);
           if (ticket.status !== 'running') continue;
           const owner = ticket.owner;
-          if (!owner || owner.host !== hostname() || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) {
-            throw new Error(`Cannot migrate running legacy ticket ${ticket.id}: execution owner cannot be verified`);
-          }
-          let dead = false;
-          try { process.kill(owner.pid, 0); }
-          catch (error) {
-            if (error.code === 'ESRCH') dead = true;
-            else throw new Error(`Cannot migrate running legacy ticket ${ticket.id}: execution owner cannot be verified`, { cause: error });
-          }
-          if (!dead) throw new Error(`Cannot migrate running legacy ticket ${ticket.id}: execution owner is still alive`);
+          const state = inspectRuntimeOwner(owner);
+          if (state !== 'dead') throw new Error(`Cannot migrate running legacy ticket ${ticket.id}: execution owner ${state === 'alive' ? 'is still alive' : 'cannot be verified'}`);
         }
       }
       if (version === 1 && path !== ':memory:' && !readOnly) backupLegacy(this.db, path);
