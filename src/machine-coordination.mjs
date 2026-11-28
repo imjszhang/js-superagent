@@ -187,6 +187,24 @@ export function createMachineCoordinator(options = {}, dependencies = {}) {
     if (typeof appId !== 'string' || !/^cli_[A-Za-z0-9_-]{1,200}$/.test(appId)) throw new Error('Expected a Feishu App ID');
     return appId;
   }
+  function missingAppPath(file, project) {
+    try { lstatSync(file); return false; }
+    catch (error) {
+      if (error.code === 'ENOENT') return true;
+      fail('FEISHU_APP_OWNERSHIP_UNKNOWN', 'Cannot inspect registered project configuration location', {projectRoot:project.root});
+    }
+  }
+  function disappearedLegacyProject(db, project) {
+    // A deleted legacy fixture cannot open a channel. Keep its registration and
+    // recheck it on every scan, so restoring the root restores conflict checks.
+    // A saved App claim, or any live/unknown process, never qualifies.
+    const hasIndex = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='feishu_apps'").get();
+    if (hasIndex && db.prepare('SELECT 1 FROM feishu_apps WHERE root=? OR project_id=?').get(project.root,project.project_id)) return false;
+    if (!missingAppPath(project.root,project)) return false;
+    try {
+      return ['leases','slots'].every(table=>db.prepare(`SELECT * FROM ${table} WHERE instance_id=?`).all(project.instance_id).every(ownerExited));
+    } catch { return false; }
+  }
   function appRows(db, appId) {
     if (!db) return [];
     const rows = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='feishu_apps'").get()
@@ -195,10 +213,12 @@ export function createMachineCoordinator(options = {}, dependencies = {}) {
     // Older registries have no App index. Read configuration, never credentials, and
     // refuse an unlocatable legacy state instead of assuming it has no channel.
     for (const row of db.prepare('SELECT * FROM projects').all()) {
-      const saved = parse(row.identity), stateDirectory = saved.stateDirectory ?? projectStateDirectory(row.root);
+      const saved = parse(row.identity); let stateDirectory;
+      try { stateDirectory = saved.stateDirectory ?? projectStateDirectory(row.root); }
+      catch { fail('FEISHU_APP_OWNERSHIP_UNKNOWN','Cannot locate registered project configuration',{projectRoot:row.root}); }
       const file = join(stateDirectory, 'config.json');
-      if (!existsSync(file)) {
-        if (row.root !== projectRoot && !result.some(value => value.projectRoot === row.root))
+      if (missingAppPath(file,row)) {
+        if (row.root !== projectRoot && !result.some(value => value.projectRoot === row.root) && !disappearedLegacyProject(db,row))
           fail('FEISHU_APP_OWNERSHIP_UNKNOWN', 'Cannot locate a registered project configuration; inspect its state before assigning a Feishu App', {projectRoot:row.root});
         continue;
       }

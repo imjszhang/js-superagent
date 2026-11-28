@@ -58,6 +58,59 @@ test('legacy missing configuration fails closed and read-only binding inspection
  const cb=createMachineCoordinator({projectRoot:b,projectId:'b'},{directory:f.directory});
  assert.throws(()=>cb.claimFeishuApp({appId:'cli_shared'}),{code:'FEISHU_APP_OWNERSHIP_UNKNOWN'});
 });
+function disappearedLegacy(t){
+ const f=fixture(t),parent=f.project('old-parent'),a=join(parent,'old');mkdirSync(a);
+ const b=f.project('new'),cfg=initializeProjectConfig(a);
+ const ca=createMachineCoordinator({projectRoot:a,projectId:cfg.projectId},{directory:f.directory});const identity=ca.register();
+ const file=join(projectStateDirectory(a),'config.json');rmSync(file);rmSync(a,{recursive:true});
+ const db=new DatabaseSync(join(f.directory,'coordination.sqlite'));
+ // Model registries written before stateDirectory was retained.
+ const saved=JSON.parse(db.prepare('SELECT identity FROM projects WHERE instance_id=?').get(identity.instanceId).identity);delete saved.stateDirectory;
+ db.prepare('UPDATE projects SET identity=? WHERE instance_id=?').run(JSON.stringify(saved),identity.instanceId);db.close();
+ const candidate=(dependencies={})=>createMachineCoordinator({projectRoot:b,projectId:'new'},{directory:f.directory,...dependencies});
+ return {...f,a,b,parent,cfg,identity,file,candidate};
+}
+test('disappeared legacy projects without App claims preserve registration and regain conflict checks when restored',t=>{
+ const f=disappearedLegacy(t),before=createMachineCoordinator({},{directory:f.directory});
+ const projects=before.listProjects(),audit=before.audit();assert.deepEqual(f.candidate().feishuAppBinding(),[]);
+ assert.deepEqual(before.listProjects(),projects);assert.deepEqual(before.audit(),audit);
+ f.candidate().claimFeishuApp({appId:'cli_shared'});mkdirSync(f.a);
+ // Merely restoring the root, even before configuration, is unknown again.
+ assert.throws(()=>f.candidate().assertFeishuAppAvailable({appId:'cli_shared'}),{code:'FEISHU_APP_OWNERSHIP_UNKNOWN'});
+ writeFileSync(f.file,JSON.stringify({...f.cfg,feishu:config()}),{mode:0o600});
+ assert.throws(()=>f.candidate().assertFeishuAppAvailable({appId:'cli_shared'}),{code:'FEISHU_APP_OWNED'});
+ assert.deepEqual(before.listProjects(),projects);assert.deepEqual(before.audit(),audit);
+});
+test('missing roots never discard saved App ownership or readable legacy App configuration',t=>{
+ const f=disappearedLegacy(t);writeFileSync(f.file,JSON.stringify({...f.cfg,feishu:config()}),{mode:0o600});
+ assert.throws(()=>f.candidate().claimFeishuApp({appId:'cli_shared'}),{code:'FEISHU_APP_OWNED'});
+ const db=new DatabaseSync(join(f.directory,'coordination.sqlite'));
+ db.prepare('INSERT INTO feishu_apps VALUES(?,?,?,?,?)').run('cli_shared',f.cfg.projectId,f.a,projectStateDirectory(f.a),Date.now());db.close();rmSync(f.file);
+ assert.throws(()=>f.candidate().claimFeishuApp({appId:'cli_shared'}),{code:'FEISHU_APP_OWNED'});
+ assert.throws(()=>f.candidate().claimFeishuApp({appId:'cli_other'}),{code:'FEISHU_APP_OWNERSHIP_UNKNOWN'});
+});
+test('disappeared legacy leases and slots require every owner and guardian to be proven dead',t=>{
+ for(const table of ['leases','slots'])for(const owner of ['alive','unknown','dead'])for(const guardian of ['alive','unknown','dead']){
+  const f=disappearedLegacy(t),db=new DatabaseSync(join(f.directory,'coordination.sqlite'));
+  const common=[f.identity.instanceId,'fixture',JSON.stringify({state:owner}),JSON.stringify([{state:guardian}])];
+  if(table==='leases')db.prepare('INSERT INTO leases(instance_id,token,owner,guardians,kind,epoch,at) VALUES(?,?,?,?,?,1,0)').run(...common,'runtime');
+  else db.prepare('INSERT INTO slots(instance_id,token,owner,guardians,key,kind,active,suspended,requested_at) VALUES(?,?,?,?,?,?,0,0,0)').run(...common,'slot','worker');
+  const before=db.prepare(`SELECT * FROM ${table}`).all();db.close();
+  const c=f.candidate({ownerState:value=>value.state});
+  if(owner==='dead'&&guardian==='dead')assert.doesNotThrow(()=>c.assertFeishuAppAvailable({appId:'cli_shared'}));
+  else assert.throws(()=>c.assertFeishuAppAvailable({appId:'cli_shared'}),{code:'FEISHU_APP_OWNERSHIP_UNKNOWN'});
+  const after=new DatabaseSync(join(f.directory,'coordination.sqlite'));assert.deepEqual(after.prepare(`SELECT * FROM ${table}`).all(),before);after.close();
+ }
+});
+test('permission failures are not missing legacy project roots or configuration',t=>{
+ for(const target of ['root','config']){
+  const f=disappearedLegacy(t),directory=target==='root'?f.parent:projectStateDirectory(f.a);
+  // Construct while the real candidate root can still be resolved.
+  const c=f.candidate();chmodSync(directory,0o000);
+  try {assert.throws(()=>c.assertFeishuAppAvailable({appId:'cli_shared'}),{code:'FEISHU_APP_OWNERSHIP_UNKNOWN'});}
+  finally {chmodSync(directory,0o700);}
+ }
+});
 test('service validation rejects another project App before credentials, plist or launchd changes',t=>{
  const f=fixture(t),a=f.runtime(f.project('a')),b=f.runtime(f.project('b'));a.configure({feishu:config()});
  const path=join(projectStateDirectory(b.projectRoot),'config.json');writeFileSync(path,JSON.stringify({...readProjectConfig(b.projectRoot),feishu:config()}),{mode:0o600});
