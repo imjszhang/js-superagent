@@ -122,6 +122,8 @@ const help = `js-superagent --project <directory> <command>
   github bot-review associate <pr> <actor> <file>  Associate original events with a review run
   github listen          Receive signed webhooks and keep processing work in the foreground
   github webhook-status  Inspect local webhook queue and delivery records
+  feishu binding status  Inspect this project’s App ownership
+  feishu binding release --plan|--apply --app-id <id>  Release settled ownership
   github binding status  Inspect this repository's local project ownership
   github binding release --plan|--apply [--repository owner/repo]  Release settled local ownership
   service install        Install a macOS login background service (does not start it)
@@ -294,7 +296,7 @@ try {
       'webhook-max-bytes': { type: 'string' }, 'webhook-disable': { type: 'boolean' },
       mode: { type: 'string' }, 'log-max-bytes': { type: 'string' }, 'env-file': { type: 'string' }, port: { type: 'string' },
       'max-active-executions': { type: 'string' }, 'as-new': { type: 'boolean' }, from: { type: 'string' },
-      plan: { type: 'boolean' }, apply: { type: 'boolean' }, rollback: { type: 'boolean' }, recover: { type: 'boolean' }, repository: { type: 'string' }, 'check-connections': { type: 'boolean' },
+      plan: { type: 'boolean' }, apply: { type: 'boolean' }, rollback: { type: 'boolean' }, recover: { type: 'boolean' }, repository: { type: 'string' }, 'app-id': {type:'string'}, 'check-connections': { type: 'boolean' },
     },
     allowPositionals: true,
   });
@@ -332,14 +334,17 @@ try {
     const projectsAction = command === 'projects' && args.length === 1 && args[0] === 'list';
     const projectAction = command === 'project' && args.length === 1 && ['inspect', 'reinitialize', 'relocate', 'migrate-state'].includes(args[0]);
     const maintenanceAction = projectAction && args[0] !== 'inspect';
+    const feishuAction=command==='feishu'&&args.length===2&&args[0]==='binding'&&['status','release'].includes(args[1]);
+    const feishuRelease=feishuAction&&args[1]==='release';
     const bindingRelease = githubAction && args[0] === 'binding' && args[1] === 'release';
-    if (!materialAction && !diagnosticAction && !setupAction && !controlAction && !machineAction && !projectsAction && !projectAction && !reviewAction && !nativePreviewAction && !configSet && !configShow && !githubAction && !serviceAction && !coordinatorAction && !coordinationAction && !deliveryAction && !traceAction && !sessionAction && !incidentAction && !jobAction && !adoptionAction && !harnessAction && (!(command in arity) || args.length !== arity[command])) throw new Error('Invalid command or arguments. Use --help; quote task text.');
+    if (!feishuAction && !materialAction && !diagnosticAction && !setupAction && !controlAction && !machineAction && !projectsAction && !projectAction && !reviewAction && !nativePreviewAction && !configSet && !configShow && !githubAction && !serviceAction && !coordinatorAction && !coordinationAction && !deliveryAction && !traceAction && !sessionAction && !incidentAction && !jobAction && !adoptionAction && !harnessAction && (!(command in arity) || args.length !== arity[command])) throw new Error('Invalid command or arguments. Use --help; quote task text.');
     if (values.plan !== undefined || values.apply !== undefined) {
-      if (!(maintenanceAction || bindingRelease) || Boolean(values.plan) === Boolean(values.apply)) throw new Error('Use exactly one of --plan or --apply with project maintenance or github binding release.');
-    } else if (maintenanceAction || bindingRelease) throw new Error('Choose --plan to inspect or --apply to perform this operation.');
+      if (!(maintenanceAction || bindingRelease || feishuRelease) || Boolean(values.plan) === Boolean(values.apply)) throw new Error('Use exactly one of --plan or --apply with project maintenance or github binding release.');
+    } else if (maintenanceAction || bindingRelease || feishuRelease) throw new Error('Choose --plan to inspect or --apply to perform this operation.');
     if (values['as-new'] !== undefined && !(projectAction && args[0] === 'reinitialize') || projectAction && args[0] === 'reinitialize' && !values['as-new']) throw new Error('project reinitialize requires explicit --as-new.');
     if (values.from !== undefined && !(projectAction && args[0] === 'relocate') || projectAction && args[0] === 'relocate' && !values.from) throw new Error('project relocate requires --from <old-path>.');
     if (values.rollback !== undefined && !(projectAction && args[0] === 'relocate')) throw new Error('--rollback requires project relocate.');
+    if(values['app-id']!==undefined&&!feishuRelease || feishuRelease&&!values['app-id'])throw new Error('--app-id is required only for feishu binding release');
     if (values.repository !== undefined && !bindingRelease) throw new Error('--repository requires github binding release.');
     if (values.recover !== undefined && !(serviceAction && args[0] === 'patrol')) throw new Error('--recover requires service patrol.');
     if (values['max-active-executions'] !== undefined && !(machineAction && args[0] === 'limits' && args[1] === 'set') || machineAction && args[0] === 'limits' && args[1] === 'set' && values['max-active-executions'] === undefined) throw new Error('machine limits set requires --max-active-executions <n>.');
@@ -456,7 +461,13 @@ try {
     if (configSet && !Object.keys(patch).length) throw new Error('config set requires at least one configuration option.');
     const projectRoot = resolve(values.project ?? process.cwd());
     const dir = projectStateDirectory(projectRoot);
-    if (machineAction || projectsAction) {
+    if(feishuAction && args[1]==='status') {
+      const config=readProjectConfig(projectRoot),machine=createMachineCoordinator({projectRoot,projectId:config.projectId},machineDependencies);
+      try {const appId=config.feishu?.appId??null,root=realpathSync(projectRoot);
+        const bindings=machine.feishuAppBinding().filter(row=>row.projectRoot===root||row.appId===appId);
+        console.log(JSON.stringify({appId,bindings,conflicts:bindings.filter(row=>row.appId===appId&&row.projectRoot!==root)},null,2));}
+      finally {machine.close();}
+    } else if (machineAction || projectsAction) {
       const machine = createMachineCoordinator({}, machineDependencies);
       try {
         const result = projectsAction ? machine.listProjects() : args[0] === 'status' ? machine.status() : machine.setLimits({ maxActiveExecutions: args[1] === 'clear' ? null : integerArgument(values['max-active-executions'], 'Execution ceiling', 1) });
@@ -514,7 +525,7 @@ try {
       if (command !== 'init' && (!existsSync(join(dir, 'config.json')) || !existsSync(join(dir, 'state.sqlite')))) {
         throw new Error('Project is not initialized. Run init first.');
       }
-      if (command === 'init') initializeProjectConfig(projectRoot, patch);
+      if (command === 'init') initializeProjectConfig(projectRoot, patch, machineDependencies);
       const invocationExecution = execution && patch.execution ? mergeProjectConfig(readProjectConfig(projectRoot), { execution: patch.execution }).execution : undefined;
       runtime = createProjectAgent({ projectRoot, ...(invocationExecution ? { execution: invocationExecution } : {}), ...(machineDependencies ? { [MACHINE_DEPENDENCIES]: machineDependencies } : {}) }).init();
       let result;
@@ -570,6 +581,7 @@ try {
         case 'pause': result = runtime.pause(); break;
         case 'resume': result = runtime.resume(); break;
         case 'health': result = {...runtime.status(),business:runtime.businessHealth()}; break;
+        case 'feishu': result=args[1]==='status'?runtime.feishuBindingStatus():runtime.releaseFeishuBinding({appId:values['app-id'],apply:values.apply===true});break;
         case 'config': result = runtime.configureV2(patch); break;
         case 'workspace': result = runtime.inspectWorkspace(args[0]); break;
         case 'github':

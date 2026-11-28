@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, lstatSync, readFileSync, writeFileSync, renameSync, linkSync, unlinkSync, realpathSync } from 'node:fs';
 import { join, resolve, isAbsolute, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { createMachineCoordinator } from './machine-coordination.mjs';
 import { isIP } from 'node:net';
 import { assertDatabaseAvailable } from './database-maintenance.mjs';
 import { DEFAULT_DRIVER, PROJECT_EXECUTION_DRIVERS, RETIRED_DRIVERS } from './harness/builtin.mjs';
@@ -299,28 +300,64 @@ function put(file, config, exclusive) {
   } finally { try { unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
 }
 /** Existing configuration is preserved; use configure() for intentional updates. */
-export function initializeProjectConfig(projectRoot, options = {}) {
+export function initializeProjectConfig(projectRoot, options = {}, coordination) {
+  validateProjectOptions(options);
+  const {root,file}=paths(projectRoot);
+  if(existsSync(file))return initializeProjectConfigUnlocked(root,options,coordination);
+  const coordinator=coordination?.coordinator ?? createMachineCoordinator({projectRoot:root},coordination);
+  try {return coordinator.withConfigurationLock(()=>initializeProjectConfigUnlocked(root,options,coordination));}
+  finally {if(!coordination?.coordinator)coordinator.close();}
+}
+function initializeProjectConfigUnlocked(projectRoot, options = {}, coordination) {
   const patch = validateProjectOptions(options);
   const { root, file } = paths(projectRoot);
   if (existsSync(file)) {
     const current = readProjectConfig(root);
     const desired = resolved(mergeProjectConfig(current, patch), root);
     if (JSON.stringify(current) !== JSON.stringify(desired)) throw new Error('Project already has different configuration; use config set to update it');
+    if (patch.feishu && current.feishu) reserveApp(root,current,coordination);
     return current;
   }
   assertDatabaseAvailable(join(projectStateDirectory(root), 'state.sqlite'));
-  const config = resolved(mergeProjectConfig({ schemaVersion: 2, projectId: randomUUID(), concurrency: 1, workspace: { mode: 'in-place' } }, patch), root);
+  const config = resolved(mergeProjectConfig({ schemaVersion: 2, projectId: reservedProjectId(root,coordination) ?? randomUUID(), concurrency: 1, workspace: { mode: 'in-place' } }, patch), root);
   encode(config); // Reject oversized options before creating any state directory.
-  paths(root, true);
-  try { put(file, config, true); }
-  catch (error) { if (error.code !== 'EEXIST') throw error; return initializeProjectConfig(root, options); }
+  try { publishWithReservation(root,config,coordination,()=>{ paths(root,true);put(file,config,true); }); }
+  catch (error) { if (error.code !== 'EEXIST') throw error; return initializeProjectConfigUnlocked(root, options, coordination); }
   return config;
 }
 /** Call under the runtime's project mutation guard, so active execution cannot be reconfigured. */
-export function writeProjectConfig(projectRoot, patch) {
+export function writeProjectConfig(projectRoot, patch, coordination) {
   const { root, file } = paths(projectRoot);
   assertDatabaseAvailable(join(projectStateDirectory(root), 'state.sqlite'));
-  const next = resolved(mergeProjectConfig(readProjectConfig(root), patch), root);
-  put(file, next, false);
+  const current = readProjectConfig(root);
+  const next = resolved(mergeProjectConfig(current, patch), root);
+  encode(next);
+  if(current.feishu && current.feishu.appId!==next.feishu?.appId) {
+    try {reserveApp(root,current,coordination);}
+    catch(error) {if(error.code!=='FEISHU_APP_OWNED')throw error;}
+  }
+  publishWithReservation(root,next,coordination,()=>put(file,next,false));
   return next;
+}
+
+function reserveApp(root, config, coordination) {
+  const coordinator = coordination?.coordinator ?? createMachineCoordinator({projectRoot:root,projectId:config.projectId},coordination);
+  // Commit the reservation before publishing config. A crash may retain a claim,
+  // but can never publish a working channel without ownership protection.
+  try { coordinator.claimFeishuApp({appId:config.feishu.appId}); }
+  finally { if(!coordination?.coordinator)coordinator.close(); }
+}
+
+function reservedProjectId(root,coordination) {
+  const coordinator=coordination?.coordinator ?? createMachineCoordinator({projectRoot:root},coordination);
+  try {return coordinator.reservedFeishuProjectId();}
+  finally {if(!coordination?.coordinator)coordinator.close();}
+}
+function publishWithReservation(root,config,coordination,publish) {
+  if(!config.feishu)return publish();
+  const coordinator=coordination?.coordinator ?? createMachineCoordinator({projectRoot:root,projectId:config.projectId},coordination);
+  // Keep the reservation on failure: another same-project writer may still be
+  // publishing. Retrying initialization reuses the reserved project identity.
+  try {coordinator.claimFeishuApp({appId:config.feishu.appId});return publish();}
+  finally {if(!coordination?.coordinator)coordinator.close();}
 }

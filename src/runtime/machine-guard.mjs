@@ -8,8 +8,8 @@ export const MACHINE_DEPENDENCIES = Symbol('machine coordination test dependenci
 export const MACHINE_GUARD = Symbol('shared project machine guard');
 
 export class RuntimeMachineGuard {
-  constructor({ projectRoot, projectId, dependencies, prepare, github, channel, guardians, retained }) {
-    Object.assign(this, { projectRoot, projectId, prepare, github, channel, guardians, retained });
+  constructor({ projectRoot, projectId, dependencies, prepare, github, feishu, channel, guardians, retained }) {
+    Object.assign(this, { projectRoot, projectId, prepare, github, feishu, channel, guardians, retained });
     this.now = dependencies?.now ?? Date.now;
     this.coordinator = createMachineCoordinator({ projectRoot, projectId }, dependencies);
     this.references = 0; this.holds = 0; this.slots = new Map(); this.yieldedSlots = new Map(); this.finishedSlots = new Set(); this.waiting = new Map();
@@ -49,6 +49,8 @@ export class RuntimeMachineGuard {
   claim() {
     this.assert();
     const github = this.github();
+    const feishu = this.feishu?.();
+    if (feishu) this.coordinator.claimFeishuApp({appId:feishu.appId});
     return github ? this.coordinator.claimRepository({ repository: github.repository, host: 'github.com' }) : null;
   }
   isReady() {

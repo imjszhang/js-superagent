@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.0-alpha.19 — 2026-11-28
+
+- Reserve each Feishu App for one project in the per-user machine registry, including legacy registered configurations and concurrent claims; reject cross-project configuration and service startup before opening a competing channel.
+- Preserve App ownership across stop/disable/config removal; add read-only binding status and explicit settled release, recover interrupted configuration reservations, and keep project tasks, receipts and history intact.
+- Cover same-App conflicts, legacy configuration repair, state-home changes, concurrent initialization, failed publication and service lifecycle; isolate default machine state for tests.
+
 ## 0.15.0-alpha.18 — 2026-11-28
 
 - Use stable machine, boot-session, PID-namespace and process-start identity for durable execution, coordinator, operation, effect, source and managed-job claims. Hostname changes and reboots no longer strand newly written claims.
